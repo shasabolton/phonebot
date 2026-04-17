@@ -4,8 +4,12 @@
 #include <LittleFS.h>
 #include <Updater.h>
 #include <ESP8266httpUpdate.h>
+#include <Servo.h>
 
 // ===== CONFIG =====
+/** Bump this when releasing firmware; keep version.json in the repo in sync (manual for now). */
+#define FW_VERSION "1.1.1"
+
 const char* AP_PASS = "12345678";
 
 ESP8266WebServer server(80);
@@ -17,6 +21,156 @@ String robotHostname;
 // Stored credentials
 String ssid = "";
 String password = "";
+
+const int MAX_SERVO_CHANNELS = 8;
+Servo servos[MAX_SERVO_CHANNELS];
+bool servoAttached[MAX_SERVO_CHANNELS] = {false};
+int servoPins[MAX_SERVO_CHANNELS] = {-1, -1, -1, -1, -1, -1, -1, -1};
+
+int findServoIndexByPin(int pin) {
+  for (int i = 0; i < MAX_SERVO_CHANNELS; i++) {
+    if (servoAttached[i] && servoPins[i] == pin) return i;
+  }
+  return -1;
+}
+
+int findFreeServoIndex() {
+  for (int i = 0; i < MAX_SERVO_CHANNELS; i++) {
+    if (!servoAttached[i]) return i;
+  }
+  return -1;
+}
+
+bool parseIntField(const String& s, int& value) {
+  if (s.length() == 0) return false;
+  for (unsigned int i = 0; i < s.length(); i++) {
+    char c = s[i];
+    if (i == 0 && (c == '-' || c == '+')) continue;
+    if (c < '0' || c > '9') return false;
+  }
+  value = s.toInt();
+  return true;
+}
+
+void handlePinSetup() {
+  sendCORSHeaders();
+  if (!server.hasArg("plain")) {
+    server.send(400, "text/plain", "Missing payload");
+    return;
+  }
+
+  String body = server.arg("plain");
+  body.trim();
+  if (body.length() == 0) {
+    server.send(400, "text/plain", "Empty payload");
+    return;
+  }
+
+  int attachedCount = 0;
+  int start = 0;
+  while (start < body.length()) {
+    int comma = body.indexOf(',', start);
+    String item = comma == -1 ? body.substring(start) : body.substring(start, comma);
+    item.trim();
+    if (item.length() > 0) {
+      // format: pin:servo:minUs:maxUs:homeUs
+      int c1 = item.indexOf(':');
+      int c2 = item.indexOf(':', c1 + 1);
+      int c3 = item.indexOf(':', c2 + 1);
+      int c4 = item.indexOf(':', c3 + 1);
+      if (c1 < 0 || c2 < 0 || c3 < 0 || c4 < 0) {
+        server.send(400, "text/plain", "Bad setup item");
+        return;
+      }
+      String pinStr = item.substring(0, c1);
+      String typeStr = item.substring(c1 + 1, c2);
+      String minStr = item.substring(c2 + 1, c3);
+      String maxStr = item.substring(c3 + 1, c4);
+      String homeStr = item.substring(c4 + 1);
+      pinStr.trim(); typeStr.trim(); minStr.trim(); maxStr.trim(); homeStr.trim();
+      if (typeStr != "servo") {
+        server.send(400, "text/plain", "Unsupported output type");
+        return;
+      }
+
+      int pin = -1, minUs = 1000, maxUs = 2000, homeUs = 1500;
+      if (!parseIntField(pinStr, pin) || !parseIntField(minStr, minUs) ||
+          !parseIntField(maxStr, maxUs) || !parseIntField(homeStr, homeUs)) {
+        server.send(400, "text/plain", "Bad numeric setup values");
+        return;
+      }
+
+      int idx = findServoIndexByPin(pin);
+      if (idx < 0) idx = findFreeServoIndex();
+      if (idx < 0) {
+        server.send(500, "text/plain", "No servo slots available");
+        return;
+      }
+
+      if (!servoAttached[idx]) {
+        servos[idx].attach(pin, minUs, maxUs);
+        servoAttached[idx] = true;
+        servoPins[idx] = pin;
+      }
+      servos[idx].writeMicroseconds(homeUs);
+      attachedCount++;
+    }
+    if (comma == -1) break;
+    start = comma + 1;
+  }
+
+  String json = "{\"ok\":true,\"attached\":" + String(attachedCount) + "}";
+  server.send(200, "application/json", json);
+}
+
+void handleAction() {
+  sendCORSHeaders();
+  if (!server.hasArg("plain")) {
+    server.send(400, "text/plain", "Missing payload");
+    return;
+  }
+
+  String body = server.arg("plain");
+  body.trim();
+  if (body.length() == 0) {
+    server.send(400, "text/plain", "Empty payload");
+    return;
+  }
+
+  int appliedCount = 0;
+  int start = 0;
+  while (start < body.length()) {
+    int comma = body.indexOf(',', start);
+    String item = comma == -1 ? body.substring(start) : body.substring(start, comma);
+    item.trim();
+    if (item.length() > 0) {
+      // format: pin:microseconds
+      int c = item.indexOf(':');
+      if (c < 0) {
+        server.send(400, "text/plain", "Bad action item");
+        return;
+      }
+      String pinStr = item.substring(0, c);
+      String usStr = item.substring(c + 1);
+      pinStr.trim();
+      usStr.trim();
+      int pin = -1, us = 1500;
+      if (!parseIntField(pinStr, pin) || !parseIntField(usStr, us)) {
+        server.send(400, "text/plain", "Bad action values");
+        return;
+      }
+      int idx = findServoIndexByPin(pin);
+      if (idx >= 0 && servoAttached[idx]) {
+        servos[idx].writeMicroseconds(us);
+        appliedCount++;
+      }
+    }
+    if (comma == -1) break;
+    start = comma + 1;
+  }
+  String json = "{\"ok\":true,\"applied\":" + String(appliedCount) + "}";
+  server.send(200, "application/json", json);
+}
 
 // ===== FUNCTIONS =====
 
@@ -136,8 +290,15 @@ void handleStatus() {
   json += "\"hostname\":\"" + jsonEscape(robotHostname) + "\",";
   json += "\"mdnsHost\":\"" + jsonEscape(mdnsFull) + "\",";
   json += "\"connected\":" + String(connected ? "true" : "false") + ",";
-  json += "\"ip\":\"" + ip + "\"";
+  json += "\"ip\":\"" + ip + "\",";
+  json += "\"fwVersion\":\"" + jsonEscape(String(FW_VERSION)) + "\"";
   json += "}";
+  server.send(200, "application/json", json);
+}
+
+void handleVersion() {
+  sendCORSHeaders();
+  String json = "{\"fwVersion\":\"" + jsonEscape(String(FW_VERSION)) + "\"}";
   server.send(200, "application/json", json);
 }
 
@@ -262,11 +423,17 @@ void setup() {
   server.on("/ping", HTTP_OPTIONS, handleOptions);
   server.on("/scan", HTTP_OPTIONS, handleOptions);
   server.on("/status", HTTP_OPTIONS, handleOptions);
+  server.on("/version", HTTP_OPTIONS, handleOptions);
+  server.on("/pin-setup", HTTP_OPTIONS, handleOptions);
+  server.on("/action", HTTP_OPTIONS, handleOptions);
   server.on("/config", HTTP_POST, handleConfig);
   server.on("/update", HTTP_POST, handleUpdate, handleUpdateUpload);
+  server.on("/pin-setup", HTTP_POST, handlePinSetup);
+  server.on("/action", HTTP_POST, handleAction);
   server.on("/ping", HTTP_GET, handlePing);
   server.on("/scan", HTTP_GET, handleScan);
   server.on("/status", HTTP_GET, handleStatus);
+  server.on("/version", HTTP_GET, handleVersion);
 
   server.begin();
 }

@@ -1,0 +1,21 @@
+{ "robots": [
+    {"name": "new unnamed robot",
+    "actuators": [],
+    "mixers": [],
+    "sensors": [],
+    "targets": [],
+    "pidControllers": []
+    },
+    {"name": "rover1",
+    "actuators": [
+        {"type": "servo", "name": "left wheel", "pin": 5, "homeAngle": 90, "minAngle": 0, "maxAngle": 180},
+        {"type": "servo", "name": "right wheel", "pin": 4, "homeAngle": 90, "minAngle": 0, "maxAngle": 180}
+    ],
+    "mixers": [],
+    "sensors": [],
+    "targets": [],
+    "pidControllers": [],
+    "transmitter": "wifi"             
+    }
+  ]
+}
