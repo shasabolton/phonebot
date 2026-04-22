@@ -43,7 +43,7 @@ window.ROBOTS_DATA = {
                 }
             ],
             sensors: ["camera"],
-            aiModels:["openCv"],
+            aiModels: [{ type: "tracker", frequencyHz: 10 }],
             targets: [],
             pidControllers: [],
             transmitter: "wifi"

@@ -6,6 +6,7 @@ class Camera extends Sensor {
         this._facingMode = "user";
         this._stream = null;
         this._videoEl = null;
+        this._frameEl = null;
         this._statusEl = null;
         this._startBtn = null;
         this._frontBtn = null;
@@ -108,6 +109,14 @@ class Camera extends Sensor {
         if (this._startBtn) this._startBtn.style.display = "";
     }
 
+    getVideoElement() {
+        return this._videoEl;
+    }
+
+    getFrameElement() {
+        return this._frameEl;
+    }
+
     buildGUI(container) {
         if (!container) return;
         const wrap = document.createElement("div");
@@ -184,6 +193,7 @@ class Camera extends Sensor {
         container.appendChild(wrap);
         this.gui = wrap;
         this._videoEl = video;
+        this._frameEl = frame;
         this._statusEl = status;
         this._startBtn = startBtn;
 

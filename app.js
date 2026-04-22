@@ -24,6 +24,13 @@ class App {
             this.robot.destroy();
         }
         this.robotGuiMount.innerHTML = '';
+        if (!robotConfig) {
+            this.robot = null;
+            this.robotGuiMount.style.display = 'none';
+            this.updateStartButtonState();
+            return;
+        }
+        this.robotGuiMount.style.display = '';
         this.robot = new Robot(this.robotGuiMount, robotConfig);
         this.updateStartButtonState();
     }
@@ -134,9 +141,21 @@ class App {
         if (this.stopBtn) this.stopBtn.disabled = true;
         if (this.startBtn) this.startBtn.textContent = 'Start';
         if (!this.robotListEl || !this.robotsData?.robots) return;
-        const idx = Number(this.robotListEl.value);
+        const rawValue = this.robotListEl.value;
+        if (rawValue === '') {
+            this.setRobot(null);
+            this.setControlStatus('Select a robot to show controls and AI models.', 'muted');
+            return;
+        }
+        const idx = Number(rawValue);
         const config = this.robotsData.robots[idx];
-        if (config) this.setRobot(config);
+        if (config) {
+            this.setRobot(config);
+            this.setControlStatus('Robot selected. Start is optional for camera/AI models.', 'muted');
+        } else {
+            this.setRobot(null);
+            this.setControlStatus('Select a valid robot configuration.', 'warn');
+        }
     }
 
     buildGUI() {
@@ -172,11 +191,16 @@ class App {
         const select = document.createElement('select');
         select.id = 'appRobotSelect';
         this.robotListEl = select;
+        const placeholderOpt = document.createElement('option');
+        placeholderOpt.value = '';
+        placeholderOpt.textContent = 'Select a robot...';
+        select.appendChild(placeholderOpt);
 
         const mount = document.createElement('div');
         mount.id = 'robotGuiMount';
         mount.className = 'box';
         mount.style.marginTop = '10px';
+        mount.style.display = 'none';
         this.robotGuiMount = mount;
 
         const startBtn = document.createElement('button');
@@ -228,7 +252,7 @@ class App {
                 select.appendChild(opt);
             });
             select.addEventListener('change', () => this.onRobotSelect());
-            this.onRobotSelect();
+            select.value = '';
             this.updateStartButtonState();
         }
     }

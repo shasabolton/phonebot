@@ -9,6 +9,7 @@ class Robot {
         this.actuatorMixes = [];
         this.inputUnsubscribes = [];
         this.sensors = [];
+        this.aiModels = [];
         this.targets = [];
         this.pidControllers = [];
         this.transmitter;
@@ -23,6 +24,7 @@ class Robot {
         this.teardownJoysticks();
         this.teardownInputMixSubscriptions();
         this.teardownSensors();
+        this.teardownAiModels();
     }
 
     step() {
@@ -36,6 +38,7 @@ class Robot {
         this.buildInputs(this.config.inputs || {});
         this.buildJoysticks(this.config.joysticks || []);
         this.buildSensors(this.config.sensors || []);
+        this.buildAiModels(this.config.aiModels || []);
         this.buildActuatorMixing();
     }
 
@@ -96,6 +99,40 @@ class Robot {
             if (typeof s.destroy === "function") s.destroy();
         }
         this.sensors = [];
+    }
+
+    buildAiModels(aiModelConfigs) {
+        this.teardownAiModels();
+        for (const item of aiModelConfigs || []) {
+            const cfg = typeof item === "string" ? { type: item } : { ...item };
+            const type = String(cfg.type || "").trim().toLowerCase();
+            try {
+                if (type === "coco") {
+                    const CocoModelClass = window.CocoAiModel;
+                    if (typeof CocoModelClass !== "function") {
+                        throw new Error("CocoAiModel class is unavailable. Check aiModelCoco.js loading.");
+                    }
+                    this.aiModels.push(new CocoModelClass(this, cfg));
+                } else if (type === "tracker") {
+                    const TrackerModelClass = window.GenericTrackerAiModel;
+                    if (typeof TrackerModelClass !== "function") {
+                        throw new Error("GenericTrackerAiModel class is unavailable. Check aiModelTracker.js loading.");
+                    }
+                    this.aiModels.push(new TrackerModelClass(this, cfg));
+                } else if (type) {
+                    console.warn(`Unknown AI model type: ${cfg.type}`);
+                }
+            } catch (err) {
+                console.error("AI model build failed:", err);
+            }
+        }
+    }
+
+    teardownAiModels() {
+        for (const model of this.aiModels) {
+            if (typeof model.destroy === "function") model.destroy();
+        }
+        this.aiModels = [];
     }
 
     getInputValues() {
@@ -197,6 +234,27 @@ class Robot {
             }
         }
         this.container.appendChild(sensorsDiv);
+
+        const aiModelsDiv = document.createElement('div');
+        aiModelsDiv.className = 'robot-ai-models';
+        const aiTitle = document.createElement('h4');
+        aiTitle.textContent = 'AI Models';
+        aiModelsDiv.appendChild(aiTitle);
+        const requestedAiModels = Array.isArray(this.config.aiModels) ? this.config.aiModels.length : 0;
+        for (const model of this.aiModels) {
+            if (typeof model.buildGUI === 'function') {
+                model.buildGUI(aiModelsDiv);
+            }
+        }
+        if (!this.aiModels.length) {
+            const none = document.createElement('p');
+            none.className = requestedAiModels ? 'error' : 'muted';
+            none.textContent = requestedAiModels
+                ? 'AI models were requested but failed to load. Check browser console.'
+                : 'No AI models configured for this robot.';
+            aiModelsDiv.appendChild(none);
+        }
+        this.container.appendChild(aiModelsDiv);
 
         const inputsDiv = document.createElement('div');
         inputsDiv.className = 'robot-inputs';

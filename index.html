@@ -96,6 +96,7 @@
       border-radius: 6px;
       overflow: hidden;
       line-height: 0;
+      position: relative;
     }
     .sensor-camera-video {
       width: 100%;
@@ -112,6 +113,44 @@
     .sensor-camera-start-btn {
       margin-top: 8px;
     }
+    .sensor-camera-overlay {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      z-index: 4;
+    }
+    .robot-ai-models {
+      margin-top: 12px;
+      border-top: 1px solid #ddd;
+      padding-top: 8px;
+    }
+    .ai-model {
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      padding: 10px;
+      margin-top: 8px;
+    }
+    .ai-model h4 {
+      margin: 0 0 8px 0;
+    }
+    .ai-model-controls label {
+      display: block;
+      margin-top: 8px;
+      font-size: 0.9em;
+      color: #555;
+    }
+    .ai-model-output {
+      margin-top: 8px;
+      background: #111;
+      color: #9fe6b8;
+      padding: 8px;
+      border-radius: 4px;
+      max-height: 180px;
+      overflow: auto;
+      font-size: 12px;
+    }
   </style>
 </head>
 
@@ -127,6 +166,8 @@
 <script src="joystick.js"></script>
 <script src="sensors.js"></script>
 <script src="camera.js"></script>
+<script src="aiModelCoco.js"></script>
+<script src="aiModelTracker.js"></script>
 <script src="robots.js"></script>
 <script src="robot.js"></script>
 <script src="app.js"></script>
