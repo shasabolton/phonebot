@@ -2,10 +2,40 @@ class Camera extends Sensor {
     constructor(config) {
         super({ type: "camera", ...config });
         this.name = config?.name || "Camera";
+        /** @type {"user" | "environment"} user = front, environment = back */
+        this._facingMode = "user";
         this._stream = null;
         this._videoEl = null;
         this._statusEl = null;
         this._startBtn = null;
+        this._frontBtn = null;
+        this._backBtn = null;
+    }
+
+    _syncFaceButtons() {
+        const isFront = this._facingMode === "user";
+        if (this._frontBtn) {
+            this._frontBtn.classList.toggle("active", isFront);
+            this._frontBtn.setAttribute("aria-pressed", isFront ? "true" : "false");
+        }
+        if (this._backBtn) {
+            this._backBtn.classList.toggle("active", !isFront);
+            this._backBtn.setAttribute("aria-pressed", !isFront ? "true" : "false");
+        }
+    }
+
+    /**
+     * @param {"user" | "environment"} facing
+     */
+    async setFacing(facing) {
+        if (facing !== "user" && facing !== "environment") return;
+        this._facingMode = facing;
+        this._syncFaceButtons();
+        if (this._stream) {
+            this.stop();
+            return this.start();
+        }
+        return true;
     }
 
     /**
@@ -24,10 +54,11 @@ class Camera extends Sensor {
             this._statusEl.textContent = "Starting camera…";
             this._statusEl.className = "muted";
         }
+        const facing = this._facingMode === "environment" ? "environment" : "user";
         try {
             try {
                 this._stream = await navigator.mediaDevices.getUserMedia({
-                    video: { facingMode: { ideal: "environment" } },
+                    video: { facingMode: { ideal: facing } },
                     audio: false
                 });
             } catch (_) {
@@ -83,6 +114,43 @@ class Camera extends Sensor {
         wrap.className = "sensor sensor-camera";
         const title = document.createElement("h4");
         title.textContent = this.name;
+
+        const faceRow = document.createElement("div");
+        faceRow.className = "sensor-camera-face-row";
+        const frontBtn = document.createElement("button");
+        frontBtn.type = "button";
+        frontBtn.className = "sensor-camera-face-btn";
+        frontBtn.textContent = "Front";
+        frontBtn.setAttribute("aria-pressed", "true");
+        const backBtn = document.createElement("button");
+        backBtn.type = "button";
+        backBtn.className = "sensor-camera-face-btn";
+        backBtn.textContent = "Back";
+        backBtn.setAttribute("aria-pressed", "false");
+        frontBtn.addEventListener("click", async () => {
+            if (this._facingMode === "user") return;
+            frontBtn.disabled = true;
+            backBtn.disabled = true;
+            await this.setFacing("user");
+            frontBtn.disabled = false;
+            backBtn.disabled = false;
+        });
+        backBtn.addEventListener("click", async () => {
+            if (this._facingMode === "environment") return;
+            frontBtn.disabled = true;
+            backBtn.disabled = true;
+            await this.setFacing("environment");
+            frontBtn.disabled = false;
+            backBtn.disabled = false;
+        });
+        faceRow.appendChild(frontBtn);
+        faceRow.appendChild(backBtn);
+        this._frontBtn = frontBtn;
+        this._backBtn = backBtn;
+        this._syncFaceButtons();
+
+        const frame = document.createElement("div");
+        frame.className = "sensor-camera-frame";
         const video = document.createElement("video");
         video.setAttribute("playsinline", "");
         video.setAttribute("webkit-playsinline", "");
@@ -90,6 +158,8 @@ class Camera extends Sensor {
         video.muted = true;
         video.playsInline = true;
         video.className = "sensor-camera-video";
+        frame.appendChild(video);
+
         const status = document.createElement("p");
         status.className = "muted sensor-camera-status";
         const startBtn = document.createElement("button");
@@ -98,12 +168,17 @@ class Camera extends Sensor {
         startBtn.textContent = "Start camera";
         startBtn.addEventListener("click", async () => {
             startBtn.disabled = true;
+            frontBtn.disabled = true;
+            backBtn.disabled = true;
             const ok = await this.start();
             startBtn.disabled = false;
+            frontBtn.disabled = false;
+            backBtn.disabled = false;
             if (!ok && this._startBtn) this._startBtn.style.display = "";
         });
         wrap.appendChild(title);
-        wrap.appendChild(video);
+        wrap.appendChild(faceRow);
+        wrap.appendChild(frame);
         wrap.appendChild(status);
         wrap.appendChild(startBtn);
         container.appendChild(wrap);
@@ -112,7 +187,6 @@ class Camera extends Sensor {
         this._statusEl = status;
         this._startBtn = startBtn;
 
-        // Mobile Chrome usually requires getUserMedia inside a tap; try silent start for desktop, then fall back to button.
         this.start().then((ok) => {
             if (!ok && this._startBtn) {
                 if (this._statusEl && !this._statusEl.textContent) {
