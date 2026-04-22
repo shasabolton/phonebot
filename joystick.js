@@ -50,6 +50,11 @@ class Joystick {
         this._setKnobNorm(nx, ny, false);
     }
 
+    home() {
+        this.inputX.setValue(this.inputX.home);
+        this.inputY.setValue(this.inputY.home);
+    }
+
     _setKnobNorm(nx, ny, writeInputs) {
         const clampedX = Math.min(1, Math.max(-1, nx));
         const clampedY = Math.min(1, Math.max(-1, ny));
@@ -116,6 +121,7 @@ class Joystick {
         const onPointerUp = (e) => {
             if (!this._dragging) return;
             this._dragging = false;
+            this.home();
             try {
                 pad.releasePointerCapture(e.pointerId);
             } catch (_) {

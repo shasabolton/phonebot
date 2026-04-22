@@ -11,6 +11,7 @@ class App {
         this.transmitterGuiMount = null;
         this.transmitterInstance = null;
         this.startBtn = null;
+        this.stopBtn = null;
         this.loopIntervalId = null;
         this.controlStatusEl = null;
         this.actionTick = 0;
@@ -69,6 +70,14 @@ class App {
         const transmitterReady = !!(this.transmitterInstance && this.transmitterInstance.isReady && this.transmitterInstance.isReady());
         const hasRobot = !!this.robot;
         this.startBtn.disabled = !(transmitterReady && hasRobot);
+        if (this.stopBtn) this.stopBtn.disabled = !this.loopIntervalId;
+    }
+
+    onStop() {
+        this.stopLoop();
+        if (this.startBtn) this.startBtn.textContent = 'Start';
+        this.setControlStatus('Stopped. You can switch device/transmitter.', 'muted');
+        this.updateStartButtonState();
     }
 
     async onStart() {
@@ -91,6 +100,7 @@ class App {
             this.startLoop();
             this.startBtn.textContent = 'Running';
             this.setControlStatus(`Pin setup complete: ${setupRes.body || 'OK'}`, 'ok');
+            this.updateStartButtonState();
         } catch (err) {
             console.error('Failed to start robot loop', err);
             this.startBtn.textContent = 'Start';
@@ -101,6 +111,7 @@ class App {
 
     onTransmitterSelect() {
         this.stopLoop();
+        if (this.stopBtn) this.stopBtn.disabled = true;
         if (!this.transmitterGuiMount || !this.transmitterListEl) return;
         this.transmitterGuiMount.innerHTML = '';
         this.transmitterInstance = null;
@@ -117,6 +128,7 @@ class App {
  
     onRobotSelect() {
         this.stopLoop();
+        if (this.stopBtn) this.stopBtn.disabled = true;
         if (this.startBtn) this.startBtn.textContent = 'Start';
         if (!this.robotListEl || !this.robotsData?.robots) return;
         const idx = Number(this.robotListEl.value);
@@ -171,6 +183,13 @@ class App {
         startBtn.addEventListener('click', () => this.onStart());
         this.startBtn = startBtn;
 
+        const stopBtn = document.createElement('button');
+        stopBtn.type = 'button';
+        stopBtn.textContent = 'Stop';
+        stopBtn.disabled = true;
+        stopBtn.addEventListener('click', () => this.onStop());
+        this.stopBtn = stopBtn;
+
         const controlStatus = document.createElement('p');
         controlStatus.className = 'muted';
         controlStatus.textContent = 'Select robot and transmitter.';
@@ -182,6 +201,7 @@ class App {
         root.appendChild(robotLabel);
         root.appendChild(select);
         root.appendChild(startBtn);
+        root.appendChild(stopBtn);
         root.appendChild(controlStatus);
         root.appendChild(mount);
 

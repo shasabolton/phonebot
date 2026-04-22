@@ -145,6 +145,7 @@ class WifiTransmitter {
 </div>
 
 <div id="status" class="box">Checking robot connection...</div>
+<button type="button" id="wifiDisconnectBtn" style="display:none;">Disconnect / Switch Device</button>
 
 <div id="firmwarePanel" class="box">
   <h3>Firmware</h3>
@@ -183,6 +184,8 @@ class WifiTransmitter {
   }
 
   _bindControls() {
+    const disc = this.el("wifiDisconnectBtn");
+    if (disc) disc.addEventListener("click", () => this.disconnect());
     const fw = this.el("firmwareBtn");
     if (fw) fw.addEventListener("click", () => this.uploadFirmware());
     const nl = this.el("networkList");
@@ -365,6 +368,21 @@ class WifiTransmitter {
         btn.style.display = "none";
       }
       if (vi) vi.innerHTML = "";
+    }
+  }
+
+  disconnect() {
+    this.robotStaBaseUrl = null;
+    this.setReady(false);
+    this.setFirmwarePanelVisible(false);
+    const wifiSetup = this.el("wifiSetup");
+    const status = this.el("status");
+    const btn = this.el("wifiDisconnectBtn");
+    if (wifiSetup) wifiSetup.style.display = "none";
+    if (btn) btn.style.display = "none";
+    if (status) {
+      status.innerHTML =
+        "<span class='muted'>Disconnected. Select a saved robot and click Check connection, or connect to another robot AP.</span>";
     }
   }
 
@@ -572,6 +590,8 @@ class WifiTransmitter {
       this.robotStaBaseUrl = base;
       this.setReady(true);
       this.setFirmwarePanelVisible(true);
+      const switchBtn = this.el("wifiDisconnectBtn");
+      if (switchBtn) switchBtn.style.display = "block";
       const robots = loadRobots();
       const match = robots.find(
         (r) =>
@@ -603,6 +623,8 @@ class WifiTransmitter {
     this.robotStaBaseUrl = null;
     this.setReady(false);
     this.setFirmwarePanelVisible(false);
+    const switchBtn = this.el("wifiDisconnectBtn");
+    if (switchBtn) switchBtn.style.display = "none";
 
     if (apOk) {
       status.innerHTML = "<span class='warn'>Connected to robot access point.</span>";
