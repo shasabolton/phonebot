@@ -42,7 +42,8 @@ window.ROBOTS_DATA = {
                     y: "speed"
                 }
             ],
-            sensors: [],
+            sensors: ["camera"],
+            aiModels:["openCv"],
             targets: [],
             pidControllers: [],
             transmitter: "wifi"

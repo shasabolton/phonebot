@@ -19,6 +19,12 @@ class Robot {
         this.buildGUI();
     }
 
+    destroy() {
+        this.teardownJoysticks();
+        this.teardownInputMixSubscriptions();
+        this.teardownSensors();
+    }
+
     step() {
         // get target error, apply feedback control, set inputs
     }
@@ -29,6 +35,7 @@ class Robot {
         });
         this.buildInputs(this.config.inputs || {});
         this.buildJoysticks(this.config.joysticks || []);
+        this.buildSensors(this.config.sensors || []);
         this.buildActuatorMixing();
     }
 
@@ -63,6 +70,32 @@ class Robot {
             if (typeof j.destroy === "function") j.destroy();
         }
         this.joysticks = [];
+    }
+
+    buildSensors(sensorConfigs) {
+        this.teardownSensors();
+        for (const item of sensorConfigs) {
+            const cfg =
+                typeof item === "string"
+                    ? { type: item, name: item }
+                    : { ...item, type: item.type || "sensor" };
+            try {
+                if (cfg.type === "camera") {
+                    this.sensors.push(new Camera(cfg));
+                } else {
+                    this.sensors.push(new Sensor(cfg));
+                }
+            } catch (err) {
+                console.error("Sensor build failed:", err);
+            }
+        }
+    }
+
+    teardownSensors() {
+        for (const s of this.sensors) {
+            if (typeof s.destroy === "function") s.destroy();
+        }
+        this.sensors = [];
     }
 
     getInputValues() {
@@ -155,6 +188,15 @@ class Robot {
         const title = document.createElement('h3');
         title.textContent = this.name || 'Robot';
         this.container.appendChild(title);
+
+        const sensorsDiv = document.createElement('div');
+        sensorsDiv.className = 'robot-sensors';
+        for (const sensor of this.sensors) {
+            if (typeof sensor.buildGUI === 'function') {
+                sensor.buildGUI(sensorsDiv);
+            }
+        }
+        this.container.appendChild(sensorsDiv);
 
         const inputsDiv = document.createElement('div');
         inputsDiv.className = 'robot-inputs';

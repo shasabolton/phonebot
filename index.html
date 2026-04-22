@@ -62,6 +62,20 @@
       transform: translate(-50%, -50%);
       pointer-events: none;
     }
+    .robot-sensors {
+      margin-top: 10px;
+    }
+    .sensor-camera-video {
+      width: 100%;
+      max-height: 240px;
+      background: #000;
+      border-radius: 6px;
+      object-fit: cover;
+    }
+    .sensor-camera-status {
+      margin: 6px 0 0 0;
+      font-size: 0.9em;
+    }
   </style>
 </head>
 
@@ -75,6 +89,8 @@
 <script src="servo.js"></script>
 <script src="input.js"></script>
 <script src="joystick.js"></script>
+<script src="sensors.js"></script>
+<script src="camera.js"></script>
 <script src="robots.js"></script>
 <script src="robot.js"></script>
 <script src="app.js"></script>

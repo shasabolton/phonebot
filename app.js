@@ -20,6 +20,9 @@ class App {
 
     setRobot(robotConfig) {
         if (!this.robotGuiMount) return;
+        if (this.robot && typeof this.robot.destroy === 'function') {
+            this.robot.destroy();
+        }
         this.robotGuiMount.innerHTML = '';
         this.robot = new Robot(this.robotGuiMount, robotConfig);
         this.updateStartButtonState();
