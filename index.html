@@ -2,6 +2,7 @@
 <html>
 <head>
   <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Robot WiFi Setup</title>
   <style>
     body {
@@ -69,10 +70,21 @@
       display: flex;
       gap: 8px;
       margin: 8px 0;
+      position: sticky;
+      top: 0;
+      z-index: 6;
+      background: #fff;
+      padding: 6px 0;
+      box-shadow: 0 1px 0 rgba(0, 0, 0, 0.08);
     }
+    /* Global button { width: 100% } breaks two-up layout on mobile; override here */
     .sensor-camera-face-row button {
-      flex: 1;
+      flex: 1 1 0;
+      min-width: 0;
+      width: auto;
+      max-width: none;
       margin-top: 0;
+      box-sizing: border-box;
     }
     .sensor-camera-face-btn.active {
       box-shadow: inset 0 0 0 2px #333;
