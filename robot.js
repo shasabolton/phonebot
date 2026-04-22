@@ -5,31 +5,31 @@ class Robot {
         this.name = this.config?.name;
         this.actuators = [];
         this.inputs = {};
-        this.mixers = [];
+        this.joysticks = [];
+        this.actuatorMixes = [];
+        this.inputUnsubscribes = [];
         this.sensors = [];
         this.targets = [];
         this.pidControllers = [];
         this.transmitter;
-        //pid contolers read targets and sensors and modify mixers. Mixers modify actuators.
-        //actuator have their own sliders. Mixers sliders overide actuator sliders.
-        
+        // PID controllers read targets and sensors and may set inputs. Mix functions map inputs to actuators.
+        // Actuators have their own sliders; mixing updates angles when inputs change.
+
         this.buildRobot();
         this.buildGUI();
     }
 
-    step(){
-        //get target error
-        //apply  feedback controll
-        //set mixers
-        
+    step() {
+        // get target error, apply feedback control, set inputs
     }
 
-    buildRobot(){
+    buildRobot() {
         (this.config.actuators || []).forEach(config => {
             this.addActuator(config);
         });
         this.buildInputs(this.config.inputs || {});
-        this.buildMixers(this.config.mixers || []);
+        this.buildJoysticks(this.config.joysticks || []);
+        this.buildActuatorMixing();
     }
 
     buildInputs(inputConfig) {
@@ -47,21 +47,67 @@ class Robot {
         }
     }
 
-    buildMixers(mixerConfigList) {
-        this.mixers = [];
-        for (const mixerConfig of mixerConfigList) {
-            const resolvedInputs = (mixerConfig.inputs || [])
-                .map((inputName) => this.inputs[inputName])
-                .filter(Boolean);
-            const resolvedOutputs = (mixerConfig.outputs || [])
-                .map((outputIdx) => this.actuators[outputIdx])
-                .filter(Boolean);
-            this.mixers.push(new Mixer({
-                ...mixerConfig,
-                inputs: resolvedInputs,
-                outputs: resolvedOutputs
-            }));
+    buildJoysticks(joystickConfigs) {
+        this.teardownJoysticks();
+        for (const cfg of joystickConfigs) {
+            try {
+                this.joysticks.push(new Joystick(this, cfg));
+            } catch (err) {
+                console.error("Joystick build failed:", err);
+            }
         }
+    }
+
+    teardownJoysticks() {
+        for (const j of this.joysticks) {
+            if (typeof j.destroy === "function") j.destroy();
+        }
+        this.joysticks = [];
+    }
+
+    getInputValues() {
+        const values = {};
+        for (const [name, input] of Object.entries(this.inputs)) {
+            values[name] = input.getValue();
+        }
+        return values;
+    }
+
+    applyMixing() {
+        if (!this.actuatorMixes.length) return;
+        const ctx = { inputs: this.getInputValues(), robot: this };
+        for (const { servo, mix } of this.actuatorMixes) {
+            const angle = mix(ctx);
+            if (Number.isFinite(angle)) {
+                servo.setAngle(angle);
+            }
+        }
+    }
+
+    buildActuatorMixing() {
+        this.teardownInputMixSubscriptions();
+        this.actuatorMixes = [];
+        const actuatorConfigs = this.config.actuators || [];
+        for (let i = 0; i < actuatorConfigs.length; i++) {
+            const cfg = actuatorConfigs[i];
+            const servo = this.actuators[i];
+            if (typeof cfg?.mix === 'function' && servo) {
+                this.actuatorMixes.push({ servo, mix: cfg.mix });
+            }
+        }
+        if (!this.actuatorMixes.length) return;
+        const onInputChange = () => this.applyMixing();
+        for (const input of Object.values(this.inputs)) {
+            this.inputUnsubscribes.push(input.onChange(onInputChange));
+        }
+        this.applyMixing();
+    }
+
+    teardownInputMixSubscriptions() {
+        for (const unsub of this.inputUnsubscribes) {
+            unsub();
+        }
+        this.inputUnsubscribes = [];
     }
 
     setInput(name, value) {
@@ -81,7 +127,7 @@ class Robot {
         }
     }
 
-    buildActionsMessage(){
+    buildActionsMessage() {
         const parts = [];
         for (const actuator of this.actuators) {
             if (actuator.type === "servo") {
@@ -91,7 +137,7 @@ class Robot {
         return parts.join(",");
     }
 
-    buildPinSetupMessage(){
+    buildPinSetupMessage() {
         const parts = [];
         for (const actuator of this.actuators) {
             if (actuator.type === "servo") {
@@ -112,6 +158,11 @@ class Robot {
 
         const inputsDiv = document.createElement('div');
         inputsDiv.className = 'robot-inputs';
+        for (const joystick of this.joysticks) {
+            if (joystick.gui) {
+                inputsDiv.appendChild(joystick.gui);
+            }
+        }
         for (const input of Object.values(this.inputs)) {
             if (input.gui) {
                 inputsDiv.appendChild(input.gui);

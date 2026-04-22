@@ -189,27 +189,25 @@ class App {
         txSelect.value = 'wifi';
         this.onTransmitterSelect();
 
-        fetch('robots.json')
-            .then((r) => r.json())
-            .then((data) => {
-                this.robotsData = data;
-                (data.robots || []).forEach((robot, i) => {
-                    const opt = document.createElement('option');
-                    opt.value = String(i);
-                    opt.textContent = robot.name || `Robot ${i}`;
-                    select.appendChild(opt);
-                });
-                select.addEventListener('change', () => this.onRobotSelect());
-                this.onRobotSelect();
-                this.updateStartButtonState();
-            })
-            .catch((err) => {
-                console.error('Failed to load robots.json', err);
-                const p = document.createElement('p');
-                p.className = 'error';
-                p.textContent = 'Could not load robots.json.';
-                root.appendChild(p);
+        const data = window.ROBOTS_DATA;
+        if (!data?.robots?.length) {
+            console.error('window.ROBOTS_DATA is missing or empty (load robots.js before app.js).');
+            const p = document.createElement('p');
+            p.className = 'error';
+            p.textContent = 'Could not load robot definitions.';
+            root.appendChild(p);
+        } else {
+            this.robotsData = data;
+            data.robots.forEach((robot, i) => {
+                const opt = document.createElement('option');
+                opt.value = String(i);
+                opt.textContent = robot.name || `Robot ${i}`;
+                select.appendChild(opt);
             });
+            select.addEventListener('change', () => this.onRobotSelect());
+            this.onRobotSelect();
+            this.updateStartButtonState();
+        }
     }
 }
 
