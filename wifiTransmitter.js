@@ -584,14 +584,31 @@ class WifiTransmitter {
     ]);
     const staOk = staResults.some(Boolean);
 
+    // Clear station state before branching. If the phone is on the robot SoftAP,
+    // pings to a saved STA URL can still succeed (AP+STA). Prefer AP UI so
+    // credential inputs always show when joined to the robot AP.
+    this.robotStaBaseUrl = null;
+    this.setReady(false);
+    this.setFirmwarePanelVisible(false);
+    const switchBtn = this.el("wifiDisconnectBtn");
+    if (switchBtn) switchBtn.style.display = "none";
+
+    if (apOk) {
+      status.innerHTML = "<span class='warn'>Connected to robot access point.</span>";
+      wifiSetup.style.display = "block";
+      await this.fetchRobotIdentityFromAp();
+      this.scanNetworks();
+      return;
+    }
+
     if (staOk) {
       const idx = staResults.findIndex(Boolean);
       const base = staTargets[idx];
       this.robotStaBaseUrl = base;
       this.setReady(true);
       this.setFirmwarePanelVisible(true);
-      const switchBtn = this.el("wifiDisconnectBtn");
-      if (switchBtn) switchBtn.style.display = "block";
+      const switchBtnSta = this.el("wifiDisconnectBtn");
+      if (switchBtnSta) switchBtnSta.style.display = "block";
       const robots = loadRobots();
       const match = robots.find(
         (r) =>
@@ -617,20 +634,6 @@ class WifiTransmitter {
           "<span class='ok'>Robot is connected to your WiFi (station mode).</span>";
       }
       await this.checkFirmwareVersion(base);
-      return;
-    }
-
-    this.robotStaBaseUrl = null;
-    this.setReady(false);
-    this.setFirmwarePanelVisible(false);
-    const switchBtn = this.el("wifiDisconnectBtn");
-    if (switchBtn) switchBtn.style.display = "none";
-
-    if (apOk) {
-      status.innerHTML = "<span class='warn'>Connected to robot access point.</span>";
-      wifiSetup.style.display = "block";
-      await this.fetchRobotIdentityFromAp();
-      this.scanNetworks();
       return;
     }
 
