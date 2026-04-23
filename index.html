@@ -154,10 +154,21 @@
       overflow: auto;
       font-size: 12px;
     }
+    .app-build-banner {
+      font-size: 0.85em;
+      color: #555;
+      text-align: right;
+      margin: 0 auto 8px auto;
+      max-width: 500px;
+      padding: 4px 2px;
+      border-bottom: 1px solid #e0e0e0;
+    }
   </style>
 </head>
 
 <body>
+
+<div id="appBuildBanner" class="app-build-banner muted">appBuildVersion: …</div>
 
 <h2>Robot Connection Setup</h2>
 
@@ -176,6 +187,27 @@
 <script src="robots.js"></script>
 <script src="robot.js"></script>
 <script src="app.js"></script>
+<script>
+(function () {
+  var el = document.getElementById("appBuildBanner");
+  if (!el) return;
+  el.textContent = "appBuildVersion: loading…";
+  var u = new URL("version.json", window.location.href).href;
+  fetch(u, { cache: "no-store" })
+    .then(function (r) {
+      if (!r.ok) throw new Error(String(r.status));
+      return r.json();
+    })
+    .then(function (j) {
+      el.textContent =
+        "appBuildVersion: " +
+        (j.appBuildVersion != null ? String(j.appBuildVersion) : "(missing in version.json)");
+    })
+    .catch(function () {
+      el.textContent = "appBuildVersion: (could not load version.json)";
+    });
+})();
+</script>
 
 </body>
 </html>

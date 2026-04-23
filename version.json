@@ -1,1 +1,4 @@
-{"fwVersion":"1.1.1"}
+{
+  "fwVersion": "1.1.1",
+  "appBuildVersion": "1"
+}
