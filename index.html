@@ -90,8 +90,11 @@
       box-shadow: inset 0 0 0 2px #333;
       font-weight: bold;
     }
+    /* Shrink-wrap to the actual video aspect (e.g. portrait phone in landscape laptop). */
     .sensor-camera-frame {
-      width: 100%;
+      width: fit-content;
+      max-width: 100%;
+      margin: 0 auto;
       background: #000;
       border-radius: 6px;
       overflow: hidden;
@@ -99,12 +102,12 @@
       position: relative;
     }
     .sensor-camera-video {
-      width: 100%;
-      height: auto;
-      max-height: none;
-      vertical-align: top;
-      object-fit: contain;
       display: block;
+      width: auto;
+      height: auto;
+      max-width: 100%;
+      max-height: 70vh;
+      object-fit: contain;
     }
     .sensor-camera-status {
       margin: 6px 0 0 0;
@@ -168,6 +171,8 @@
 <script src="camera.js"></script>
 <script src="aiModelCoco.js"></script>
 <script src="aiModelTracker.js"></script>
+<script src="tracker.js"></script>
+<script src="pid.js"></script>
 <script src="robots.js"></script>
 <script src="robot.js"></script>
 <script src="app.js"></script>

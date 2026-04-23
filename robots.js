@@ -43,9 +43,32 @@ window.ROBOTS_DATA = {
                 }
             ],
             sensors: ["camera"],
-            aiModels: [{ type: "tracker", frequencyHz: 10 }],
+            aiModels: [{ type: "coco", frequencyHz: 10 }],
             targets: [],
-            pidControllers: [],
+            trackers: [
+                {
+                    name: "cocoTracker",
+                    dataFeed: "coco",
+                    filters: ["cup"],
+                    minScore: 0.4,
+                    strategy: "largest",
+                    outputRange: "minusOneToOne",
+                    invertX: false,
+                    frequencyHz: "dataFeed"
+                }
+            ],
+            pidControllers: [
+                {
+                    name: "direction object tracker PID",
+                    feedback: "cocoTracker.result.output.x",
+                    input: "direction",
+                    goal: 0,
+                    kp: -0.6,
+                    ki: 0.0,
+                    kd: -0.05,
+                    frequencyHz: "feedback"
+                }
+            ],
             transmitter: "wifi"
         }
     ]

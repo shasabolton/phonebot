@@ -15,6 +15,8 @@ class CocoAiModel {
         this._overlayCanvas = null;
         this._overlayCtx = null;
         this._detections = [];
+        this._frameWidth = 0;
+        this._frameHeight = 0;
         this._toggleBtn = null;
         this._freqInput = null;
         this._statusEl = null;
@@ -161,6 +163,8 @@ class CocoAiModel {
         try {
             const model = await CocoAiModel._loadModel();
             this._ensureOverlay();
+            this._frameWidth = videoEl.videoWidth || 0;
+            this._frameHeight = videoEl.videoHeight || 0;
             const detections = await model.detect(videoEl);
             this._detections = Array.isArray(detections) ? detections : [];
             this._drawDetections(videoEl, this._detections);
@@ -231,6 +235,22 @@ class CocoAiModel {
         this.frequencyHz = Math.max(0.2, Math.min(10, parsed));
         if (this._freqInput) this._freqInput.value = String(this.frequencyHz);
         if (this.enabled) this._startLoop();
+    }
+
+    getFrequencyHz() {
+        return this.frequencyHz;
+    }
+
+    getLatestDetections() {
+        return this._detections.map((item) => ({
+            class: item.class,
+            score: item.score,
+            bbox: Array.isArray(item.bbox) ? [...item.bbox] : [0, 0, 0, 0]
+        }));
+    }
+
+    getFrameSize() {
+        return { width: this._frameWidth, height: this._frameHeight };
     }
 
     buildGUI(container) {

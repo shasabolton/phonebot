@@ -10,9 +10,13 @@ class Robot {
         this.inputUnsubscribes = [];
         this.sensors = [];
         this.aiModels = [];
+        this.trackers = [];
         this.targets = [];
         this.pidControllers = [];
         this.transmitter;
+        this.mode = "track";
+        this.deciders = [];
+        //if mode === track, if trackcoods!= null it means open cv has found the trackTarget.
         // PID controllers read targets and sensors and may set inputs. Mix functions map inputs to actuators.
         // Actuators have their own sliders; mixing updates angles when inputs change.
 
@@ -25,6 +29,8 @@ class Robot {
         this.teardownInputMixSubscriptions();
         this.teardownSensors();
         this.teardownAiModels();
+        this.teardownTrackers();
+        this.teardownPidControllers();
     }
 
     step() {
@@ -39,6 +45,8 @@ class Robot {
         this.buildJoysticks(this.config.joysticks || []);
         this.buildSensors(this.config.sensors || []);
         this.buildAiModels(this.config.aiModels || []);
+        this.buildTrackers(this.config.trackers || []);
+        this.buildPidControllers(this.config.pidControllers || []);
         this.buildActuatorMixing();
     }
 
@@ -133,6 +141,67 @@ class Robot {
             if (typeof model.destroy === "function") model.destroy();
         }
         this.aiModels = [];
+    }
+
+    buildTrackers(trackerConfigs) {
+        this.teardownTrackers();
+        for (const item of trackerConfigs || []) {
+            const cfg = typeof item === "string" ? { name: item } : { ...item };
+            try {
+                if (typeof window.Tracker !== "function") {
+                    throw new Error("Tracker class is unavailable. Check tracker.js loading.");
+                }
+                const tracker = new window.Tracker(this, cfg.name, cfg);
+                this.trackers.push(tracker);
+            } catch (err) {
+                console.error("Tracker build failed:", err);
+            }
+        }
+    }
+
+    teardownTrackers() {
+        for (const tracker of this.trackers) {
+            if (typeof tracker.destroy === "function") tracker.destroy();
+        }
+        this.trackers = [];
+    }
+
+    buildPidControllers(pidConfigs) {
+        this.teardownPidControllers();
+        for (const item of pidConfigs || []) {
+            const cfg = typeof item === "string" ? { name: item } : { ...item };
+            try {
+                if (typeof window.PID !== "function") {
+                    throw new Error("PID class is unavailable. Check pid.js loading.");
+                }
+                const pid = new window.PID(this, cfg.name, cfg);
+                this.pidControllers.push(pid);
+            } catch (err) {
+                console.error("PID build failed:", err);
+            }
+        }
+    }
+
+    teardownPidControllers() {
+        for (const pid of this.pidControllers) {
+            if (typeof pid.destroy === "function") pid.destroy();
+        }
+        this.pidControllers = [];
+    }
+
+    getAiModelByType(type) {
+        const key = String(type || "").trim().toLowerCase();
+        return this.aiModels.find((model) => String(model?.type || "").toLowerCase() === key) || null;
+    }
+
+    getAiModelByName(name) {
+        const key = String(name || "").trim().toLowerCase();
+        return this.aiModels.find((model) => String(model?.name || "").toLowerCase() === key) || null;
+    }
+
+    getTrackerByName(name) {
+        const key = String(name || "").trim().toLowerCase();
+        return this.trackers.find((tracker) => String(tracker?.name || "").toLowerCase() === key) || null;
     }
 
     getInputValues() {
@@ -255,6 +324,42 @@ class Robot {
             aiModelsDiv.appendChild(none);
         }
         this.container.appendChild(aiModelsDiv);
+
+        const trackersDiv = document.createElement('div');
+        trackersDiv.className = 'robot-trackers';
+        const trackersTitle = document.createElement('h4');
+        trackersTitle.textContent = 'Trackers';
+        trackersDiv.appendChild(trackersTitle);
+        for (const tracker of this.trackers) {
+            if (typeof tracker.buildGUI === 'function') {
+                tracker.buildGUI(trackersDiv);
+            }
+        }
+        if (!this.trackers.length) {
+            const none = document.createElement('p');
+            none.className = 'muted';
+            none.textContent = 'No trackers configured for this robot.';
+            trackersDiv.appendChild(none);
+        }
+        this.container.appendChild(trackersDiv);
+
+        const pidDiv = document.createElement('div');
+        pidDiv.className = 'robot-pid';
+        const pidTitle = document.createElement('h4');
+        pidTitle.textContent = 'PID Controllers';
+        pidDiv.appendChild(pidTitle);
+        for (const pid of this.pidControllers) {
+            if (typeof pid.buildGUI === 'function') {
+                pid.buildGUI(pidDiv);
+            }
+        }
+        if (!this.pidControllers.length) {
+            const none = document.createElement('p');
+            none.className = 'muted';
+            none.textContent = 'No PID controllers configured for this robot.';
+            pidDiv.appendChild(none);
+        }
+        this.container.appendChild(pidDiv);
 
         const inputsDiv = document.createElement('div');
         inputsDiv.className = 'robot-inputs';
