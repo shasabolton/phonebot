@@ -140,6 +140,7 @@ class WifiTransmitter {
 <div id="robotPicker" class="box" style="display:none;">
   <label for="knownRobotSelect"><b>Known robots</b> (on your home / hotspot WiFi)</label>
   <select id="knownRobotSelect"></select>
+  <div id="knownRobotStoredIp" class="muted" style="margin-top:6px;word-break:break-all;"></div>
   <p class="muted">Pick a robot, then check connection after you switch your computer to the same WiFi.</p>
   <button type="button" data-action="detect-mode">Check connection</button>
 </div>
@@ -188,6 +189,8 @@ class WifiTransmitter {
     if (disc) disc.addEventListener("click", () => this.disconnect());
     const fw = this.el("firmwareBtn");
     if (fw) fw.addEventListener("click", () => this.uploadFirmware());
+    const known = this.el("knownRobotSelect");
+    if (known) known.addEventListener("change", () => this.updateKnownRobotStoredIpHint());
     const nl = this.el("networkList");
     if (nl) nl.addEventListener("change", () => this.onNetworkSelected());
     const scan = this.el("wifiScanNetworksBtn");
@@ -216,6 +219,30 @@ class WifiTransmitter {
     this.refreshRobotPicker();
   }
 
+  updateKnownRobotStoredIpHint() {
+    const hint = this.el("knownRobotStoredIp");
+    const sel = this.el("knownRobotSelect");
+    if (!hint || !sel) return;
+    const robots = loadRobots();
+    if (robots.length === 0) {
+      hint.textContent = "";
+      return;
+    }
+    const id = sel.value;
+    if (!id) {
+      hint.textContent =
+        "Stored IPs on this device: " +
+        robots
+          .map((r) => (r.hostname || r.chipId) + " → " + (r.lastIp || "(none)"))
+          .join(" · ");
+      return;
+    }
+    const r = robots.find((x) => x.chipId === id);
+    hint.textContent = r
+      ? "Stored IP on this device: " + (r.lastIp || "(none)")
+      : "";
+  }
+
   refreshRobotPicker() {
     const wrap = this.el("robotPicker");
     const sel = this.el("knownRobotSelect");
@@ -224,6 +251,8 @@ class WifiTransmitter {
     if (robots.length === 0) {
       wrap.style.display = "none";
       sel.innerHTML = "";
+      const hint = this.el("knownRobotStoredIp");
+      if (hint) hint.textContent = "";
       return;
     }
     wrap.style.display = "block";
@@ -231,18 +260,22 @@ class WifiTransmitter {
     const allOpt = document.createElement("option");
     allOpt.value = "";
     allOpt.textContent = "(All saved — try each)";
+    allOpt.title = "Try every saved robot; see stored IPs below.";
     sel.appendChild(allOpt);
 
     robots.forEach((r) => {
       const opt = document.createElement("option");
       opt.value = r.chipId;
+      const ipPart = r.lastIp ? r.lastIp : "(no IP saved)";
       let label = r.hostname
         ? r.hostname + (r.apSsid ? " (" + r.apSsid + ")" : "")
         : r.apSsid || r.chipId;
-      label += " — " + (r.lastIp ? r.lastIp : "(no IP saved)");
+      label += " — " + ipPart;
       opt.textContent = label;
+      opt.title = label;
       sel.appendChild(opt);
     });
+    this.updateKnownRobotStoredIpHint();
   }
 
   async fetchRobotIdentityFromAp() {
