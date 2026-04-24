@@ -236,9 +236,10 @@ class WifiTransmitter {
     robots.forEach((r) => {
       const opt = document.createElement("option");
       opt.value = r.chipId;
-      const label = r.hostname
+      let label = r.hostname
         ? r.hostname + (r.apSsid ? " (" + r.apSsid + ")" : "")
         : r.apSsid || r.chipId;
+      label += " — " + (r.lastIp ? r.lastIp : "(no IP saved)");
       opt.textContent = label;
       sel.appendChild(opt);
     });
