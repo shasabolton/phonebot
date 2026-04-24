@@ -17,22 +17,22 @@ window.ROBOTS_DATA = {
                     name: "left wheel",
                     pin: 4,
                     homeMicroseconds: 1500,
-                    minMicroseconds : 1000,
+                    minMicroseconds: 1000,
                     maxMicroseconds: 2000,
                     deadbandMicrosecondsMin: 1450,
                     deadbandMicrosecondsMax: 1550,
-                    mix: ({ inputs }) => (-inputs.speed + inputs.direction) * 1000 + 1000
+                    mix: ({ inputs }) => (-inputs.speed + inputs.direction) * 500 + 1500
                 },
                 {
                     type: "servo",
                     name: "right wheel",
                     pin: 5,
-                    homeAngle: 90,
-                    minAngle: 0,
-                    maxAngle: 180,
-                    deadbandMin: 85,
-                    deadbandMax: 95,
-                    mix: ({ inputs }) => (+inputs.speed + inputs.direction) * 90 + 90
+                    homeMicroseconds: 1500,
+                    minMicroseconds: 1000,
+                    maxMicroseconds: 2000,
+                    deadbandMicrosecondsMin: 1450,
+                    deadbandMicrosecondsMax: 1550,
+                    mix: ({ inputs }) => (+inputs.speed + inputs.direction) * 500 + 1500
                 }
             ],
             inputs: {

@@ -216,9 +216,9 @@ class Robot {
         if (!this.actuatorMixes.length) return;
         const ctx = { inputs: this.getInputValues(), robot: this };
         for (const { servo, mix } of this.actuatorMixes) {
-            const angle = mix(ctx);
-            if (Number.isFinite(angle)) {
-                servo.setAngle(angle);
+            const us = mix(ctx);
+            if (Number.isFinite(us)) {
+                servo.setMicroseconds(us);
             }
         }
     }
@@ -259,7 +259,7 @@ class Robot {
     addActuator(config) {
         switch (config.type) {
             case "servo":
-                this.actuators.push(new Servo(config.name, config.pin, config.homeAngle, config.minAngle, config.maxAngle));
+                this.actuators.push(new Servo(config));
                 break;
             default:
                 throw new Error(`Unknown actuator type: ${config.type}`);
