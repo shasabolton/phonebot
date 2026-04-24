@@ -19,8 +19,8 @@ window.ROBOTS_DATA = {
                     homeMicroseconds: 1500,
                     minMicroseconds: 1000,
                     maxMicroseconds: 2000,
-                    deadbandMicrosecondsMin: 1450,
-                    deadbandMicrosecondsMax: 1550,
+                    deadbandMicrosecondsMin: 1500,
+                    deadbandMicrosecondsMax: 1500,
                     mix: ({ inputs }) => (-inputs.speed + inputs.direction) * 500 + 1500
                 },
                 {
@@ -30,8 +30,8 @@ window.ROBOTS_DATA = {
                     homeMicroseconds: 1500,
                     minMicroseconds: 1000,
                     maxMicroseconds: 2000,
-                    deadbandMicrosecondsMin: 1450,
-                    deadbandMicrosecondsMax: 1550,
+                    deadbandMicrosecondsMin: 1480,
+                    deadbandMicrosecondsMax: 1520,
                     mix: ({ inputs }) => (+inputs.speed + inputs.direction) * 500 + 1500
                 }
             ],

@@ -51,6 +51,9 @@ class Servo {
         }
 
         this.microseconds = this.homeMicroseconds;
+        this._deadbandHintEl = null;
+        this._dbMinInput = null;
+        this._dbMaxInput = null;
         this.gui = this.makeGui();
     }
 
@@ -69,20 +72,22 @@ class Servo {
     }
 
     /**
-     * Stretch deviation from home so the full [min,max] command range maps linearly around home
-     * while the firmware deadband width D is "absorbed" into gain: scale (x - home) by R/(R-D).
-     * Continuous (no snapping). Output is clamped to [min,max].
+     * Crop (lo, hi) from the output range: map [min, deadbandCenter] → [min, lo] and (deadbandCenter, max] → (hi, max] linearly.
      * @param {number} us already clamped to [minMicroseconds, maxMicroseconds]
      */
     _applyDeadbandStretch(us) {
         if (this.deadbandMicrosecondsMin == null || this.deadbandMicrosecondsMax == null) return us;
         const lo = this.deadbandMicrosecondsMin;
         const hi = this.deadbandMicrosecondsMax;
-        const deadbandCenter = (lo+hi)/2;
+        const deadbandCenter = (lo + hi) / 2;
         const min = this.minMicroseconds;
         const max = this.maxMicroseconds;
-        if(us<=deadbandCenter){us = min + (lo-min)/(deadbandCenter-min)*(us-min);}
-        else{us = hi + (max-hi)/(max-deadbandCenter)*(us-deadbandCenter);}
+        if (deadbandCenter <= min || deadbandCenter >= max) return Servo._clampInt(us, min, max);
+        if (us <= deadbandCenter) {
+            us = min + ((lo - min) / (deadbandCenter - min)) * (us - min);
+        } else {
+            us = hi + ((max - hi) / (max - deadbandCenter)) * (us - deadbandCenter);
+        }
         return Servo._clampInt(us, this.minMicroseconds, this.maxMicroseconds);
     }
 
@@ -116,26 +121,84 @@ class Servo {
         return this.maxMicroseconds;
     }
 
+    _updateDeadbandHint() {
+        if (!this._deadbandHintEl) return;
+        if (
+            this.deadbandMicrosecondsMin != null &&
+            this.deadbandMicrosecondsMax != null &&
+            this.deadbandMicrosecondsMin < this.deadbandMicrosecondsMax
+        ) {
+            this._deadbandHintEl.textContent = `Deadband ${this.deadbandMicrosecondsMin}–${this.deadbandMicrosecondsMax} µs (crop + stretch each side).`;
+        } else {
+            this._deadbandHintEl.textContent = "Deadband off — set min and max (µs, min < max) to enable.";
+        }
+    }
+
+    _readDeadbandFromInputs() {
+        const rawLo = this._dbMinInput?.value?.trim?.() ?? "";
+        const rawHi = this._dbMaxInput?.value?.trim?.() ?? "";
+        if (rawLo === "" || rawHi === "") {
+            this.deadbandMicrosecondsMin = null;
+            this.deadbandMicrosecondsMax = null;
+            this._updateDeadbandHint();
+            this.setMicroseconds(this.microseconds);
+            return;
+        }
+        let lo = Math.round(Number(rawLo));
+        let hi = Math.round(Number(rawHi));
+        if (!Number.isFinite(lo) || !Number.isFinite(hi)) {
+            this.deadbandMicrosecondsMin = null;
+            this.deadbandMicrosecondsMax = null;
+            this._updateDeadbandHint();
+            this.setMicroseconds(this.microseconds);
+            return;
+        }
+        lo = Servo._clampInt(lo, this.minMicroseconds, this.maxMicroseconds);
+        hi = Servo._clampInt(hi, this.minMicroseconds, this.maxMicroseconds);
+        if (lo >= hi) {
+            this.deadbandMicrosecondsMin = null;
+            this.deadbandMicrosecondsMax = null;
+            this._updateDeadbandHint();
+            this.setMicroseconds(this.microseconds);
+            return;
+        }
+        this.deadbandMicrosecondsMin = lo;
+        this.deadbandMicrosecondsMax = hi;
+        this._updateDeadbandHint();
+        this.setMicroseconds(this.microseconds);
+    }
+
     makeGui() {
         const gui = document.createElement("div");
-        const dbNote =
-            this.deadbandMicrosecondsMin != null
-                ? `<p class="muted">Deadband ${this.deadbandMicrosecondsMin}–${this.deadbandMicrosecondsMax} µs (stretch from home × R/(R−D), then clamp)</p>`
-                : "";
+        const dbMinVal = this.deadbandMicrosecondsMin != null ? String(this.deadbandMicrosecondsMin) : "";
+        const dbMaxVal = this.deadbandMicrosecondsMax != null ? String(this.deadbandMicrosecondsMax) : "";
         gui.innerHTML = `
         <h3>${this.name}</h3>
         <p>Pin: ${this.pin}</p>
         <p>Home: ${this.homeMicroseconds} µs</p>
         <p>Range: ${this.minMicroseconds} – ${this.maxMicroseconds} µs</p>
-        ${dbNote}
+        <p class="muted servo-deadband-hint"></p>
+        <label class="servo-deadband-label">Deadband min (µs)</label>
+        <input type="number" class="servo-deadband-min" min="${this.minMicroseconds}" max="${this.maxMicroseconds}" step="1" value="${dbMinVal}" placeholder="none">
+        <label class="servo-deadband-label">Deadband max (µs)</label>
+        <input type="number" class="servo-deadband-max" min="${this.minMicroseconds}" max="${this.maxMicroseconds}" step="1" value="${dbMaxVal}" placeholder="none">
         <input type="range" min="${this.minMicroseconds}" max="${this.maxMicroseconds}" value="${this.microseconds}" step="1">
         <p class="servo-us-display">Pulse: ${this.microseconds} µs</p>
         `;
+        this._deadbandHintEl = gui.querySelector(".servo-deadband-hint");
+        this._dbMinInput = gui.querySelector(".servo-deadband-min");
+        this._dbMaxInput = gui.querySelector(".servo-deadband-max");
         this._usSlider = gui.querySelector('input[type="range"]');
         this._usLabel = gui.querySelector(".servo-us-display");
+        const onDeadbandChange = () => this._readDeadbandFromInputs();
+        this._dbMinInput.addEventListener("change", onDeadbandChange);
+        this._dbMinInput.addEventListener("blur", onDeadbandChange);
+        this._dbMaxInput.addEventListener("change", onDeadbandChange);
+        this._dbMaxInput.addEventListener("blur", onDeadbandChange);
         this._usSlider.addEventListener("input", () => {
             this.setMicroseconds(Number(this._usSlider.value));
         });
+        this._updateDeadbandHint();
         return gui;
     }
 }
