@@ -47,7 +47,10 @@ window.ROBOTS_DATA = {
                 }
             ],
             sensors: ["camera"],
-            aiModels: [{ type: "coco", frequencyHz: 10 }],
+            aiModels: [
+                { type: "coco", frequencyHz: 10 },
+                { type: "groqvision", frequencyHz: 1, model: "meta-llama/llama-4-scout-17b-16e-instruct" }
+            ],
             targets: [],
             trackers: [
                 {

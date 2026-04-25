@@ -127,6 +127,12 @@ class Robot {
                         throw new Error("GenericTrackerAiModel class is unavailable. Check aiModelTracker.js loading.");
                     }
                     this.aiModels.push(new TrackerModelClass(this, cfg));
+                } else if (type === "groqvision" || type === "groq") {
+                    const GroqVisionModelClass = window.GroqVisionAiModel;
+                    if (typeof GroqVisionModelClass !== "function") {
+                        throw new Error("GroqVisionAiModel class is unavailable. Check aiModelGroqVision.js loading.");
+                    }
+                    this.aiModels.push(new GroqVisionModelClass(this, cfg));
                 } else if (type) {
                     console.warn(`Unknown AI model type: ${cfg.type}`);
                 }
