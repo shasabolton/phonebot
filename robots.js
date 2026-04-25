@@ -4,7 +4,7 @@ window.ROBOTS_DATA = {
         {
             name: "new unnamed robot",
             actuators: [],
-            inputs: {},
+            controlInputs: {},
             sensors: [],
             targets: [],
             pidControllers: []
@@ -21,7 +21,7 @@ window.ROBOTS_DATA = {
                     maxMicroseconds: 2000,
                     deadbandMicrosecondsMin: 1480,
                     deadbandMicrosecondsMax: 1520,
-                    mix: ({ inputs }) => (-inputs.speed + inputs.direction) * 500 + 1500
+                    mix: ({ controlInputs }) => (-controlInputs.speed + controlInputs.yawSpeed) * 500 + 1500
                 },
                 {
                     type: "servo",
@@ -32,17 +32,17 @@ window.ROBOTS_DATA = {
                     maxMicroseconds: 2000,
                     deadbandMicrosecondsMin: 1480,
                     deadbandMicrosecondsMax: 1520,
-                    mix: ({ inputs }) => (+inputs.speed + inputs.direction) * 500 + 1500
+                    mix: ({ controlInputs }) => (+controlInputs.speed + controlInputs.yawSpeed) * 500 + 1500
                 }
             ],
-            inputs: {
+            controlInputs: {
                 speed: { name: "speed", min: -1, max: 1, home: 0 },
-                direction: { name: "direction", min: -1, max: 1, home: 0 }
+                yawSpeed: { name: "yaw speed", min: -1, max: 1, home: 0 }
             },
             joysticks: [
                 {
-                    name: "speed / direction",
-                    x: "direction",
+                    name: "speed / yaw",
+                    x: "yawSpeed",
                     y: "speed"
                 }
             ],
@@ -63,9 +63,9 @@ window.ROBOTS_DATA = {
             ],
             pidControllers: [
                 {
-                    name: "direction object tracker PID",
+                    name: "yaw object tracker PID",
                     feedback: "cocoTracker.result.output.x",
-                    input: "direction",
+                    controlInput: "yawSpeed",
                     goal: 0,
                     kp: -0.12,
                     ki: 0.0,

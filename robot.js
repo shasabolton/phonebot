@@ -4,7 +4,7 @@ class Robot {
         this.container = container;
         this.name = this.config?.name;
         this.actuators = [];
-        this.inputs = {};
+        this.controlInputs = {};
         this.joysticks = [];
         this.actuatorMixes = [];
         this.inputUnsubscribes = [];
@@ -17,8 +17,8 @@ class Robot {
         this.mode = "track";
         this.deciders = [];
         //if mode === track, if trackcoods!= null it means open cv has found the trackTarget.
-        // PID controllers read targets and sensors and may set inputs. Mix functions map inputs to actuators.
-        // Actuators have their own sliders; mixing updates angles when inputs change.
+        // PID controllers read targets/sensors and may set control inputs. Mix functions map control inputs to actuators.
+        // Actuators have their own sliders; mixing updates angles when control inputs change.
 
         this.buildRobot();
         this.buildGUI();
@@ -34,14 +34,14 @@ class Robot {
     }
 
     step() {
-        // get target error, apply feedback control, set inputs
+        // get target error, apply feedback control, set control inputs
     }
 
     buildRobot() {
         (this.config.actuators || []).forEach(config => {
             this.addActuator(config);
         });
-        this.buildInputs(this.config.inputs || {});
+        this.buildControlInputs(this.config.controlInputs || this.config.inputs || {});
         this.buildJoysticks(this.config.joysticks || []);
         this.buildSensors(this.config.sensors || []);
         this.buildAiModels(this.config.aiModels || []);
@@ -50,18 +50,18 @@ class Robot {
         this.buildActuatorMixing();
     }
 
-    buildInputs(inputConfig) {
-        this.inputs = {};
+    buildControlInputs(inputConfig) {
+        this.controlInputs = {};
         if (Array.isArray(inputConfig)) {
             for (const cfg of inputConfig) {
                 if (!cfg?.name) continue;
-                this.inputs[cfg.name] = new Input(cfg);
+                this.controlInputs[cfg.name] = new Input(cfg);
             }
             return;
         }
 
         for (const [name, cfg] of Object.entries(inputConfig || {})) {
-            this.inputs[name] = new Input({ name, ...cfg });
+            this.controlInputs[name] = new Input({ name, ...cfg });
         }
     }
 
@@ -204,9 +204,9 @@ class Robot {
         return this.trackers.find((tracker) => String(tracker?.name || "").toLowerCase() === key) || null;
     }
 
-    getInputValues() {
+    getControlInputValues() {
         const values = {};
-        for (const [name, input] of Object.entries(this.inputs)) {
+        for (const [name, input] of Object.entries(this.controlInputs)) {
             values[name] = input.getValue();
         }
         return values;
@@ -214,7 +214,7 @@ class Robot {
 
     applyMixing() {
         if (!this.actuatorMixes.length) return;
-        const ctx = { inputs: this.getInputValues(), robot: this };
+        const ctx = { controlInputs: this.getControlInputValues(), robot: this };
         for (const { servo, mix } of this.actuatorMixes) {
             const us = mix(ctx);
             if (Number.isFinite(us)) {
@@ -236,7 +236,7 @@ class Robot {
         }
         if (!this.actuatorMixes.length) return;
         const onInputChange = () => this.applyMixing();
-        for (const input of Object.values(this.inputs)) {
+        for (const input of Object.values(this.controlInputs)) {
             this.inputUnsubscribes.push(input.onChange(onInputChange));
         }
         this.applyMixing();
@@ -249,8 +249,8 @@ class Robot {
         this.inputUnsubscribes = [];
     }
 
-    setInput(name, value) {
-        const input = this.inputs[name];
+    setControlInput(name, value) {
+        const input = this.controlInputs[name];
         if (!input) return false;
         input.setValue(value);
         return true;
@@ -368,7 +368,7 @@ class Robot {
                 inputsDiv.appendChild(joystick.gui);
             }
         }
-        for (const input of Object.values(this.inputs)) {
+        for (const input of Object.values(this.controlInputs)) {
             if (input.gui) {
                 inputsDiv.appendChild(input.gui);
             }

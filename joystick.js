@@ -1,15 +1,15 @@
 class Joystick {
     /**
      * @param {Robot} robot
-     * @param {{ name?: string, x: string, y: string }} config — `x` / `y` are names of {@link Input}s on the robot
+     * @param {{ name?: string, x: string, y: string }} config — `x` / `y` are names of control {@link Input}s on the robot
      */
     constructor(robot, config) {
         this.robot = robot;
         this.name = config?.name || "joystick";
         const xName = config?.x;
         const yName = config?.y;
-        this.inputX = xName != null ? robot.inputs[xName] : null;
-        this.inputY = yName != null ? robot.inputs[yName] : null;
+        this.inputX = xName != null ? robot.controlInputs[xName] : null;
+        this.inputY = yName != null ? robot.controlInputs[yName] : null;
         if (!this.inputX || !this.inputY) {
             throw new Error(`Joystick "${this.name}" needs valid x and y input names (got x=${xName}, y=${yName})`);
         }

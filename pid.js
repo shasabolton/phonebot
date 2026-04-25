@@ -3,7 +3,7 @@ class PID {
         this.robot = robot;
         this.name = name || config.name || "pid";
         this.feedback = config.feedback || "";
-        this.inputName = config.input || "";
+        this.controlInputName = config.controlInput || config.input || "";
         this.goal = Number.isFinite(config.goal) ? config.goal : 0;
         this.kp = Number.isFinite(config.kp) ? config.kp : 0.5;
         this.ki = Number.isFinite(config.ki) ? config.ki : 0;
@@ -67,7 +67,7 @@ class PID {
         this._outputEl.textContent = JSON.stringify({
             pid: this.name,
             feedback: this.feedback,
-            input: this.inputName,
+            controlInput: this.controlInputName,
             goal: this.goal,
             kp: this.kp,
             ki: this.ki,
@@ -86,7 +86,7 @@ class PID {
                 this.integral = 0;
                 this.prevError = 0;
                 this.lastOutput = 0;
-                const input = this.robot.inputs[this.inputName];
+                const input = this.robot.controlInputs[this.controlInputName];
                 if (input) {
                     input.setValue(0);
                 }
@@ -107,14 +107,14 @@ class PID {
             const output = this.kp * error + this.ki * this.integral + this.kd * derivative;
             this.lastOutput = output;
 
-            const input = this.robot.inputs[this.inputName];
+            const input = this.robot.controlInputs[this.controlInputName];
             if (input) {
                 input.setValue(output);
             }
 
             if (this._statusEl) {
                 this._statusEl.className = "muted";
-                this._statusEl.textContent = `Output ${output.toFixed(3)} -> ${this.inputName}`;
+                this._statusEl.textContent = `Output ${output.toFixed(3)} -> ${this.controlInputName}`;
             }
             this._renderOutput(feedbackValue);
         } catch (err) {
