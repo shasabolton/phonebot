@@ -279,7 +279,7 @@ class CocoAiModel {
         const freqInput = document.createElement("input");
         freqInput.type = "number";
         freqInput.min = "0.2";
-        freqInput.max = "10";
+        freqInput.max = "20";
         freqInput.step = "0.2";
         freqInput.value = String(this.frequencyHz);
         freqInput.addEventListener("change", () => this.setFrequencyHz(freqInput.value));
