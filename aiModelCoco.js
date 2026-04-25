@@ -2,6 +2,10 @@ class CocoAiModel {
     static _tfLoadPromise = null;
     static _modelLoadPromise = null;
     static _modelInstance = null;
+    static MIN_FREQUENCY_HZ = 0.2;
+    static MAX_FREQUENCY_HZ = 20;
+    /** Min interval ms so setInterval can keep up (~20 Hz). */
+    static MIN_TICK_INTERVAL_MS = 50;
 
     constructor(robot, config = {}) {
         this.robot = robot;
@@ -9,7 +13,10 @@ class CocoAiModel {
         this.name = config.name || "COCO Vision";
         this.enabled = false;
         this.frequencyHz = Number.isFinite(config.frequencyHz) ? config.frequencyHz : 1;
-        this.frequencyHz = Math.max(0.2, Math.min(10, this.frequencyHz));
+        this.frequencyHz = Math.max(
+            CocoAiModel.MIN_FREQUENCY_HZ,
+            Math.min(CocoAiModel.MAX_FREQUENCY_HZ, this.frequencyHz)
+        );
         this._timer = null;
         this._running = false;
         this._overlayCanvas = null;
@@ -186,7 +193,10 @@ class CocoAiModel {
 
     _startLoop() {
         this._stopLoop();
-        const intervalMs = Math.max(100, Math.round(1000 / this.frequencyHz));
+        const intervalMs = Math.max(
+            CocoAiModel.MIN_TICK_INTERVAL_MS,
+            Math.round(1000 / this.frequencyHz)
+        );
         this._timer = setInterval(() => this._tick(), intervalMs);
         this._tick();
     }
@@ -232,7 +242,10 @@ class CocoAiModel {
     setFrequencyHz(nextHz) {
         const parsed = Number(nextHz);
         if (!Number.isFinite(parsed)) return;
-        this.frequencyHz = Math.max(0.2, Math.min(10, parsed));
+        this.frequencyHz = Math.max(
+            CocoAiModel.MIN_FREQUENCY_HZ,
+            Math.min(CocoAiModel.MAX_FREQUENCY_HZ, parsed)
+        );
         if (this._freqInput) this._freqInput.value = String(this.frequencyHz);
         if (this.enabled) this._startLoop();
     }
@@ -278,8 +291,8 @@ class CocoAiModel {
         freqLabel.textContent = "Vision frequency (Hz)";
         const freqInput = document.createElement("input");
         freqInput.type = "number";
-        freqInput.min = "0.2";
-        freqInput.max = "20";
+        freqInput.min = String(CocoAiModel.MIN_FREQUENCY_HZ);
+        freqInput.max = String(CocoAiModel.MAX_FREQUENCY_HZ);
         freqInput.step = "0.2";
         freqInput.value = String(this.frequencyHz);
         freqInput.addEventListener("change", () => this.setFrequencyHz(freqInput.value));
