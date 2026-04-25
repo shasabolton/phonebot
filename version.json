@@ -1,4 +1,4 @@
 {
   "fwVersion": "1.1.1",
-  "appBuildVersion": "7:pid -0.12kp -0.01kd"
+  "appBuildVersion": "8:pid -0.12kp -0.01kd, deadband 1480-1520"
 }
