@@ -67,9 +67,9 @@ window.ROBOTS_DATA = {
                     feedback: "cocoTracker.result.output.x",
                     input: "direction",
                     goal: 0,
-                    kp: -0.2,
+                    kp: -0.12,
                     ki: 0.0,
-                    kd: 0.0,
+                    kd: -0.01,
                     frequencyHz: "feedback"
                 }
             ],
