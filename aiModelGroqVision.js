@@ -210,6 +210,85 @@ class GroqVisionAiModel {
         }
     }
 
+    _captureRateLimitFromErrorBody(bodyText) {
+        const body = String(bodyText || "");
+        if (!body) return;
+        const next = {};
+
+        // Parse common Groq rate-limit error fragments, for example:
+        // "... on requests per day (RPD): Limit 1000, Used 1000, Requested 1. Please try again in 12h3m ..."
+        // "... on tokens per minute (TPM): Limit 6000, Used 5900, Requested 400. Please try again in 10s ..."
+        const regex = /on\s+([^(.:]+?)\s*\((RPD|RPM|TPM|TPD)\)\s*:\s*Limit\s*([0-9]+)\s*,\s*Used\s*([0-9]+)\s*,\s*Requested\s*([0-9]+)\s*\.?\s*(?:Please try again in\s*([^.\n]+))?/gi;
+        let match = regex.exec(body);
+        while (match) {
+            const metricCode = String(match[2] || "").toUpperCase();
+            const limit = Number(match[3]);
+            const used = Number(match[4]);
+            const remaining = Number.isFinite(limit) && Number.isFinite(used)
+                ? Math.max(0, limit - used)
+                : null;
+            const retryIn = String(match[6] || "").trim();
+
+            if (metricCode === "RPD") {
+                next.requestsPerDay = {
+                    label: "Requests per day",
+                    limit,
+                    remaining,
+                    reset: retryIn || ""
+                };
+            } else if (metricCode === "TPM") {
+                next.tokensPerMinute = {
+                    label: "Tokens per minute",
+                    limit,
+                    remaining,
+                    reset: retryIn || ""
+                };
+            } else if (metricCode === "RPM") {
+                next.requestsPerMinute = {
+                    label: "Requests per minute",
+                    limit,
+                    remaining,
+                    reset: retryIn || ""
+                };
+            } else if (metricCode === "TPD") {
+                next.tokensPerDay = {
+                    label: "Tokens per day",
+                    limit,
+                    remaining,
+                    reset: retryIn || ""
+                };
+            }
+
+            if (retryIn) {
+                next.retryAfter = {
+                    label: "Retry after",
+                    limit: null,
+                    remaining: null,
+                    reset: retryIn
+                };
+            }
+            match = regex.exec(body);
+        }
+
+        // Fallback if regex did not match but message contains "Please try again in ..."
+        if (!Object.keys(next).length) {
+            const retryMatch = body.match(/Please try again in\s*([^.\n]+)/i);
+            if (retryMatch) {
+                next.retryAfter = {
+                    label: "Retry after",
+                    limit: null,
+                    remaining: null,
+                    reset: String(retryMatch[1] || "").trim()
+                };
+            }
+        }
+
+        if (Object.keys(next).length) {
+            this._rateLimits = { ...this._rateLimits, ...next };
+            this._renderRateLimits();
+        }
+    }
+
     _renderRateLimits() {
         if (!this._limitsEl) return;
         this._limitsEl.innerHTML = "";
@@ -389,6 +468,7 @@ class GroqVisionAiModel {
 
         if (!res.ok) {
             const body = await res.text().catch(() => "");
+            this._captureRateLimitFromErrorBody(body);
             throw new Error(`Groq request failed (${res.status}): ${body || "unknown error"}`);
         }
 
