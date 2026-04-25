@@ -27,6 +27,7 @@ class GroqVisionAiModel {
         this._captureCtx = null;
         this._detections = [];
         this._sceneDescription = "";
+        this._rateLimits = {};
         this._frameWidth = 0;
         this._frameHeight = 0;
         this._toggleBtn = null;
@@ -36,6 +37,7 @@ class GroqVisionAiModel {
         this._rememberInput = null;
         this._statusEl = null;
         this._outputEl = null;
+        this._limitsEl = null;
 
         this._loadSavedSettings();
     }
@@ -138,6 +140,7 @@ class GroqVisionAiModel {
             detectedAt: new Date().toISOString(),
             objectCount: this._detections.length,
             sceneDescription: this._sceneDescription,
+            rateLimits: this._rateLimits,
             objects: this._detections.map((item) => ({
                 name: item.class,
                 score: Number(item.score.toFixed(3)),
@@ -150,6 +153,124 @@ class GroqVisionAiModel {
             }))
         };
         this._outputEl.textContent = JSON.stringify(response, null, 2);
+    }
+
+    _captureRateLimitHeaders(res) {
+        if (!res?.headers) return;
+        const next = {};
+        const readNum = (name) => {
+            const raw = res.headers.get(name);
+            if (raw == null) return null;
+            const parsed = Number(String(raw).replace(/,/g, ""));
+            return Number.isFinite(parsed) ? parsed : null;
+        };
+        const readText = (name) => {
+            const raw = res.headers.get(name);
+            return raw == null ? "" : String(raw).trim();
+        };
+
+        const requestLimit = readNum("x-ratelimit-limit-requests");
+        const requestRemaining = readNum("x-ratelimit-remaining-requests");
+        const requestReset = readText("x-ratelimit-reset-requests");
+        if (requestLimit != null || requestRemaining != null || requestReset) {
+            next.requestsPerDay = {
+                label: "Requests per day",
+                limit: requestLimit,
+                remaining: requestRemaining,
+                reset: requestReset
+            };
+        }
+
+        const tokenLimit = readNum("x-ratelimit-limit-tokens");
+        const tokenRemaining = readNum("x-ratelimit-remaining-tokens");
+        const tokenReset = readText("x-ratelimit-reset-tokens");
+        if (tokenLimit != null || tokenRemaining != null || tokenReset) {
+            next.tokensPerMinute = {
+                label: "Tokens per minute",
+                limit: tokenLimit,
+                remaining: tokenRemaining,
+                reset: tokenReset
+            };
+        }
+
+        const retryAfterRaw = readText("retry-after");
+        if (retryAfterRaw) {
+            const retrySeconds = Number(retryAfterRaw);
+            next.retryAfter = {
+                label: "Retry after",
+                limit: Number.isFinite(retrySeconds) ? retrySeconds : null,
+                remaining: null,
+                reset: retryAfterRaw ? `${retryAfterRaw}s` : ""
+            };
+        }
+
+        if (Object.keys(next).length) {
+            this._rateLimits = { ...this._rateLimits, ...next };
+            this._renderRateLimits();
+        }
+    }
+
+    _renderRateLimits() {
+        if (!this._limitsEl) return;
+        this._limitsEl.innerHTML = "";
+
+        const entries = Object.values(this._rateLimits || {});
+        if (!entries.length) {
+            const none = document.createElement("p");
+            none.className = "muted";
+            none.textContent = "No rate-limit headers received yet.";
+            this._limitsEl.appendChild(none);
+            return;
+        }
+
+        for (const entry of entries) {
+            const row = document.createElement("div");
+            row.style.marginBottom = "8px";
+
+            const limit = Number(entry.limit);
+            const remaining = Number(entry.remaining);
+            const hasNumbers = Number.isFinite(limit) && Number.isFinite(remaining) && limit > 0;
+            const used = hasNumbers ? Math.max(0, Math.min(limit, limit - remaining)) : null;
+            const usedPct = hasNumbers ? Math.max(0, Math.min(100, (used / limit) * 100)) : 0;
+
+            const title = document.createElement("div");
+            title.className = "muted";
+            title.style.marginBottom = "2px";
+            if (hasNumbers) {
+                title.textContent = `${entry.label}: ${Math.round(used)} / ${Math.round(limit)} used`;
+            } else {
+                title.textContent = `${entry.label}: ${entry.reset || "n/a"}`;
+            }
+
+            const barWrap = document.createElement("div");
+            barWrap.style.height = "8px";
+            barWrap.style.background = "#ddd";
+            barWrap.style.borderRadius = "4px";
+            barWrap.style.overflow = "hidden";
+
+            const bar = document.createElement("div");
+            bar.style.height = "100%";
+            bar.style.width = `${usedPct}%`;
+            bar.style.background = usedPct >= 90 ? "#d9534f" : usedPct >= 75 ? "#f0ad4e" : "#5cb85c";
+            barWrap.appendChild(bar);
+
+            const footer = document.createElement("div");
+            footer.className = "muted";
+            footer.style.fontSize = "0.85em";
+            footer.style.marginTop = "2px";
+            if (hasNumbers) {
+                const remainingText = `${Math.max(0, Math.round(remaining))} remaining`;
+                const resetText = entry.reset ? `, resets in ${entry.reset}` : "";
+                footer.textContent = `${remainingText}${resetText}`;
+            } else {
+                footer.textContent = entry.reset ? `Resets in ${entry.reset}` : "";
+            }
+
+            row.appendChild(title);
+            row.appendChild(barWrap);
+            row.appendChild(footer);
+            this._limitsEl.appendChild(row);
+        }
     }
 
     _captureFrameDataUrl(videoEl) {
@@ -264,6 +385,7 @@ class GroqVisionAiModel {
                 ]
             })
         });
+        this._captureRateLimitHeaders(res);
 
         if (!res.ok) {
             const body = await res.text().catch(() => "");
@@ -468,6 +590,13 @@ class GroqVisionAiModel {
         status.className = "muted";
         status.textContent = "Model off.";
 
+        const limitsTitle = document.createElement("p");
+        limitsTitle.className = "muted";
+        limitsTitle.textContent = "Rate limits";
+
+        const limits = document.createElement("div");
+        limits.className = "ai-model-limits";
+
         const output = document.createElement("pre");
         output.className = "ai-model-output";
         output.textContent = "{}";
@@ -483,6 +612,8 @@ class GroqVisionAiModel {
         wrap.appendChild(title);
         wrap.appendChild(controls);
         wrap.appendChild(status);
+        wrap.appendChild(limitsTitle);
+        wrap.appendChild(limits);
         wrap.appendChild(output);
         container.appendChild(wrap);
 
@@ -492,7 +623,9 @@ class GroqVisionAiModel {
         this._modelInput = modelInput;
         this._rememberInput = rememberInput;
         this._statusEl = status;
+        this._limitsEl = limits;
         this._outputEl = output;
+        this._renderRateLimits();
     }
 
     destroy() {
