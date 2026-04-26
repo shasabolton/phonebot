@@ -139,10 +139,13 @@ class GroqVisionAiModel {
         rawDetections.forEach((item) => {
             const [x, y, w, h] = Array.isArray(item?.bbox) ? item.bbox : [NaN, NaN, NaN, NaN];
             if (![x, y, w, h].every(Number.isFinite)) return;
-            const bx = x * widthScale;
-            const by = y * heightScale;
-            const bw = w * widthScale;
-            const bh = h * heightScale;
+            const frameRaw = this._mapRawBboxToFrame([x, y, w, h], videoEl.videoWidth, videoEl.videoHeight);
+            if (!frameRaw) return;
+            const [fx, fy, fw, fh] = frameRaw;
+            const bx = fx * widthScale;
+            const by = fy * heightScale;
+            const bw = fw * widthScale;
+            const bh = fh * heightScale;
             if (!(bw > 0 && bh > 0)) return;
             const label = `raw:${item.class || "obj"}`;
             ctx.save();
@@ -161,6 +164,49 @@ class GroqVisionAiModel {
             ctx.fillText(label, bx + 2, Math.max(0, by));
             ctx.restore();
         });
+    }
+
+    _mapRawBboxToFrame(rawBbox, frameWidth, frameHeight) {
+        const [x, y, w, h] = rawBbox;
+        if (![x, y, w, h].every(Number.isFinite)) return null;
+        if (!(frameWidth > 0 && frameHeight > 0)) return null;
+
+        // Case A: normalized [0..1].
+        const maybeNormalized =
+            x >= -0.2 && y >= -0.2 && w >= 0 && h >= 0 &&
+            x <= 1.5 && y <= 1.5 && w <= 1.5 && h <= 1.5;
+        if (maybeNormalized) {
+            const nx = Math.max(0, Math.min(frameWidth, x * frameWidth));
+            const ny = Math.max(0, Math.min(frameHeight, y * frameHeight));
+            const nw = Math.max(1, Math.min(frameWidth - nx, w * frameWidth));
+            const nh = Math.max(1, Math.min(frameHeight - ny, h * frameHeight));
+            return [nx, ny, nw, nh];
+        }
+
+        // Case B: pixel bbox in uploaded (capture) image coordinates.
+        const sourceW = this._captureCanvas?.width || frameWidth;
+        const sourceH = this._captureCanvas?.height || frameHeight;
+        const looksLikeCapturePixels =
+            x >= -sourceW * 0.25 && y >= -sourceH * 0.25 &&
+            w >= 1 && h >= 1 &&
+            x <= sourceW * 1.5 && y <= sourceH * 1.5 &&
+            w <= sourceW * 1.5 && h <= sourceH * 1.5;
+        if (looksLikeCapturePixels) {
+            const sx = frameWidth / sourceW;
+            const sy = frameHeight / sourceH;
+            const px = Math.max(0, Math.min(frameWidth, x * sx));
+            const py = Math.max(0, Math.min(frameHeight, y * sy));
+            const pw = Math.max(1, Math.min(frameWidth - px, w * sx));
+            const ph = Math.max(1, Math.min(frameHeight - py, h * sy));
+            return [px, py, pw, ph];
+        }
+
+        // Case C: assume raw pixels already in full-frame coordinates.
+        const px = Math.max(0, Math.min(frameWidth, x));
+        const py = Math.max(0, Math.min(frameHeight, y));
+        const pw = Math.max(1, Math.min(frameWidth - px, w));
+        const ph = Math.max(1, Math.min(frameHeight - py, h));
+        return [px, py, pw, ph];
     }
 
     _renderResponseOutput() {
