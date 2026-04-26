@@ -133,6 +133,12 @@ class Robot {
                         throw new Error("GroqVisionAiModel class is unavailable. Check aiModelGroqVision.js loading.");
                     }
                     this.aiModels.push(new GroqVisionModelClass(this, cfg));
+                } else if (type === "objectmatcher") {
+                    const MatcherClass = window.ObjectMatcherAiModel;
+                    if (typeof MatcherClass !== "function") {
+                        throw new Error("ObjectMatcherAiModel class is unavailable. Check objectMatcher.js loading.");
+                    }
+                    this.aiModels.push(new MatcherClass(this, cfg));
                 } else if (type) {
                     console.warn(`Unknown AI model type: ${cfg.type}`);
                 }

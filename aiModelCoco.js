@@ -4,6 +4,10 @@ class CocoAiModel {
     static _modelInstance = null;
     static MIN_FREQUENCY_HZ = 0.2;
     static MAX_FREQUENCY_HZ = 20;
+    static MIN_BOXES = 1;
+    static MAX_BOXES = 100;
+    static MIN_SCORE = 0.01;
+    static MAX_SCORE = 0.99;
     /** Min interval ms so setInterval can keep up (~20 Hz). */
     static MIN_TICK_INTERVAL_MS = 50;
 
@@ -17,6 +21,10 @@ class CocoAiModel {
             CocoAiModel.MIN_FREQUENCY_HZ,
             Math.min(CocoAiModel.MAX_FREQUENCY_HZ, this.frequencyHz)
         );
+        this.maxNumBoxes = Number.isFinite(config.maxNumBoxes) ? Math.round(config.maxNumBoxes) : 20;
+        this.maxNumBoxes = Math.max(CocoAiModel.MIN_BOXES, Math.min(CocoAiModel.MAX_BOXES, this.maxNumBoxes));
+        this.minScore = Number.isFinite(config.minScore) ? config.minScore : 0.5;
+        this.minScore = Math.max(CocoAiModel.MIN_SCORE, Math.min(CocoAiModel.MAX_SCORE, this.minScore));
         this._timer = null;
         this._running = false;
         this._overlayCanvas = null;
@@ -26,6 +34,8 @@ class CocoAiModel {
         this._frameHeight = 0;
         this._toggleBtn = null;
         this._freqInput = null;
+        this._maxBoxesInput = null;
+        this._minScoreInput = null;
         this._statusEl = null;
         this._outputEl = null;
     }
@@ -143,6 +153,8 @@ class CocoAiModel {
         const response = {
             model: this.type,
             detectedAt: new Date().toISOString(),
+            maxNumBoxes: this.maxNumBoxes,
+            minScore: Number(this.minScore.toFixed(2)),
             objectCount: this._detections.length,
             objects: this._detections.map((item) => ({
                 name: item.class,
@@ -172,7 +184,7 @@ class CocoAiModel {
             this._ensureOverlay();
             this._frameWidth = videoEl.videoWidth || 0;
             this._frameHeight = videoEl.videoHeight || 0;
-            const detections = await model.detect(videoEl);
+            const detections = await model.detect(videoEl, this.maxNumBoxes, this.minScore);
             this._detections = Array.isArray(detections) ? detections : [];
             this._drawDetections(videoEl, this._detections);
             this._renderResponseOutput();
@@ -250,6 +262,28 @@ class CocoAiModel {
         if (this.enabled) this._startLoop();
     }
 
+    setMaxNumBoxes(nextValue) {
+        const parsed = Number(nextValue);
+        if (!Number.isFinite(parsed)) return;
+        this.maxNumBoxes = Math.max(
+            CocoAiModel.MIN_BOXES,
+            Math.min(CocoAiModel.MAX_BOXES, Math.round(parsed))
+        );
+        if (this._maxBoxesInput) this._maxBoxesInput.value = String(this.maxNumBoxes);
+        if (this.enabled) this._startLoop();
+    }
+
+    setMinScore(nextValue) {
+        const parsed = Number(nextValue);
+        if (!Number.isFinite(parsed)) return;
+        this.minScore = Math.max(
+            CocoAiModel.MIN_SCORE,
+            Math.min(CocoAiModel.MAX_SCORE, parsed)
+        );
+        if (this._minScoreInput) this._minScoreInput.value = String(this.minScore);
+        if (this.enabled) this._startLoop();
+    }
+
     getFrequencyHz() {
         return this.frequencyHz;
     }
@@ -298,6 +332,28 @@ class CocoAiModel {
         freqInput.addEventListener("change", () => this.setFrequencyHz(freqInput.value));
         freqInput.addEventListener("blur", () => this.setFrequencyHz(freqInput.value));
 
+        const maxBoxesLabel = document.createElement("label");
+        maxBoxesLabel.textContent = "Max number of boxes";
+        const maxBoxesInput = document.createElement("input");
+        maxBoxesInput.type = "number";
+        maxBoxesInput.min = String(CocoAiModel.MIN_BOXES);
+        maxBoxesInput.max = String(CocoAiModel.MAX_BOXES);
+        maxBoxesInput.step = "1";
+        maxBoxesInput.value = String(this.maxNumBoxes);
+        maxBoxesInput.addEventListener("change", () => this.setMaxNumBoxes(maxBoxesInput.value));
+        maxBoxesInput.addEventListener("blur", () => this.setMaxNumBoxes(maxBoxesInput.value));
+
+        const minScoreLabel = document.createElement("label");
+        minScoreLabel.textContent = "Minimum score (0-1)";
+        const minScoreInput = document.createElement("input");
+        minScoreInput.type = "number";
+        minScoreInput.min = String(CocoAiModel.MIN_SCORE);
+        minScoreInput.max = String(CocoAiModel.MAX_SCORE);
+        minScoreInput.step = "0.01";
+        minScoreInput.value = String(this.minScore);
+        minScoreInput.addEventListener("change", () => this.setMinScore(minScoreInput.value));
+        minScoreInput.addEventListener("blur", () => this.setMinScore(minScoreInput.value));
+
         const status = document.createElement("p");
         status.className = "muted";
         status.textContent = "Model off.";
@@ -309,6 +365,10 @@ class CocoAiModel {
         controls.appendChild(toggleBtn);
         controls.appendChild(freqLabel);
         controls.appendChild(freqInput);
+        controls.appendChild(maxBoxesLabel);
+        controls.appendChild(maxBoxesInput);
+        controls.appendChild(minScoreLabel);
+        controls.appendChild(minScoreInput);
         wrap.appendChild(title);
         wrap.appendChild(controls);
         wrap.appendChild(status);
@@ -317,6 +377,8 @@ class CocoAiModel {
 
         this._toggleBtn = toggleBtn;
         this._freqInput = freqInput;
+        this._maxBoxesInput = maxBoxesInput;
+        this._minScoreInput = minScoreInput;
         this._statusEl = status;
         this._outputEl = output;
     }

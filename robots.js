@@ -48,16 +48,24 @@ window.ROBOTS_DATA = {
             ],
             sensors: ["camera"],
             aiModels: [
-                { type: "coco", frequencyHz: 10 },
-                { type: "groqvision", frequencyHz: 1, model: "meta-llama/llama-4-scout-17b-16e-instruct" }
+                { type: "coco", frequencyHz: 10, maxNumBoxes: 30, minScore: 0.25 },
+                { type: "tracker", frequencyHz: 10 },
+                { type: "groqvision", frequencyHz: 0.2, model: "meta-llama/llama-4-scout-17b-16e-instruct" },
+                {
+                    type: "objectmatcher",
+                    frequencyHz: 10,
+                    groqFeedType: "groqvision",
+                    groqRefreshMs: 5000,
+                    name: "Object matcher (Groq + flow)"
+                }
             ],
             targets: [],
             trackers: [
                 {
                     name: "cocoTracker",
-                    dataFeed: "coco",
+                    dataFeed: "objectmatcher",
                     filters: ["cup"],
-                    minScore: 0.4,
+                    minScore: 0.25,
                     strategy: "largest",
                     outputRange: "minusOneToOne",
                     invertX: false,
