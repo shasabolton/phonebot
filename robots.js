@@ -93,6 +93,31 @@ window.ROBOTS_DATA = {
                     frequencyHz: "feedback"
                 }
             ],
+            actions: [
+                { name: "setTrackingFilter", functionPath: "trackers.cocoTracker.setFiltersFromString", hint: "cup" },
+                { name: "classifyObject" } // uses groq vision model
+            ],
+            agentInterface: {
+                name: "Chat agents",
+                defaultBaseUrl: "https://api.groq.com/openai/v1",
+                promptTemplates: [
+                    { name: "Introduction prompt", path: "promptTemplates/introductionPrompt.txt" }
+                ],
+                agents: [
+                    {
+                        name: "Groq — Llama 4 Scout",
+                        baseUrl: "https://api.groq.com/openai/v1",
+                        chatPath: "/chat/completions",
+                        model: "meta-llama/llama-4-scout-17b-16e-instruct"
+                    },
+                    {
+                        name: "OpenAI-compatible (example)",
+                        baseUrl: "https://api.openai.com/v1",
+                        chatPath: "/chat/completions",
+                        model: "gpt-4o-mini"
+                    }
+                ]
+            },
             transmitter: "wifi"
         }
     ]

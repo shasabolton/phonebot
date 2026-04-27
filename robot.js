@@ -10,6 +10,7 @@ class Robot {
         this.inputUnsubscribes = [];
         this.sensors = [];
         this.aiModels = [];
+        this.agentInterface = null;
         this.trackers = [];
         this.targets = [];
         this.pidControllers = [];
@@ -29,6 +30,7 @@ class Robot {
         this.teardownInputMixSubscriptions();
         this.teardownSensors();
         this.teardownAiModels();
+        this.teardownAgentInterface();
         this.teardownTrackers();
         this.teardownPidControllers();
     }
@@ -45,6 +47,7 @@ class Robot {
         this.buildJoysticks(this.config.joysticks || []);
         this.buildSensors(this.config.sensors || []);
         this.buildAiModels(this.config.aiModels || []);
+        this.buildAgentInterface();
         this.buildTrackers(this.config.trackers || []);
         this.buildPidControllers(this.config.pidControllers || []);
         this.buildActuatorMixing();
@@ -153,6 +156,30 @@ class Robot {
             if (typeof model.destroy === "function") model.destroy();
         }
         this.aiModels = [];
+    }
+
+    buildAgentInterface() {
+        this.teardownAgentInterface();
+        const cfg = this.config.agentInterface;
+        if (!cfg || typeof cfg !== "object") return;
+        const AgentClass = window.AgentInterface;
+        if (typeof AgentClass !== "function") {
+            console.error("AgentInterface class is unavailable. Check agentInterface.js loading.");
+            return;
+        }
+        try {
+            this.agentInterface = new AgentClass(this, cfg);
+        } catch (err) {
+            console.error("Agent interface build failed:", err);
+            this.agentInterface = null;
+        }
+    }
+
+    teardownAgentInterface() {
+        if (this.agentInterface && typeof this.agentInterface.destroy === "function") {
+            this.agentInterface.destroy();
+        }
+        this.agentInterface = null;
     }
 
     buildTrackers(trackerConfigs) {
@@ -336,6 +363,13 @@ class Robot {
             aiModelsDiv.appendChild(none);
         }
         this.container.appendChild(aiModelsDiv);
+
+        if (this.agentInterface && typeof this.agentInterface.buildGUI === "function") {
+            const agentDiv = document.createElement("div");
+            agentDiv.className = "robot-agent-interfaces";
+            this.agentInterface.buildGUI(agentDiv);
+            this.container.appendChild(agentDiv);
+        }
 
         const trackersDiv = document.createElement('div');
         trackersDiv.className = 'robot-trackers';
