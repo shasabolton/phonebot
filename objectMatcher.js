@@ -455,13 +455,13 @@ class ObjectMatcherAiModel {
             const bh = h * heightScale;
             const label = `${item.class} ${(item.score * 100).toFixed(0)}%`;
 
-            ctx.strokeStyle = "#00ff66";
+            ctx.strokeStyle = "#ff3333";
             ctx.strokeRect(bx, by, bw, bh);
             const labelW = ctx.measureText(label).width + 8;
             const labelH = 16;
             ctx.fillStyle = "rgba(0, 0, 0, 0.7)";
             ctx.fillRect(bx, Math.max(0, by - labelH), labelW, labelH);
-            ctx.fillStyle = "#00ff66";
+            ctx.fillStyle = "#ff3333";
             ctx.fillText(label, bx + 4, Math.max(0, by - labelH + 2));
         });
     }
