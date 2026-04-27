@@ -8,6 +8,8 @@ class CocoAiModel {
     static MAX_BOXES = 100;
     static MIN_SCORE = 0.01;
     static MAX_SCORE = 0.99;
+    static DEFAULT_TRACK_TIMEOUT_MS = 1000;
+    static DEFAULT_MATCH_IOU = 0.3;
     /** Min interval ms so setInterval can keep up (~20 Hz). */
     static MIN_TICK_INTERVAL_MS = 50;
 
@@ -25,11 +27,19 @@ class CocoAiModel {
         this.maxNumBoxes = Math.max(CocoAiModel.MIN_BOXES, Math.min(CocoAiModel.MAX_BOXES, this.maxNumBoxes));
         this.minScore = Number.isFinite(config.minScore) ? config.minScore : 0.5;
         this.minScore = Math.max(CocoAiModel.MIN_SCORE, Math.min(CocoAiModel.MAX_SCORE, this.minScore));
+        this.trackTimeoutMs = Number.isFinite(config.trackTimeoutMs)
+            ? Math.max(200, Math.min(10000, Math.round(config.trackTimeoutMs)))
+            : CocoAiModel.DEFAULT_TRACK_TIMEOUT_MS;
+        this.matchIouThreshold = Number.isFinite(config.matchIouThreshold)
+            ? Math.max(0.05, Math.min(0.95, config.matchIouThreshold))
+            : CocoAiModel.DEFAULT_MATCH_IOU;
         this._timer = null;
         this._running = false;
         this._overlayCanvas = null;
         this._overlayCtx = null;
         this._detections = [];
+        this._trackedObjects = [];
+        this._nextObjectId = 1;
         this._frameWidth = 0;
         this._frameHeight = 0;
         this._toggleBtn = null;
@@ -135,7 +145,8 @@ class CocoAiModel {
             const by = y * heightScale;
             const bw = w * widthScale;
             const bh = h * heightScale;
-            const label = `${item.class} ${(item.score * 100).toFixed(0)}%`;
+            const trackId = item.id || "obj-?";
+            const label = `${trackId} ${item.class} ${(item.score * 100).toFixed(0)}%`;
 
             ctx.strokeStyle = "#00ff66";
             ctx.strokeRect(bx, by, bw, bh);
@@ -155,8 +166,11 @@ class CocoAiModel {
             detectedAt: new Date().toISOString(),
             maxNumBoxes: this.maxNumBoxes,
             minScore: Number(this.minScore.toFixed(2)),
+            trackTimeoutMs: this.trackTimeoutMs,
+            matchIouThreshold: Number(this.matchIouThreshold.toFixed(2)),
             objectCount: this._detections.length,
             objects: this._detections.map((item) => ({
+                id: item.id || null,
                 name: item.class,
                 score: Number(item.score.toFixed(3)),
                 bbox: {
@@ -168,6 +182,61 @@ class CocoAiModel {
             }))
         };
         this._outputEl.textContent = JSON.stringify(response, null, 2);
+    }
+
+    _iou(a, b) {
+        const ax2 = a[0] + a[2];
+        const ay2 = a[1] + a[3];
+        const bx2 = b[0] + b[2];
+        const by2 = b[1] + b[3];
+        const x1 = Math.max(a[0], b[0]);
+        const y1 = Math.max(a[1], b[1]);
+        const x2 = Math.min(ax2, bx2);
+        const y2 = Math.min(ay2, by2);
+        const iw = Math.max(0, x2 - x1);
+        const ih = Math.max(0, y2 - y1);
+        const intersection = iw * ih;
+        if (!intersection) return 0;
+        const union = (a[2] * a[3]) + (b[2] * b[3]) - intersection;
+        return union > 0 ? (intersection / union) : 0;
+    }
+
+    _trackDetections(detections) {
+        const now = Date.now();
+        this._trackedObjects = this._trackedObjects.filter((t) => (now - t.lastSeenMs) <= this.trackTimeoutMs);
+        const unmatchedTrackIds = new Set(this._trackedObjects.map((t) => t.id));
+
+        for (const det of detections) {
+            let bestTrack = null;
+            let bestIou = 0;
+            for (const track of this._trackedObjects) {
+                if (!unmatchedTrackIds.has(track.id)) continue;
+                if (String(track.class || "").toLowerCase() !== String(det.class || "").toLowerCase()) continue;
+                const iou = this._iou(track.bbox, det.bbox);
+                if (iou > bestIou) {
+                    bestIou = iou;
+                    bestTrack = track;
+                }
+            }
+
+            if (bestTrack && bestIou >= this.matchIouThreshold) {
+                det.id = bestTrack.id;
+                bestTrack.bbox = Array.isArray(det.bbox) ? [...det.bbox] : [0, 0, 0, 0];
+                bestTrack.score = Number(det.score) || 0;
+                bestTrack.lastSeenMs = now;
+                unmatchedTrackIds.delete(bestTrack.id);
+            } else {
+                const newId = `obj-${this._nextObjectId++}`;
+                det.id = newId;
+                this._trackedObjects.push({
+                    id: newId,
+                    class: det.class,
+                    bbox: Array.isArray(det.bbox) ? [...det.bbox] : [0, 0, 0, 0],
+                    score: Number(det.score) || 0,
+                    lastSeenMs: now
+                });
+            }
+        }
     }
 
     async _tick() {
@@ -186,6 +255,7 @@ class CocoAiModel {
             this._frameHeight = videoEl.videoHeight || 0;
             const detections = await model.detect(videoEl, this.maxNumBoxes, this.minScore);
             this._detections = Array.isArray(detections) ? detections : [];
+            this._trackDetections(this._detections);
             this._drawDetections(videoEl, this._detections);
             this._renderResponseOutput();
             if (this._statusEl) {
@@ -242,6 +312,7 @@ class CocoAiModel {
         } else {
             this._stopLoop();
             this._detections = [];
+            this._trackedObjects = [];
             this._clearOverlay();
             this._renderResponseOutput();
             if (this._statusEl) {
@@ -290,6 +361,7 @@ class CocoAiModel {
 
     getLatestDetections() {
         return this._detections.map((item) => ({
+            id: item.id || null,
             class: item.class,
             score: item.score,
             bbox: Array.isArray(item.bbox) ? [...item.bbox] : [0, 0, 0, 0]
@@ -392,6 +464,7 @@ class CocoAiModel {
         this._overlayCanvas = null;
         this._overlayCtx = null;
         this._detections = [];
+        this._trackedObjects = [];
     }
 }
 
