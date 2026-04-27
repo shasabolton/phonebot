@@ -19,6 +19,16 @@ class GroqVisionAiModel {
         this.model = String(config.model || "meta-llama/llama-4-scout-17b-16e-instruct");
         this.apiKey = "";
         this.rememberKey = false;
+        this.captureMaxEdge = Number.isFinite(config.captureMaxEdge) ? Math.round(config.captureMaxEdge) : 960;
+        this.captureMaxEdge = Math.max(320, Math.min(1600, this.captureMaxEdge));
+        this.captureJpegQuality = Number.isFinite(config.captureJpegQuality) ? config.captureJpegQuality : 0.85;
+        this.captureJpegQuality = Math.max(0.4, Math.min(0.98, this.captureJpegQuality));
+        this.minFullObjectCoverage = Number.isFinite(config.minFullObjectCoverage) ? config.minFullObjectCoverage : 0.65;
+        this.minFullObjectCoverage = Math.max(0, Math.min(1, this.minFullObjectCoverage));
+        this.minBboxConfidence = Number.isFinite(config.minBboxConfidence) ? config.minBboxConfidence : 0.4;
+        this.minBboxConfidence = Math.max(0, Math.min(1, this.minBboxConfidence));
+        this.minBoxAreaRatio = Number.isFinite(config.minBoxAreaRatio) ? config.minBoxAreaRatio : 0.0025;
+        this.minBoxAreaRatio = Math.max(0.0001, Math.min(0.5, this.minBoxAreaRatio));
         this._timer = null;
         this._running = false;
         this._overlayCanvas = null;
@@ -27,6 +37,7 @@ class GroqVisionAiModel {
         this._captureCtx = null;
         this._detections = [];
         this._rawDetections = [];
+        this._filteredOutCount = 0;
         this._sceneDescription = "";
         this._rateLimits = {};
         this._frameWidth = 0;
@@ -216,6 +227,7 @@ class GroqVisionAiModel {
             groqModel: this.model,
             detectedAt: new Date().toISOString(),
             objectCount: this._detections.length,
+            filteredOutCount: this._filteredOutCount,
             sceneDescription: this._sceneDescription,
             rateLimits: this._rateLimits,
             objects: this._detections.map((item) => ({
@@ -433,7 +445,7 @@ class GroqVisionAiModel {
         const sourceW = videoEl.videoWidth | 0;
         const sourceH = videoEl.videoHeight | 0;
         if (!sourceW || !sourceH) return null;
-        const maxEdge = 640;
+        const maxEdge = this.captureMaxEdge;
         const scale = Math.min(1, maxEdge / Math.max(sourceW, sourceH));
         const targetW = Math.max(1, Math.round(sourceW * scale));
         const targetH = Math.max(1, Math.round(sourceH * scale));
@@ -444,7 +456,7 @@ class GroqVisionAiModel {
         this._captureCanvas.height = targetH;
         this._captureCtx.drawImage(videoEl, 0, 0, targetW, targetH);
         return {
-            dataUrl: this._captureCanvas.toDataURL("image/jpeg", 0.7),
+            dataUrl: this._captureCanvas.toDataURL("image/jpeg", this.captureJpegQuality),
             width: targetW,
             height: targetH
         };
@@ -471,15 +483,34 @@ class GroqVisionAiModel {
         }
     }
 
+    _isDetectionPlausibleForTracking(detection, frameWidth, frameHeight) {
+        const area = detection.bbox[2] * detection.bbox[3];
+        const frameArea = Math.max(1, frameWidth * frameHeight);
+        const areaRatio = area / frameArea;
+        if (areaRatio < this.minBoxAreaRatio) return false;
+        if (detection.fullObjectCoverage < this.minFullObjectCoverage) return false;
+        if (detection.bboxConfidence < this.minBboxConfidence) return false;
+        return true;
+    }
+
     _normalizeDetections(payload, frameWidth, frameHeight) {
         const list = Array.isArray(payload?.detections) ? payload.detections : [];
         const normalized = [];
         const rawDetections = [];
+        let filteredOut = 0;
         for (const item of list) {
             const label = String(item?.label || item?.class || "").trim();
             if (!label) continue;
             const scoreRaw = Number(item?.score);
             const score = Number.isFinite(scoreRaw) ? Math.max(0, Math.min(1, scoreRaw)) : 0.5;
+            const fullObjectCoverageRaw = Number(item?.full_object_coverage);
+            const fullObjectCoverage = Number.isFinite(fullObjectCoverageRaw)
+                ? Math.max(0, Math.min(1, fullObjectCoverageRaw))
+                : 1;
+            const bboxConfidenceRaw = Number(item?.bbox_confidence);
+            const bboxConfidence = Number.isFinite(bboxConfidenceRaw)
+                ? Math.max(0, Math.min(1, bboxConfidenceRaw))
+                : score;
             const box = item?.bbox || {};
             const xNorm = Number(box?.x);
             const yNorm = Number(box?.y);
@@ -495,13 +526,20 @@ class GroqVisionAiModel {
             const y = Math.max(0, Math.min(frameHeight, yNorm * frameHeight));
             const width = Math.max(1, Math.min(frameWidth - x, wNorm * frameWidth));
             const height = Math.max(1, Math.min(frameHeight - y, hNorm * frameHeight));
-            normalized.push({
+            const detection = {
                 class: label,
                 score,
+                fullObjectCoverage,
+                bboxConfidence,
                 bbox: [x, y, width, height]
-            });
+            };
+            if (this._isDetectionPlausibleForTracking(detection, frameWidth, frameHeight)) {
+                normalized.push(detection);
+            } else {
+                filteredOut += 1;
+            }
         }
-        return { normalized, rawDetections };
+        return { normalized, rawDetections, filteredOut };
     }
 
     async _queryGroq(imageDataUrl, frameWidth, frameHeight) {
@@ -510,6 +548,9 @@ class GroqVisionAiModel {
         }
         const prompt = [
             "Analyze this image and return JSON only.",
+            "IMPORTANT: For each object, box the FULL visible extent of the physical object.",
+            "Do NOT return partial boxes (for example: only handle, only blade tip, only logo region).",
+            "If uncertain, return a slightly larger full-object box rather than a small partial box.",
             "Schema:",
             "{",
             '  "sceneDescription": "short sentence",',
@@ -517,6 +558,8 @@ class GroqVisionAiModel {
             "    {",
             '      "label": "object label",',
             '      "score": 0.0,',
+            '      "full_object_coverage": 0.0,',
+            '      "bbox_confidence": 0.0,',
             '      "bbox": { "x": 0.0, "y": 0.0, "width": 0.0, "height": 0.0 }',
             "    }",
             "  ]",
@@ -566,6 +609,7 @@ class GroqVisionAiModel {
         return {
             detections: normalizedResult.normalized,
             rawDetections: normalizedResult.rawDetections,
+            filteredOut: normalizedResult.filteredOut,
             sceneDescription
         };
     }
@@ -588,6 +632,7 @@ class GroqVisionAiModel {
             const result = await this._queryGroq(frame.dataUrl, this._frameWidth, this._frameHeight);
             this._detections = result.detections;
             this._rawDetections = result.rawDetections || [];
+            this._filteredOutCount = Number(result.filteredOut) || 0;
             this._sceneDescription = result.sceneDescription;
             this._drawDetections(videoEl, this._detections, this._rawDetections);
             this._renderResponseOutput();
@@ -636,6 +681,7 @@ class GroqVisionAiModel {
             this._stopLoop();
             this._detections = [];
             this._rawDetections = [];
+            this._filteredOutCount = 0;
             this._sceneDescription = "";
             this._clearOverlay();
             this._renderResponseOutput();
@@ -824,6 +870,7 @@ class GroqVisionAiModel {
         this._captureCtx = null;
         this._detections = [];
         this._rawDetections = [];
+        this._filteredOutCount = 0;
     }
 }
 
