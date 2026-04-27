@@ -36,19 +36,16 @@ class GroqVisionAiModel {
         this._captureCanvas = null;
         this._captureCtx = null;
         this._detections = [];
-        this._rawDetections = [];
         this._filteredOutCount = 0;
         this._sceneDescription = "";
         this._rateLimits = {};
         this._frameWidth = 0;
         this._frameHeight = 0;
-        this.showRawDebug = config.showRawDebug !== false;
         this._toggleBtn = null;
         this._freqInput = null;
         this._keyInput = null;
         this._modelInput = null;
         this._rememberInput = null;
-        this._showRawDebugInput = null;
         this._statusEl = null;
         this._outputEl = null;
         this._limitsEl = null;
@@ -116,7 +113,7 @@ class GroqVisionAiModel {
         this._overlayCtx.clearRect(0, 0, this._overlayCanvas.width, this._overlayCanvas.height);
     }
 
-    _drawDetections(videoEl, detections, rawDetections = []) {
+    _drawDetections(videoEl, detections) {
         if (!this._overlayCtx || !this._overlayCanvas) return;
         this._resizeOverlayToVideo(videoEl);
         this._clearOverlay();
@@ -145,79 +142,6 @@ class GroqVisionAiModel {
             ctx.fillText(label, bx + 4, Math.max(0, by - labelH + 2));
         });
 
-        // Debug overlay: raw Groq bboxes in red for format/alignment inspection.
-        if (!this.showRawDebug) return;
-        rawDetections.forEach((item) => {
-            const [x, y, w, h] = Array.isArray(item?.bbox) ? item.bbox : [NaN, NaN, NaN, NaN];
-            if (![x, y, w, h].every(Number.isFinite)) return;
-            const frameRaw = this._mapRawBboxToFrame([x, y, w, h], videoEl.videoWidth, videoEl.videoHeight);
-            if (!frameRaw) return;
-            const [fx, fy, fw, fh] = frameRaw;
-            const bx = fx * widthScale;
-            const by = fy * heightScale;
-            const bw = fw * widthScale;
-            const bh = fh * heightScale;
-            if (!(bw > 0 && bh > 0)) return;
-            const label = `raw:${item.class || "obj"}`;
-            ctx.save();
-            ctx.setLineDash([6, 4]);
-            ctx.lineWidth = 4;
-            ctx.strokeStyle = "rgba(255, 0, 0, 0.85)";
-            ctx.fillStyle = "rgba(255, 0, 0, 0.12)";
-            // Slight expansion so a perfectly overlapping raw box remains visible under yellow.
-            ctx.strokeRect(bx - 2, by - 2, bw + 4, bh + 4);
-            ctx.fillRect(bx - 2, by - 2, bw + 4, bh + 4);
-            const labelW = ctx.measureText(label).width + 8;
-            const labelH = 16;
-            ctx.fillStyle = "rgba(0, 0, 0, 0.72)";
-            ctx.fillRect(bx - 2, Math.max(0, by - 2), labelW, labelH);
-            ctx.fillStyle = "rgba(255, 80, 80, 1)";
-            ctx.fillText(label, bx + 2, Math.max(0, by));
-            ctx.restore();
-        });
-    }
-
-    _mapRawBboxToFrame(rawBbox, frameWidth, frameHeight) {
-        const [x, y, w, h] = rawBbox;
-        if (![x, y, w, h].every(Number.isFinite)) return null;
-        if (!(frameWidth > 0 && frameHeight > 0)) return null;
-
-        // Case A: normalized [0..1].
-        const maybeNormalized =
-            x >= -0.2 && y >= -0.2 && w >= 0 && h >= 0 &&
-            x <= 1.5 && y <= 1.5 && w <= 1.5 && h <= 1.5;
-        if (maybeNormalized) {
-            const nx = Math.max(0, Math.min(frameWidth, x * frameWidth));
-            const ny = Math.max(0, Math.min(frameHeight, y * frameHeight));
-            const nw = Math.max(1, Math.min(frameWidth - nx, w * frameWidth));
-            const nh = Math.max(1, Math.min(frameHeight - ny, h * frameHeight));
-            return [nx, ny, nw, nh];
-        }
-
-        // Case B: pixel bbox in uploaded (capture) image coordinates.
-        const sourceW = this._captureCanvas?.width || frameWidth;
-        const sourceH = this._captureCanvas?.height || frameHeight;
-        const looksLikeCapturePixels =
-            x >= -sourceW * 0.25 && y >= -sourceH * 0.25 &&
-            w >= 1 && h >= 1 &&
-            x <= sourceW * 1.5 && y <= sourceH * 1.5 &&
-            w <= sourceW * 1.5 && h <= sourceH * 1.5;
-        if (looksLikeCapturePixels) {
-            const sx = frameWidth / sourceW;
-            const sy = frameHeight / sourceH;
-            const px = Math.max(0, Math.min(frameWidth, x * sx));
-            const py = Math.max(0, Math.min(frameHeight, y * sy));
-            const pw = Math.max(1, Math.min(frameWidth - px, w * sx));
-            const ph = Math.max(1, Math.min(frameHeight - py, h * sy));
-            return [px, py, pw, ph];
-        }
-
-        // Case C: assume raw pixels already in full-frame coordinates.
-        const px = Math.max(0, Math.min(frameWidth, x));
-        const py = Math.max(0, Math.min(frameHeight, y));
-        const pw = Math.max(1, Math.min(frameWidth - px, w));
-        const ph = Math.max(1, Math.min(frameHeight - py, h));
-        return [px, py, pw, ph];
     }
 
     _renderResponseOutput() {
@@ -496,7 +420,6 @@ class GroqVisionAiModel {
     _normalizeDetections(payload, frameWidth, frameHeight) {
         const list = Array.isArray(payload?.detections) ? payload.detections : [];
         const normalized = [];
-        const rawDetections = [];
         let filteredOut = 0;
         for (const item of list) {
             const label = String(item?.label || item?.class || "").trim();
@@ -517,11 +440,6 @@ class GroqVisionAiModel {
             const wNorm = Number(box?.width);
             const hNorm = Number(box?.height);
             if (![xNorm, yNorm, wNorm, hNorm].every(Number.isFinite)) continue;
-            rawDetections.push({
-                class: label,
-                score,
-                bbox: [xNorm, yNorm, wNorm, hNorm]
-            });
             const x = Math.max(0, Math.min(frameWidth, xNorm * frameWidth));
             const y = Math.max(0, Math.min(frameHeight, yNorm * frameHeight));
             const width = Math.max(1, Math.min(frameWidth - x, wNorm * frameWidth));
@@ -539,7 +457,7 @@ class GroqVisionAiModel {
                 filteredOut += 1;
             }
         }
-        return { normalized, rawDetections, filteredOut };
+        return { normalized, filteredOut };
     }
 
     async _queryGroq(imageDataUrl, frameWidth, frameHeight) {
@@ -608,7 +526,6 @@ class GroqVisionAiModel {
         const sceneDescription = String(parsed?.sceneDescription || "").trim();
         return {
             detections: normalizedResult.normalized,
-            rawDetections: normalizedResult.rawDetections,
             filteredOut: normalizedResult.filteredOut,
             sceneDescription
         };
@@ -631,10 +548,9 @@ class GroqVisionAiModel {
             if (!frame) throw new Error("Could not capture camera frame.");
             const result = await this._queryGroq(frame.dataUrl, this._frameWidth, this._frameHeight);
             this._detections = result.detections;
-            this._rawDetections = result.rawDetections || [];
             this._filteredOutCount = Number(result.filteredOut) || 0;
             this._sceneDescription = result.sceneDescription;
-            this._drawDetections(videoEl, this._detections, this._rawDetections);
+            this._drawDetections(videoEl, this._detections);
             this._renderResponseOutput();
             if (this._statusEl) {
                 this._statusEl.textContent = `Running: ${this._detections.length} object(s)`;
@@ -680,7 +596,6 @@ class GroqVisionAiModel {
         } else {
             this._stopLoop();
             this._detections = [];
-            this._rawDetections = [];
             this._filteredOutCount = 0;
             this._sceneDescription = "";
             this._clearOverlay();
@@ -743,11 +658,6 @@ class GroqVisionAiModel {
         this._persistSettings();
     }
 
-    setShowRawDebug(nextEnabled) {
-        this.showRawDebug = !!nextEnabled;
-        if (this._showRawDebugInput) this._showRawDebugInput.checked = this.showRawDebug;
-    }
-
     buildGUI(container) {
         if (!container) return;
         const wrap = document.createElement("div");
@@ -806,14 +716,6 @@ class GroqVisionAiModel {
         freqInput.addEventListener("change", () => this.setFrequencyHz(freqInput.value));
         freqInput.addEventListener("blur", () => this.setFrequencyHz(freqInput.value));
 
-        const showRawDebugLabel = document.createElement("label");
-        showRawDebugLabel.textContent = "Show raw debug boxes (red)";
-        const showRawDebugInput = document.createElement("input");
-        showRawDebugInput.type = "checkbox";
-        showRawDebugInput.checked = this.showRawDebug;
-        showRawDebugInput.addEventListener("change", () => this.setShowRawDebug(showRawDebugInput.checked));
-        showRawDebugLabel.appendChild(showRawDebugInput);
-
         const status = document.createElement("p");
         status.className = "muted";
         status.textContent = "Model off.";
@@ -837,7 +739,6 @@ class GroqVisionAiModel {
         controls.appendChild(modelInput);
         controls.appendChild(freqLabel);
         controls.appendChild(freqInput);
-        controls.appendChild(showRawDebugLabel);
         wrap.appendChild(title);
         wrap.appendChild(controls);
         wrap.appendChild(status);
@@ -851,7 +752,6 @@ class GroqVisionAiModel {
         this._keyInput = keyInput;
         this._modelInput = modelInput;
         this._rememberInput = rememberInput;
-        this._showRawDebugInput = showRawDebugInput;
         this._statusEl = status;
         this._limitsEl = limits;
         this._outputEl = output;
@@ -869,7 +769,6 @@ class GroqVisionAiModel {
         this._captureCanvas = null;
         this._captureCtx = null;
         this._detections = [];
-        this._rawDetections = [];
         this._filteredOutCount = 0;
     }
 }

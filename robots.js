@@ -55,7 +55,9 @@ window.ROBOTS_DATA = {
                     type: "objectmatcher",
                     frequencyHz: 10,
                     groqFeedType: "groqvision",
+                    cocoFeedType: "coco",
                     groqRefreshMs: 5000,
+                    cocoRefreshMs: 500,
                     name: "Object matcher (Groq + flow)"
                 }
             ],

@@ -21,8 +21,11 @@ class ObjectMatcherAiModel {
         );
 
         this.groqFeedType = String(config.groqFeedType || "groqvision").trim().toLowerCase();
+        this.cocoFeedType = String(config.cocoFeedType || "coco").trim().toLowerCase();
         this.groqRefreshMs = Number.isFinite(config.groqRefreshMs) ? config.groqRefreshMs : 5000;
         this.groqRefreshMs = Math.max(500, Math.min(120000, this.groqRefreshMs));
+        this.cocoRefreshMs = Number.isFinite(config.cocoRefreshMs) ? config.cocoRefreshMs : 500;
+        this.cocoRefreshMs = Math.max(100, Math.min(120000, this.cocoRefreshMs));
 
         this.mergeIou = Number.isFinite(config.mergeIou) ? config.mergeIou : 0.25;
         this.mergeIou = Math.max(0.05, Math.min(0.95, this.mergeIou));
@@ -50,6 +53,8 @@ class ObjectMatcherAiModel {
         this._nextId = 1;
         this._lastGroqSnapshot = "";
         this._lastGroqReanchorMs = 0;
+        this._lastCocoSnapshot = "";
+        this._lastCocoReanchorMs = 0;
         this._frameWidth = 0;
         this._frameHeight = 0;
         this._detections = [];
@@ -57,6 +62,7 @@ class ObjectMatcherAiModel {
         this._toggleBtn = null;
         this._freqInput = null;
         this._refreshInput = null;
+        this._cocoRefreshInput = null;
         this._statusEl = null;
         this._outputEl = null;
     }
@@ -109,6 +115,10 @@ class ObjectMatcherAiModel {
 
     _getGroqModel() {
         return this.robot.getAiModelByType(this.groqFeedType) || this.robot.getAiModelByName(this.groqFeedType);
+    }
+
+    _getCocoModel() {
+        return this.robot.getAiModelByType(this.cocoFeedType) || this.robot.getAiModelByName(this.cocoFeedType);
     }
 
     _ensureOverlay() {
@@ -195,7 +205,7 @@ class ObjectMatcherAiModel {
         };
     }
 
-    _mergeGroqDetections(detections, rgbaFull, fw, fh) {
+    _mergeAnchorDetections(detections, source, rgbaFull, fw, fh) {
         const fp = this.filterParams;
         for (const det of detections) {
             const label = String(det.class || "").trim().toLowerCase();
@@ -239,7 +249,16 @@ class ObjectMatcherAiModel {
 
             if (bestIdx >= 0 && bestIou >= this.mergeIou) {
                 const t = this._tracks[bestIdx];
-                t.bbox = bbox;
+                if (source === "coco" || t.labelSource !== "coco") {
+                    t.bbox = bbox;
+                }
+                if (source === "groq") {
+                    t.class = label;
+                    t.labelSource = "groq";
+                } else if (t.labelSource !== "groq") {
+                    t.class = label;
+                    t.labelSource = "coco";
+                }
                 t.score = score;
                 t.filterParams = { ...fp, ...t.filterParams, colorStats: colorStats || t.filterParams?.colorStats };
                 t.needsReinit = true;
@@ -255,8 +274,16 @@ class ObjectMatcherAiModel {
                 }
                 if (altIdx >= 0 && altIou >= this.mergeIou * 0.6) {
                     const t = this._tracks[altIdx];
-                    t.class = label;
-                    t.bbox = bbox;
+                    if (source === "coco" || t.labelSource !== "coco") {
+                        t.bbox = bbox;
+                    }
+                    if (source === "groq") {
+                        t.class = label;
+                        t.labelSource = "groq";
+                    } else if (t.labelSource !== "groq") {
+                        t.class = label;
+                        t.labelSource = "coco";
+                    }
                     t.score = score;
                     t.filterParams = { ...fp, colorStats };
                     t.needsReinit = true;
@@ -264,6 +291,7 @@ class ObjectMatcherAiModel {
                     this._tracks.push({
                         id: this._nextId++,
                         class: label,
+                        labelSource: source,
                         score,
                         bbox,
                         filterParams: { ...fp, colorStats },
@@ -442,7 +470,8 @@ class ObjectMatcherAiModel {
         this._detections = this._tracks.map((t) => ({
             class: t.class,
             score: t.score,
-            bbox: [...t.bbox]
+            bbox: [...t.bbox],
+            labelSource: t.labelSource || "coco"
         }));
     }
 
@@ -454,9 +483,12 @@ class ObjectMatcherAiModel {
             objectCount: this._detections.length,
             groqFeed: this.groqFeedType,
             groqRefreshMs: this.groqRefreshMs,
+            cocoFeed: this.cocoFeedType,
+            cocoRefreshMs: this.cocoRefreshMs,
             tracks: this._tracks.map((t) => ({
                 id: t.id,
                 name: t.class,
+                labelSource: t.labelSource || "coco",
                 score: Number(t.score.toFixed(3)),
                 bbox: {
                     x: Number(t.bbox[0].toFixed(1)),
@@ -496,21 +528,35 @@ class ObjectMatcherAiModel {
             cv.cvtColor(rgba, gray, cv.COLOR_RGBA2GRAY);
 
             const now = Date.now();
-            const snap = this._snapshotGroqDetections();
-            const groq = this._getGroqModel();
-            const snapChanged = snap && snap !== this._lastGroqSnapshot;
-            const periodicReanchor = now - this._lastGroqReanchorMs >= this.groqRefreshMs;
-
-            if (groq && typeof groq.getLatestDetections === "function" && (snapChanged || periodicReanchor)) {
-                this._lastGroqReanchorMs = now;
-                if (snapChanged) this._lastGroqSnapshot = snap;
-                const dets = groq.getLatestDetections();
-                if (Array.isArray(dets) && dets.length) {
-                    this._mergeGroqDetections(dets, rgba, gray.cols, gray.rows);
+            const coco = this._getCocoModel();
+            const cocoSnap = coco && typeof coco.getLatestDetections === "function"
+                ? JSON.stringify(coco.getLatestDetections())
+                : "";
+            const cocoChanged = cocoSnap && cocoSnap !== this._lastCocoSnapshot;
+            const cocoPeriodic = now - this._lastCocoReanchorMs >= this.cocoRefreshMs;
+            if (coco && typeof coco.getLatestDetections === "function" && (cocoChanged || cocoPeriodic)) {
+                this._lastCocoReanchorMs = now;
+                if (cocoChanged) this._lastCocoSnapshot = cocoSnap;
+                const cocoDets = coco.getLatestDetections();
+                if (Array.isArray(cocoDets) && cocoDets.length) {
+                    this._mergeAnchorDetections(cocoDets, "coco", rgba, gray.cols, gray.rows);
                     this._releaseAllTrackPts();
-                    for (const t of this._tracks) {
-                        t.needsReinit = true;
-                    }
+                    for (const t of this._tracks) t.needsReinit = true;
+                }
+            }
+
+            const groq = this._getGroqModel();
+            const groqSnap = this._snapshotGroqDetections();
+            const groqChanged = groqSnap && groqSnap !== this._lastGroqSnapshot;
+            const groqPeriodic = now - this._lastGroqReanchorMs >= this.groqRefreshMs;
+            if (groq && typeof groq.getLatestDetections === "function" && (groqChanged || groqPeriodic)) {
+                this._lastGroqReanchorMs = now;
+                if (groqChanged) this._lastGroqSnapshot = groqSnap;
+                const groqDets = groq.getLatestDetections();
+                if (Array.isArray(groqDets) && groqDets.length) {
+                    this._mergeAnchorDetections(groqDets, "groq", rgba, gray.cols, gray.rows);
+                    this._releaseAllTrackPts();
+                    for (const t of this._tracks) t.needsReinit = true;
                 }
             }
 
@@ -543,7 +589,8 @@ class ObjectMatcherAiModel {
             this._renderResponseOutput();
 
             if (this._statusEl) {
-                this._statusEl.textContent = `Tracking ${this._detections.length} object(s) at ${this.frequencyHz} Hz (Groq feed: ${this.groqFeedType})`;
+                const groqLabels = this._tracks.filter((t) => t.labelSource === "groq").length;
+                this._statusEl.textContent = `Tracking ${this._detections.length} object(s) at ${this.frequencyHz} Hz (boxes from ${this.cocoFeedType}, Groq labels: ${groqLabels})`;
                 this._statusEl.className = "muted";
             }
         } catch (err) {
@@ -641,6 +688,13 @@ class ObjectMatcherAiModel {
         if (this._refreshInput) this._refreshInput.value = String(this.groqRefreshMs);
     }
 
+    setCocoRefreshMs(nextMs) {
+        const parsed = Number(nextMs);
+        if (!Number.isFinite(parsed)) return;
+        this.cocoRefreshMs = Math.max(100, Math.min(120000, Math.round(parsed)));
+        if (this._cocoRefreshInput) this._cocoRefreshInput.value = String(this.cocoRefreshMs);
+    }
+
     getFrequencyHz() {
         return this.frequencyHz;
     }
@@ -690,7 +744,7 @@ class ObjectMatcherAiModel {
         freqInput.addEventListener("blur", () => this.setFrequencyHz(freqInput.value));
 
         const refreshLabel = document.createElement("label");
-        refreshLabel.textContent = "Min ms between Groq merges";
+        refreshLabel.textContent = "Min ms between Groq label merges";
         const refreshInput = document.createElement("input");
         refreshInput.type = "number";
         refreshInput.min = "500";
@@ -700,9 +754,20 @@ class ObjectMatcherAiModel {
         refreshInput.addEventListener("change", () => this.setGroqRefreshMs(refreshInput.value));
         refreshInput.addEventListener("blur", () => this.setGroqRefreshMs(refreshInput.value));
 
+        const cocoRefreshLabel = document.createElement("label");
+        cocoRefreshLabel.textContent = "Min ms between COCO bbox merges";
+        const cocoRefreshInput = document.createElement("input");
+        cocoRefreshInput.type = "number";
+        cocoRefreshInput.min = "100";
+        cocoRefreshInput.max = "120000";
+        cocoRefreshInput.step = "100";
+        cocoRefreshInput.value = String(this.cocoRefreshMs);
+        cocoRefreshInput.addEventListener("change", () => this.setCocoRefreshMs(cocoRefreshInput.value));
+        cocoRefreshInput.addEventListener("blur", () => this.setCocoRefreshMs(cocoRefreshInput.value));
+
         const hint = document.createElement("p");
         hint.className = "muted";
-        hint.textContent = `Reads boxes from "${this.groqFeedType}" when its output changes, and re-anchors at least every ${this.groqRefreshMs} ms. Enable Groq vision (e.g. 0.2 Hz).`;
+        hint.textContent = `Uses "${this.cocoFeedType}" for bbox geometry and "${this.groqFeedType}" for label updates. Groq can overwrite labels, COCO cannot overwrite Groq labels.`;
 
         const status = document.createElement("p");
         status.className = "muted";
@@ -717,6 +782,8 @@ class ObjectMatcherAiModel {
         controls.appendChild(freqInput);
         controls.appendChild(refreshLabel);
         controls.appendChild(refreshInput);
+        controls.appendChild(cocoRefreshLabel);
+        controls.appendChild(cocoRefreshInput);
         wrap.appendChild(title);
         wrap.appendChild(controls);
         wrap.appendChild(hint);
@@ -727,6 +794,7 @@ class ObjectMatcherAiModel {
         this._toggleBtn = toggleBtn;
         this._freqInput = freqInput;
         this._refreshInput = refreshInput;
+        this._cocoRefreshInput = cocoRefreshInput;
         this._statusEl = status;
         this._outputEl = output;
     }
