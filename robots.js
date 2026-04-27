@@ -48,7 +48,14 @@ window.ROBOTS_DATA = {
             ],
             sensors: ["camera"],
             aiModels: [
-                { type: "coco", frequencyHz: 10, maxNumBoxes: 30, minScore: 0.25 },
+                {
+                    type: "coco",
+                    frequencyHz: 10,
+                    maxNumBoxes: 40,
+                    minScore: 0.2,
+                    trackTimeoutMs: 3000,
+                    matchIouThreshold: 0.2
+                },
                 { type: "tracker", frequencyHz: 10 },
                 { type: "groqvision", frequencyHz: 0.2, model: "meta-llama/llama-4-scout-17b-16e-instruct" },
                 {

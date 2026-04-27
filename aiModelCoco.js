@@ -46,6 +46,8 @@ class CocoAiModel {
         this._freqInput = null;
         this._maxBoxesInput = null;
         this._minScoreInput = null;
+        this._trackTimeoutInput = null;
+        this._matchIouInput = null;
         this._statusEl = null;
         this._outputEl = null;
     }
@@ -355,6 +357,20 @@ class CocoAiModel {
         if (this.enabled) this._startLoop();
     }
 
+    setTrackTimeoutMs(nextValue) {
+        const parsed = Number(nextValue);
+        if (!Number.isFinite(parsed)) return;
+        this.trackTimeoutMs = Math.max(200, Math.min(10000, Math.round(parsed)));
+        if (this._trackTimeoutInput) this._trackTimeoutInput.value = String(this.trackTimeoutMs);
+    }
+
+    setMatchIouThreshold(nextValue) {
+        const parsed = Number(nextValue);
+        if (!Number.isFinite(parsed)) return;
+        this.matchIouThreshold = Math.max(0.05, Math.min(0.95, parsed));
+        if (this._matchIouInput) this._matchIouInput.value = String(this.matchIouThreshold);
+    }
+
     getFrequencyHz() {
         return this.frequencyHz;
     }
@@ -426,6 +442,28 @@ class CocoAiModel {
         minScoreInput.addEventListener("change", () => this.setMinScore(minScoreInput.value));
         minScoreInput.addEventListener("blur", () => this.setMinScore(minScoreInput.value));
 
+        const trackTimeoutLabel = document.createElement("label");
+        trackTimeoutLabel.textContent = "ID timeout (ms)";
+        const trackTimeoutInput = document.createElement("input");
+        trackTimeoutInput.type = "number";
+        trackTimeoutInput.min = "200";
+        trackTimeoutInput.max = "10000";
+        trackTimeoutInput.step = "100";
+        trackTimeoutInput.value = String(this.trackTimeoutMs);
+        trackTimeoutInput.addEventListener("change", () => this.setTrackTimeoutMs(trackTimeoutInput.value));
+        trackTimeoutInput.addEventListener("blur", () => this.setTrackTimeoutMs(trackTimeoutInput.value));
+
+        const matchIouLabel = document.createElement("label");
+        matchIouLabel.textContent = "ID match IoU threshold";
+        const matchIouInput = document.createElement("input");
+        matchIouInput.type = "number";
+        matchIouInput.min = "0.05";
+        matchIouInput.max = "0.95";
+        matchIouInput.step = "0.05";
+        matchIouInput.value = String(this.matchIouThreshold);
+        matchIouInput.addEventListener("change", () => this.setMatchIouThreshold(matchIouInput.value));
+        matchIouInput.addEventListener("blur", () => this.setMatchIouThreshold(matchIouInput.value));
+
         const status = document.createElement("p");
         status.className = "muted";
         status.textContent = "Model off.";
@@ -441,6 +479,10 @@ class CocoAiModel {
         controls.appendChild(maxBoxesInput);
         controls.appendChild(minScoreLabel);
         controls.appendChild(minScoreInput);
+        controls.appendChild(trackTimeoutLabel);
+        controls.appendChild(trackTimeoutInput);
+        controls.appendChild(matchIouLabel);
+        controls.appendChild(matchIouInput);
         wrap.appendChild(title);
         wrap.appendChild(controls);
         wrap.appendChild(status);
@@ -451,6 +493,8 @@ class CocoAiModel {
         this._freqInput = freqInput;
         this._maxBoxesInput = maxBoxesInput;
         this._minScoreInput = minScoreInput;
+        this._trackTimeoutInput = trackTimeoutInput;
+        this._matchIouInput = matchIouInput;
         this._statusEl = status;
         this._outputEl = output;
     }
