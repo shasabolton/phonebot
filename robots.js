@@ -73,8 +73,8 @@ window.ROBOTS_DATA = {
             targets: [],
             objectFilters: [
                 {
-                    name: "cocoTracker",
-                    dataFeed: "coco",
+                    name: "mainObjectFilter",
+                    dataFeed: "objectmatcher",
                     filters: ["cup"],
                     minScore: 0.1,
                     strategy: "largest",
@@ -86,7 +86,7 @@ window.ROBOTS_DATA = {
             pidControllers: [
                 {
                     name: "yaw object tracker PID",
-                    feedback: "cocoTracker.result.output.x",
+                    feedback: "mainObjectFilter.result.output.x",
                     controlInput: "yawSpeed",
                     goal: 0,
                     kp: -0.12,
@@ -95,9 +95,9 @@ window.ROBOTS_DATA = {
                     frequencyHz: "feedback"
                 }
             ],
-            state: ["goal", "objectFilters.cocoTracker.filters", "aiModels.coco.results"],
+            state: ["goal", "objectFilters.mainObjectFilter.filters", "aiModels.coco.results"],
             actions: [
-                {actionName: "setTrackingFilter", functionPath: "objectFilters.cocoTracker.setFiltersFromString", actionArgsHint: "cup, door, human etc" },
+                {actionName: "setTrackingFilter", functionPath: "objectFilters.mainObjectFilter.setFiltersFromString", actionArgsHint: "cup, door, human etc" },
                 {actionName: "setYawTrackingGoal", functionPath: "pidControllers.yawObjectTrackerPID.setGoal", actionArgsHint: "0, 1, -1", usage: "set goal to 0 to center an object. Set it between -1 and 1 to move it to the side. Moving an object from one side of the screen to the other can be used as a way to pan your view to explore."} // uses groq vision model
             ],
             agentInterface: {

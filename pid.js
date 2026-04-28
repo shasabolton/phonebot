@@ -21,20 +21,20 @@ class PID {
         this._outputEl = null;
     }
 
-    _resolveTrackerFromFeedback() {
+    _resolveObjectFilterFromFeedback() {
         const token = String(this.feedback || "").split(".")[0];
         if (!token) return null;
-        return this.robot.getTrackerByName(token);
+        return this.robot.getObjectFilterByName(token);
     }
 
     _resolveFeedbackValue() {
         const path = String(this.feedback || "");
         const parts = path.split(".");
-        const trackerName = parts[0];
-        if (!trackerName) return null;
-        const tracker = this.robot.getTrackerByName(trackerName);
-        if (!tracker) return null;
-        let cursor = { result: tracker.getResult() };
+        const objectFilterName = parts[0];
+        if (!objectFilterName) return null;
+        const objectFilter = this.robot.getObjectFilterByName(objectFilterName);
+        if (!objectFilter) return null;
+        let cursor = { result: objectFilter.getResult() };
         for (let i = 1; i < parts.length; i++) {
             const key = parts[i];
             cursor = cursor?.[key];
@@ -46,9 +46,9 @@ class PID {
 
     _resolveFrequencyHz() {
         if (!this.runBoundToFeedback && this.frequencyHz > 0) return this.frequencyHz;
-        const tracker = this._resolveTrackerFromFeedback();
-        if (tracker && typeof tracker._resolveFrequencyHz === "function") {
-            const hz = Number(tracker._resolveFrequencyHz());
+        const objectFilter = this._resolveObjectFilterFromFeedback();
+        if (objectFilter && typeof objectFilter._resolveFrequencyHz === "function") {
+            const hz = Number(objectFilter._resolveFrequencyHz());
             if (Number.isFinite(hz) && hz > 0) return hz;
         }
         return 1;

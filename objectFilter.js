@@ -1,7 +1,7 @@
-class Tracker {
+class ObjectFilter {
     constructor(robot, name, config = {}) {
         this.robot = robot;
-        this.name = name || config.name || "tracker";
+        this.name = name || config.name || "object filter";
         this.config = config;
         this.dataFeed = config.dataFeed || "coco";
         this.filters = Array.isArray(config.filters) ? [...config.filters] : [];
@@ -162,7 +162,7 @@ class Tracker {
     _renderOutput() {
         if (!this._outputEl) return;
         this._outputEl.textContent = JSON.stringify({
-            tracker: this.name,
+            objectFilter: this.name,
             feed: this.dataFeed,
             filters: this.filters,
             minScore: this.minScore,
@@ -186,10 +186,10 @@ class Tracker {
             }
             this._renderOutput();
         } catch (err) {
-            console.error("Tracker filter error:", err);
+            console.error("Object filter error:", err);
             if (this._statusEl) {
                 this._statusEl.className = "error";
-                this._statusEl.textContent = `Tracker error: ${err?.message || "unknown error"}`;
+                this._statusEl.textContent = `Object filter error: ${err?.message || "unknown error"}`;
             }
         } finally {
             this._busy = false;
@@ -222,7 +222,7 @@ class Tracker {
             this._renderOutput();
             if (this._statusEl) {
                 this._statusEl.className = "muted";
-                this._statusEl.textContent = "Tracker off.";
+                this._statusEl.textContent = "Object filter off.";
             }
         }
     }
@@ -233,7 +233,7 @@ class Tracker {
         wrap.className = "ai-model tracker-panel";
 
         const title = document.createElement("h4");
-        title.textContent = `Tracker: ${this.name}`;
+        title.textContent = `Object filter: ${this.name}`;
 
         const toggleBtn = document.createElement("button");
         toggleBtn.type = "button";
@@ -309,7 +309,7 @@ class Tracker {
 
         const status = document.createElement("p");
         status.className = "muted";
-        status.textContent = "Tracker off.";
+        status.textContent = "Object filter off.";
 
         const output = document.createElement("pre");
         output.className = "ai-model-output";
@@ -347,7 +347,6 @@ class Tracker {
     destroy() {
         this._stopLoop();
     }
-
 }
 
-window.Tracker = Tracker;
+window.ObjectFilter = ObjectFilter;

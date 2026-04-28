@@ -298,7 +298,7 @@ class AgentInterface {
             const segment = parts[i];
             const nextSegment = parts[i + 1];
 
-            if (segment === "trackers" || segment === "objectFilters") {
+            if (segment === "objectFilters") {
                 const filterItem =
                     this.robot?.getObjectFilterByName?.(nextSegment) ||
                     this._findNamedItem(this.robot?.objectFilters, nextSegment);

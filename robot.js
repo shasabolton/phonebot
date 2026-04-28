@@ -50,7 +50,7 @@ class Robot {
         this.buildSensors(this.config.sensors || []);
         this.buildAiModels(this.config.aiModels || []);
         this.buildAgentInterface();
-        this.buildObjectFilters(this.config.objectFilters || this.config.trackers || []);
+        this.buildObjectFilters(this.config.objectFilters || []);
         this.buildPidControllers(this.config.pidControllers || []);
         this.buildActuatorMixing();
     }
@@ -189,11 +189,11 @@ class Robot {
         for (const item of filterConfigs || []) {
             const cfg = typeof item === "string" ? { name: item } : { ...item };
             try {
-                if (typeof window.Tracker !== "function") {
-                    throw new Error("Tracker class is unavailable. Check tracker.js loading.");
+                if (typeof window.ObjectFilter !== "function") {
+                    throw new Error("ObjectFilter class is unavailable. Check objectFilter.js loading.");
                 }
-                const tracker = new window.Tracker(this, cfg.name, cfg);
-                this.objectFilters.push(tracker);
+                const objectFilter = new window.ObjectFilter(this, cfg.name, cfg);
+                this.objectFilters.push(objectFilter);
             } catch (err) {
                 console.error("Object filter build failed:", err);
             }
@@ -201,8 +201,8 @@ class Robot {
     }
 
     teardownObjectFilters() {
-        for (const tracker of this.objectFilters) {
-            if (typeof tracker.destroy === "function") tracker.destroy();
+        for (const objectFilter of this.objectFilters) {
+            if (typeof objectFilter.destroy === "function") objectFilter.destroy();
         }
         this.objectFilters = [];
     }
@@ -243,11 +243,6 @@ class Robot {
     getObjectFilterByName(name) {
         const key = String(name || "").trim().toLowerCase();
         return this.objectFilters.find((t) => String(t?.name || "").toLowerCase() === key) || null;
-    }
-
-    /** @deprecated Use {@link getObjectFilterByName}; kept for older configs and pid feedback paths. */
-    getTrackerByName(name) {
-        return this.getObjectFilterByName(name);
     }
 
     getControlInputValues() {
@@ -339,10 +334,6 @@ class Robot {
         let current = this;
         for (const segment of segments) {
             if (current == null) return undefined;
-            if (current === this && segment === "trackers") {
-                current = this.objectFilters;
-                continue;
-            }
             if (Array.isArray(current)) {
                 current = this._resolveNamedCollectionItem(current, segment);
             } else {
@@ -469,9 +460,9 @@ class Robot {
         const filtersTitle = document.createElement('h4');
         filtersTitle.textContent = 'Object filters';
         filtersDiv.appendChild(filtersTitle);
-        for (const tracker of this.objectFilters) {
-            if (typeof tracker.buildGUI === 'function') {
-                tracker.buildGUI(filtersDiv);
+        for (const objectFilter of this.objectFilters) {
+            if (typeof objectFilter.buildGUI === 'function') {
+                objectFilter.buildGUI(filtersDiv);
             }
         }
         if (!this.objectFilters.length) {
