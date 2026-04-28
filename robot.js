@@ -11,12 +11,14 @@ class Robot {
         this.sensors = [];
         this.aiModels = [];
         this.agentInterface = null;
-        this.trackers = [];
+        this.objectFilters = [];
         this.targets = [];
         this.pidControllers = [];
         this.transmitter;
         this.mode = "track";
         this.deciders = [];
+        this.goal="";
+        this._goalInputEl = null;
         //if mode === track, if trackcoods!= null it means open cv has found the trackTarget.
         // PID controllers read targets/sensors and may set control inputs. Mix functions map control inputs to actuators.
         // Actuators have their own sliders; mixing updates angles when control inputs change.
@@ -31,7 +33,7 @@ class Robot {
         this.teardownSensors();
         this.teardownAiModels();
         this.teardownAgentInterface();
-        this.teardownTrackers();
+        this.teardownObjectFilters();
         this.teardownPidControllers();
     }
 
@@ -48,7 +50,7 @@ class Robot {
         this.buildSensors(this.config.sensors || []);
         this.buildAiModels(this.config.aiModels || []);
         this.buildAgentInterface();
-        this.buildTrackers(this.config.trackers || []);
+        this.buildObjectFilters(this.config.objectFilters || this.config.trackers || []);
         this.buildPidControllers(this.config.pidControllers || []);
         this.buildActuatorMixing();
     }
@@ -182,27 +184,27 @@ class Robot {
         this.agentInterface = null;
     }
 
-    buildTrackers(trackerConfigs) {
-        this.teardownTrackers();
-        for (const item of trackerConfigs || []) {
+    buildObjectFilters(filterConfigs) {
+        this.teardownObjectFilters();
+        for (const item of filterConfigs || []) {
             const cfg = typeof item === "string" ? { name: item } : { ...item };
             try {
                 if (typeof window.Tracker !== "function") {
                     throw new Error("Tracker class is unavailable. Check tracker.js loading.");
                 }
                 const tracker = new window.Tracker(this, cfg.name, cfg);
-                this.trackers.push(tracker);
+                this.objectFilters.push(tracker);
             } catch (err) {
-                console.error("Tracker build failed:", err);
+                console.error("Object filter build failed:", err);
             }
         }
     }
 
-    teardownTrackers() {
-        for (const tracker of this.trackers) {
+    teardownObjectFilters() {
+        for (const tracker of this.objectFilters) {
             if (typeof tracker.destroy === "function") tracker.destroy();
         }
-        this.trackers = [];
+        this.objectFilters = [];
     }
 
     buildPidControllers(pidConfigs) {
@@ -238,9 +240,14 @@ class Robot {
         return this.aiModels.find((model) => String(model?.name || "").toLowerCase() === key) || null;
     }
 
-    getTrackerByName(name) {
+    getObjectFilterByName(name) {
         const key = String(name || "").trim().toLowerCase();
-        return this.trackers.find((tracker) => String(tracker?.name || "").toLowerCase() === key) || null;
+        return this.objectFilters.find((t) => String(t?.name || "").toLowerCase() === key) || null;
+    }
+
+    /** @deprecated Use {@link getObjectFilterByName}; kept for older configs and pid feedback paths. */
+    getTrackerByName(name) {
+        return this.getObjectFilterByName(name);
     }
 
     getControlInputValues() {
@@ -295,6 +302,78 @@ class Robot {
         return true;
     }
 
+    setGoal(goal) {
+        this.goal = String(goal == null ? "" : goal);
+        if (this._goalInputEl && this._goalInputEl.value !== this.goal) {
+            this._goalInputEl.value = this.goal;
+        }
+    }
+
+    _resolveNamedCollectionItem(list, segment) {
+        const key = String(segment || "").trim();
+        if (!key || !Array.isArray(list)) return undefined;
+        if (/^\d+$/.test(key)) {
+            const idx = parseInt(key, 10);
+            return idx >= 0 && idx < list.length ? list[idx] : undefined;
+        }
+        const lower = key.toLowerCase();
+        return (
+            list.find(
+                (item) =>
+                    String(item?.type || "")
+                        .trim()
+                        .toLowerCase() === lower ||
+                    String(item?.name || "")
+                        .trim()
+                        .toLowerCase() === lower
+            ) || undefined
+        );
+    }
+
+    _readStatePath(path) {
+        const segments = String(path || "")
+            .split(".")
+            .map((segment) => segment.trim())
+            .filter(Boolean);
+        if (!segments.length) return undefined;
+        let current = this;
+        for (const segment of segments) {
+            if (current == null) return undefined;
+            if (current === this && segment === "trackers") {
+                current = this.objectFilters;
+                continue;
+            }
+            if (Array.isArray(current)) {
+                current = this._resolveNamedCollectionItem(current, segment);
+            } else {
+                current = current[segment];
+            }
+        }
+        if (typeof current === "function") return undefined;
+        return current;
+    }
+
+    buildState() {
+        const configuredPaths = Array.isArray(this.config?.state) ? this.config.state : [];
+        const state = {
+            robotName: this.name || "Robot",
+            mode: this.mode,
+            goal: this.goal
+        };
+
+        if (!configuredPaths.length) {
+            state.controlInputs = this.getControlInputValues();
+            return state;
+        }
+
+        for (const path of configuredPaths) {
+            const key = String(path || "").trim();
+            if (!key) continue;
+            state[key] = this._readStatePath(key);
+        }
+        return state;
+    }
+
     addActuator(config) {
         switch (config.type) {
             case "servo":
@@ -334,6 +413,20 @@ class Robot {
         title.textContent = this.name || 'Robot';
         this.container.appendChild(title);
 
+        const goalWrap = document.createElement("div");
+        goalWrap.className = "robot-goal";
+        const goalLabel = document.createElement("label");
+        goalLabel.textContent = "Goal";
+        const goalInput = document.createElement("input");
+        goalInput.type = "text";
+        goalInput.placeholder = "Describe current goal";
+        goalInput.value = this.goal;
+        goalInput.addEventListener("input", () => this.setGoal(goalInput.value));
+        goalWrap.appendChild(goalLabel);
+        goalWrap.appendChild(goalInput);
+        this.container.appendChild(goalWrap);
+        this._goalInputEl = goalInput;
+
         const sensorsDiv = document.createElement('div');
         sensorsDiv.className = 'robot-sensors';
         for (const sensor of this.sensors) {
@@ -371,23 +464,23 @@ class Robot {
             this.container.appendChild(agentDiv);
         }
 
-        const trackersDiv = document.createElement('div');
-        trackersDiv.className = 'robot-trackers';
-        const trackersTitle = document.createElement('h4');
-        trackersTitle.textContent = 'Trackers';
-        trackersDiv.appendChild(trackersTitle);
-        for (const tracker of this.trackers) {
+        const filtersDiv = document.createElement('div');
+        filtersDiv.className = 'robot-object-filters';
+        const filtersTitle = document.createElement('h4');
+        filtersTitle.textContent = 'Object filters';
+        filtersDiv.appendChild(filtersTitle);
+        for (const tracker of this.objectFilters) {
             if (typeof tracker.buildGUI === 'function') {
-                tracker.buildGUI(trackersDiv);
+                tracker.buildGUI(filtersDiv);
             }
         }
-        if (!this.trackers.length) {
+        if (!this.objectFilters.length) {
             const none = document.createElement('p');
             none.className = 'muted';
-            none.textContent = 'No trackers configured for this robot.';
-            trackersDiv.appendChild(none);
+            none.textContent = 'No object filters configured for this robot.';
+            filtersDiv.appendChild(none);
         }
-        this.container.appendChild(trackersDiv);
+        this.container.appendChild(filtersDiv);
 
         const pidDiv = document.createElement('div');
         pidDiv.className = 'robot-pid';

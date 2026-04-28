@@ -11,6 +11,8 @@ window.ROBOTS_DATA = {
         },
         {
             name: "rover1",
+            bodyPlan: "A rover with two wheels and a camera",
+            controlPlan:"A pid controller receives feedback from the filtered bounding boxes detected in the camera feed and sets the yaw speed accordingly. Set tracking filter to target different objects. eg cup, door, human etc",
             actuators: [
                 {
                     type: "servo",
@@ -69,12 +71,12 @@ window.ROBOTS_DATA = {
                 }
             ],
             targets: [],
-            trackers: [
+            objectFilters: [
                 {
                     name: "cocoTracker",
-                    dataFeed: "objectmatcher",
+                    dataFeed: "coco",
                     filters: ["cup"],
-                    minScore: 0.25,
+                    minScore: 0.1,
                     strategy: "largest",
                     outputRange: "minusOneToOne",
                     invertX: false,
@@ -93,9 +95,10 @@ window.ROBOTS_DATA = {
                     frequencyHz: "feedback"
                 }
             ],
+            state: ["goal", "objectFilters.cocoTracker.filters", "aiModels.coco.results"],
             actions: [
-                { name: "setTrackingFilter", functionPath: "trackers.cocoTracker.setFiltersFromString", hint: "cup" },
-                { name: "classifyObject" } // uses groq vision model
+                {actionName: "setTrackingFilter", functionPath: "objectFilters.cocoTracker.setFiltersFromString", actionArgsHint: "cup, door, human etc" },
+                {actionName: "setYawTrackingGoal", functionPath: "pidControllers.yawObjectTrackerPID.setGoal", actionArgsHint: "0, 1, -1", usage: "set goal to 0 to center an object. Set it between -1 and 1 to move it to the side. Moving an object from one side of the screen to the other can be used as a way to pan your view to explore."} // uses groq vision model
             ],
             agentInterface: {
                 name: "Chat agents",

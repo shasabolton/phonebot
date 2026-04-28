@@ -93,6 +93,12 @@ class AgentInterface {
 
     _buildBodyPlanFromRobotConfig() {
         const cfg = this.robot?.config || {};
+        const configuredBodyPlan = this.config?.bodyPlan ?? cfg?.bodyPlan;
+        if (configuredBodyPlan != null && String(configuredBodyPlan).trim() !== "") {
+            return typeof configuredBodyPlan === "string"
+                ? configuredBodyPlan
+                : JSON.stringify(configuredBodyPlan, null, 2);
+        }
         const bodyPlan = {
             robotName: cfg.name || "unnamed robot",
             actuators: Array.isArray(cfg.actuators)
@@ -111,26 +117,45 @@ class AgentInterface {
         return JSON.stringify(bodyPlan, null, 2);
     }
 
+    _buildControlPlanFromRobotConfig() {
+        const cfg = this.robot?.config || {};
+        const configuredControlPlan = this.config?.controlPlan ?? cfg?.controlPlan;
+        if (configuredControlPlan != null && String(configuredControlPlan).trim() !== "") {
+            return typeof configuredControlPlan === "string"
+                ? configuredControlPlan
+                : JSON.stringify(configuredControlPlan, null, 2);
+        }
+        return "No control plan configured.";
+    }
+
     _buildActionsFromRobotConfig() {
         const actions = Array.isArray(this.robot?.config?.actions) ? this.robot.config.actions : [];
-        const mapped = actions.map((a) => ({
-            name: a?.name || "",
-            functionPath: a?.functionPath || "",
-            argsHint: a?.argsHint || ""
-        }));
-        return JSON.stringify(mapped, null, 2);
+        return JSON.stringify(actions, null, 2);
+    }
+
+    _buildStateConfigFromRobotConfig() {
+        const cfg = this.robot?.config || {};
+        const state = cfg.state;
+        if (state == null) return "[]";
+        if (typeof state === "string") return state.trim() || "(empty)";
+        return JSON.stringify(state, null, 2);
     }
 
     buildInstructionPromptFromTemplate(templateText) {
         const template = String(templateText || "");
         return template
             .replace(/\{\{ROBOT_BODY_PLAN\}\}/g, this._buildBodyPlanFromRobotConfig())
+            .replace(/\{\{ROBOT_CONTROL_PLAN\}\}/g, this._buildControlPlanFromRobotConfig())
+            .replace(/\{\{ROBOT_STATE\}\}/g, this._buildStateConfigFromRobotConfig())
             .replace(/\{\{ROBOT_ACTIONS\}\}/g, this._buildActionsFromRobotConfig());
     }
 
     async _buildPromptFromSelectedTemplate() {
         const selected = this._templateSelect?.value || "";
         if (!selected) throw new Error("Select a prompt template.");
+        if (selected === "__robot_state__") {
+            return JSON.stringify(this.robot?.buildState?.() || {}, null, 2);
+        }
         const res = await fetch(selected, { cache: "no-store" });
         if (!res.ok) throw new Error(`Failed to load template: ${selected}`);
         const templateText = await res.text();
@@ -142,7 +167,12 @@ class AgentInterface {
         this._insertTemplateBtn.disabled = true;
         try {
             const prompt = await this._buildPromptFromSelectedTemplate();
-            this._promptInput.value = prompt;
+            if ((this._templateSelect?.value || "") === "__robot_state__") {
+                const existing = String(this._promptInput.value || "").trim();
+                this._promptInput.value = existing ? `${existing}\n\nState:\n${prompt}` : `State:\n${prompt}`;
+            } else {
+                this._promptInput.value = prompt;
+            }
             this._promptInput.focus();
             if (this._statusEl) {
                 this._statusEl.className = "ok";
@@ -182,10 +212,20 @@ class AgentInterface {
 
         const authHeader = String(agent.authHeader || "Authorization").trim();
         const authPrefix = agent.authPrefix !== undefined ? String(agent.authPrefix) : "Bearer ";
+        const conversationMessages = this.messageHistory
+            .filter((m) => m && (m.role === "user" || m.role === "assistant"))
+            .map((m) => ({
+                role: m.role,
+                content: String(m.text || "")
+            }));
+
+        if (!conversationMessages.length) {
+            conversationMessages.push({ role: "user", content: prompt });
+        }
 
         const body = {
             model,
-            messages: [{ role: "user", content: prompt }],
+            messages: conversationMessages,
             temperature: Number.isFinite(agent.temperature) ? agent.temperature : 0.7,
             max_tokens: Number.isFinite(agent.maxTokens) ? Math.round(agent.maxTokens) : 1024
         };
@@ -222,7 +262,108 @@ class AgentInterface {
             json?.choices?.[0]?.text ??
             json?.message?.content ??
             "";
-        return String(content || "").trim() || JSON.stringify(json, null, 2);
+        const contentText = String(content || "").trim();
+        return {
+            rawText,
+            json,
+            contentText: contentText || JSON.stringify(json, null, 2)
+        };
+    }
+
+    _tryParseJson(text) {
+        const raw = String(text || "").trim();
+        if (!raw) return null;
+        try {
+            return JSON.parse(raw);
+        } catch (_) {
+            return null;
+        }
+    }
+
+    _findNamedItem(list, name) {
+        if (!Array.isArray(list)) return null;
+        const key = String(name || "").trim().toLowerCase();
+        if (!key) return null;
+        return list.find((item) => String(item?.name || "").trim().toLowerCase() === key) || null;
+    }
+
+    _resolveActionFunction(functionPath) {
+        const path = String(functionPath || "").trim();
+        if (!path) throw new Error("Action has no functionPath.");
+        const parts = path.split(".").map((p) => p.trim()).filter(Boolean);
+        if (!parts.length) throw new Error("Invalid functionPath.");
+
+        let current = this.robot;
+        for (let i = 0; i < parts.length - 1; i++) {
+            const segment = parts[i];
+            const nextSegment = parts[i + 1];
+
+            if (segment === "trackers" || segment === "objectFilters") {
+                const filterItem =
+                    this.robot?.getObjectFilterByName?.(nextSegment) ||
+                    this._findNamedItem(this.robot?.objectFilters, nextSegment);
+                if (!filterItem) throw new Error(`Object filter not found: ${nextSegment}`);
+                current = filterItem;
+                i += 1;
+                continue;
+            }
+            if (segment === "aiModels") {
+                const model = this.robot?.getAiModelByName?.(nextSegment) || this._findNamedItem(this.robot?.aiModels, nextSegment);
+                if (!model) throw new Error(`AI model not found: ${nextSegment}`);
+                current = model;
+                i += 1;
+                continue;
+            }
+
+            if (current == null || !(segment in current)) {
+                throw new Error(`Path segment not found: ${segment}`);
+            }
+            current = current[segment];
+        }
+
+        const fnName = parts[parts.length - 1];
+        const fn = current?.[fnName];
+        if (typeof fn !== "function") {
+            throw new Error(`Function not found: ${fnName}`);
+        }
+        return { fn, receiver: current };
+    }
+
+    async act(actionName, actionArgs) {
+        const actions = Array.isArray(this.robot?.config?.actions) ? this.robot.config.actions : [];
+        const match = actions.find((a) =>
+            String(a?.actionName || a?.name || "").trim().toLowerCase() === String(actionName || "").trim().toLowerCase()
+        );
+        if (!match) {
+            throw new Error(`Unknown action: ${String(actionName || "")}`);
+        }
+        if (!match.functionPath) {
+            throw new Error(`Action "${match.name}" has no functionPath.`);
+        }
+
+        const { fn, receiver } = this._resolveActionFunction(match.functionPath);
+        if (Array.isArray(actionArgs)) {
+            return await fn.apply(receiver, actionArgs);
+        }
+        return await fn.call(receiver, actionArgs);
+    }
+
+    async _maybeRunActionFromResponse(contentText, rawText) {
+        const fromContent = this._tryParseJson(contentText);
+        const fromRaw = this._tryParseJson(rawText);
+        const payload = fromContent || fromRaw;
+        if (!payload || typeof payload !== "object") return;
+        if (!Object.prototype.hasOwnProperty.call(payload, "actionName")) return;
+        if (!Object.prototype.hasOwnProperty.call(payload, "actionArgs")) return;
+
+        const actionName = payload.actionName;
+        const actionArgs = payload.actionArgs;
+        await this.act(actionName, actionArgs);
+        this.messageHistory.push({
+            role: "system",
+            text: `Action executed: ${String(actionName)} with args ${JSON.stringify(actionArgs)}`,
+            at: new Date().toISOString()
+        });
     }
 
     async _onSend() {
@@ -239,9 +380,15 @@ class AgentInterface {
             this._statusEl.className = "muted";
         }
         try {
-            const reply = await this.sendPrompt(text);
             this.messageHistory.push({ role: "user", text, at: new Date().toISOString() });
-            this.messageHistory.push({ role: "assistant", text: reply, at: new Date().toISOString() });
+            this._renderHistory();
+            const reply = await this.sendPrompt(text);
+            this.messageHistory.push({
+                role: "assistant",
+                text: reply.contentText || "",
+                at: new Date().toISOString()
+            });
+            await this._maybeRunActionFromResponse(reply.contentText, reply.rawText);
             this._renderHistory();
             this._promptInput.value = "";
             if (this._statusEl) {
@@ -264,12 +411,11 @@ class AgentInterface {
         this._historyEl.replaceChildren();
         for (const m of this.messageHistory.slice(-20)) {
             const bubble = document.createElement("div");
-            bubble.className =
-                "agent-history-bubble " +
-                (m.role === "user" ? "agent-history-user" : "agent-history-agent");
+            const roleClass = m.role === "user" ? "agent-history-user" : m.role === "system" ? "agent-history-system" : "agent-history-agent";
+            bubble.className = "agent-history-bubble " + roleClass;
             const who = document.createElement("span");
             who.className = "agent-history-who";
-            who.textContent = m.role === "user" ? "You" : "Agent";
+            who.textContent = m.role === "user" ? "You" : m.role === "system" ? "System" : "Agent";
             const body = document.createElement("div");
             body.className = "agent-history-body";
             body.textContent = m.text != null ? String(m.text) : "";
@@ -347,12 +493,15 @@ class AgentInterface {
         const templateLabel = document.createElement("label");
         templateLabel.textContent = "Prompt template";
         const templateSelect = document.createElement("select");
+        const stateOpt = document.createElement("option");
+        stateOpt.value = "__robot_state__";
+        stateOpt.textContent = "State";
+        templateSelect.appendChild(stateOpt);
         if (!this.promptTemplates.length) {
             const opt = document.createElement("option");
             opt.value = "";
             opt.textContent = "(no prompt templates configured)";
             templateSelect.appendChild(opt);
-            templateSelect.disabled = true;
         } else {
             this.promptTemplates.forEach((tpl) => {
                 const opt = document.createElement("option");

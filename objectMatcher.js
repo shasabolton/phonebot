@@ -30,6 +30,27 @@ class ObjectMatcherAiModel {
         this.mergeIou = Number.isFinite(config.mergeIou) ? config.mergeIou : 0.25;
         this.mergeIou = Math.max(0.05, Math.min(0.95, this.mergeIou));
 
+        /** Flow-only boxes shrink vs last detector bbox; forget after sustained shrink. */
+        this.forgetMinAreaRatio = Number.isFinite(config.forgetMinAreaRatio) ? config.forgetMinAreaRatio : 0.22;
+        this.forgetMinAreaRatio = Math.max(0.06, Math.min(0.9, this.forgetMinAreaRatio));
+        this.forgetShrinkFrames = Number.isFinite(config.forgetShrinkFrames) ? Math.round(config.forgetShrinkFrames) : 12;
+        this.forgetShrinkFrames = Math.max(2, Math.min(180, this.forgetShrinkFrames));
+        this.forgetMinFrameAreaFrac = Number.isFinite(config.forgetMinFrameAreaFrac)
+            ? config.forgetMinFrameAreaFrac
+            : 0.00012;
+        this.forgetMinFrameAreaFrac = Math.max(1e-6, Math.min(0.01, this.forgetMinFrameAreaFrac));
+
+        /** Flow bbox from LK points: percentiles reduce edge/outlier stretch; cap limits growth vs last detector size. */
+        this.flowBboxPctLow = Number.isFinite(config.flowBboxPctLow) ? config.flowBboxPctLow : 0.1;
+        this.flowBboxPctHigh = Number.isFinite(config.flowBboxPctHigh) ? config.flowBboxPctHigh : 0.9;
+        this.flowBboxPctLow = Math.max(0, Math.min(0.45, this.flowBboxPctLow));
+        this.flowBboxPctHigh = Math.max(0.55, Math.min(1, this.flowBboxPctHigh));
+        if (this.flowBboxPctHigh <= this.flowBboxPctLow) {
+            this.flowBboxPctHigh = Math.min(1, this.flowBboxPctLow + 0.5);
+        }
+        this.flowMaxBBoxGrow = Number.isFinite(config.flowMaxBBoxGrow) ? config.flowMaxBBoxGrow : 1.45;
+        this.flowMaxBBoxGrow = Math.max(1, Math.min(2.5, this.flowMaxBBoxGrow));
+
         this.filterParams = {
             maxCorners: Number.isFinite(config.maxCorners) ? Math.round(config.maxCorners) : 40,
             qualityLevel: Number.isFinite(config.qualityLevel) ? config.qualityLevel : 0.01,
@@ -174,6 +195,85 @@ class ObjectMatcherAiModel {
         return [x, y, w, h];
     }
 
+    _bboxArea(bbox) {
+        const w = bbox[2];
+        const h = bbox[3];
+        return Math.max(1, w * h);
+    }
+
+    _percentileLinear(values, p) {
+        if (!values || !values.length) return 0;
+        const a = [...values].sort((u, v) => u - v);
+        const n = a.length;
+        const pp = Math.max(0, Math.min(1, p));
+        const idx = pp * (n - 1);
+        const i0 = Math.floor(idx);
+        const i1 = Math.min(n - 1, Math.ceil(idx));
+        const t = idx - i0;
+        return i0 === i1 ? a[i0] : a[i0] * (1 - t) + a[i1] * t;
+    }
+
+    _setTrackAnchorFromBbox(track, bbox) {
+        track.anchorArea = this._bboxArea(bbox);
+        track.anchorW = Math.max(1, bbox[2]);
+        track.anchorH = Math.max(1, bbox[3]);
+    }
+
+    /** Clamp flow-proposed size so it cannot balloon past last detector box (partial off-screen + bad LK). */
+    _capFlowBboxToAnchor(minX, minY, bw, bh, track, fw, fh) {
+        const aw = track.anchorW && track.anchorW > 0 ? track.anchorW : bw;
+        const ah = track.anchorH && track.anchorH > 0 ? track.anchorH : bh;
+        let w = bw;
+        let h = bh;
+        let x = minX;
+        let y = minY;
+        const maxW = Math.max(8, aw * this.flowMaxBBoxGrow);
+        const maxH = Math.max(8, ah * this.flowMaxBBoxGrow);
+        if (w > maxW) {
+            const cx = x + w * 0.5;
+            w = maxW;
+            x = cx - w * 0.5;
+        }
+        if (h > maxH) {
+            const cy = y + h * 0.5;
+            h = maxH;
+            y = cy - h * 0.5;
+        }
+        return this._clampBbox([x, y, w, h], fw, fh);
+    }
+
+    /** Drop tracks whose flow box has collapsed vs last merged detector area, or is trivially tiny. */
+    _pruneForgottenTracks(fw, fh) {
+        const frameArea = Math.max(1, fw * fh);
+        const absFloor = Math.max(900, frameArea * this.forgetMinFrameAreaFrac);
+        const kept = [];
+        for (const t of this._tracks) {
+            const area = this._bboxArea(t.bbox);
+            if (!t.anchorArea || t.anchorArea < 1) {
+                this._setTrackAnchorFromBbox(t, t.bbox);
+            }
+
+            if (area < absFloor) {
+                this._releaseTrackMats(t);
+                continue;
+            }
+
+            const ratio = area / t.anchorArea;
+            if (ratio < this.forgetMinAreaRatio) {
+                t._forgetShrinkStreak = (t._forgetShrinkStreak || 0) + 1;
+            } else {
+                t._forgetShrinkStreak = 0;
+            }
+
+            if (t._forgetShrinkStreak >= this.forgetShrinkFrames) {
+                this._releaseTrackMats(t);
+                continue;
+            }
+            kept.push(t);
+        }
+        this._tracks = kept;
+    }
+
     _snapshotGroqDetections() {
         const groq = this._getGroqModel();
         if (!groq || typeof groq.getLatestDetections !== "function") return "";
@@ -251,6 +351,8 @@ class ObjectMatcherAiModel {
                 const t = this._tracks[bestIdx];
                 if (source === "coco" || t.labelSource !== "coco") {
                     t.bbox = bbox;
+                    this._setTrackAnchorFromBbox(t, bbox);
+                    t._forgetShrinkStreak = 0;
                 }
                 if (source === "groq") {
                     t.class = label;
@@ -276,6 +378,8 @@ class ObjectMatcherAiModel {
                     const t = this._tracks[altIdx];
                     if (source === "coco" || t.labelSource !== "coco") {
                         t.bbox = bbox;
+                        this._setTrackAnchorFromBbox(t, bbox);
+                        t._forgetShrinkStreak = 0;
                     }
                     if (source === "groq") {
                         t.class = label;
@@ -294,6 +398,10 @@ class ObjectMatcherAiModel {
                         labelSource: source,
                         score,
                         bbox,
+                        anchorArea: this._bboxArea(bbox),
+                        anchorW: Math.max(1, bbox[2]),
+                        anchorH: Math.max(1, bbox[3]),
+                        _forgetShrinkStreak: 0,
                         filterParams: { ...fp, colorStats },
                         needsReinit: true,
                         prevPts: null
@@ -350,7 +458,8 @@ class ObjectMatcherAiModel {
         for (const track of this._tracks) {
             if (track.needsReinit) {
                 this._initTrackPoints(track, curGray);
-                track.needsReinit = false;
+                const okPts = track.prevPts && track.prevPts.rows >= fp.minGoodPoints;
+                track.needsReinit = !okPts;
             }
             if (!track.prevPts || track.prevPts.rows < fp.minGoodPoints) continue;
 
@@ -386,10 +495,20 @@ class ObjectMatcherAiModel {
             nextPts.delete();
 
             if (goodX.length >= fp.minGoodPoints) {
-                let minX = Math.min(...goodX);
-                let maxX = Math.max(...goodX);
-                let minY = Math.min(...goodY);
-                let maxY = Math.max(...goodY);
+                const lo = this.flowBboxPctLow;
+                const hi = this.flowBboxPctHigh;
+                let minX = this._percentileLinear(goodX, lo);
+                let maxX = this._percentileLinear(goodX, hi);
+                let minY = this._percentileLinear(goodY, lo);
+                let maxY = this._percentileLinear(goodY, hi);
+                if (maxX <= minX) {
+                    minX = Math.min(...goodX);
+                    maxX = Math.max(...goodX);
+                }
+                if (maxY <= minY) {
+                    minY = Math.min(...goodY);
+                    maxY = Math.max(...goodY);
+                }
                 const pad = 4;
                 minX -= pad;
                 maxX += pad;
@@ -403,7 +522,7 @@ class ObjectMatcherAiModel {
                 maxY = Math.min(fh, maxY);
                 const bw = Math.max(8, maxX - minX);
                 const bh = Math.max(8, maxY - minY);
-                track.bbox = this._clampBbox([minX, minY, bw, bh], fw, fh);
+                track.bbox = this._capFlowBboxToAnchor(minX, minY, bw, bh, track, fw, fh);
 
                 const flat = [];
                 for (let i = 0; i < goodX.length; i++) {
@@ -571,6 +690,8 @@ class ObjectMatcherAiModel {
             } else {
                 for (const t of this._tracks) t.needsReinit = true;
             }
+
+            this._pruneForgottenTracks(gray.cols, gray.rows);
 
             if (this._prevGray) {
                 try {

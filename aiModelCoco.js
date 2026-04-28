@@ -384,6 +384,11 @@ class CocoAiModel {
         }));
     }
 
+    /** Plain detections for prompts / `robot.buildState()` (bbox [x,y,w,h] in image pixels). */
+    get results() {
+        return this.getLatestDetections();
+    }
+
     getFrameSize() {
         return { width: this._frameWidth, height: this._frameHeight };
     }
