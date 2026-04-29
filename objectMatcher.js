@@ -43,6 +43,10 @@ class ObjectMatcherAiModel {
         this.forgetEdgeMarginFrac = Math.max(0, Math.min(0.2, this.forgetEdgeMarginFrac));
         this.forgetEdgeAreaRatio = Number.isFinite(config.forgetEdgeAreaRatio) ? config.forgetEdgeAreaRatio : 0.45;
         this.forgetEdgeAreaRatio = Math.max(0.05, Math.min(0.95, this.forgetEdgeAreaRatio));
+        this.forgetStaleMs = Number.isFinite(config.forgetStaleMs) ? Math.round(config.forgetStaleMs) : 4000;
+        this.forgetStaleMs = Math.max(500, Math.min(120000, this.forgetStaleMs));
+        this.forgetNoPointFrames = Number.isFinite(config.forgetNoPointFrames) ? Math.round(config.forgetNoPointFrames) : 18;
+        this.forgetNoPointFrames = Math.max(2, Math.min(600, this.forgetNoPointFrames));
 
         /** Flow bbox from LK points: percentiles reduce edge/outlier stretch; cap limits growth vs last detector size. */
         this.flowBboxPctLow = Number.isFinite(config.flowBboxPctLow) ? config.flowBboxPctLow : 0.1;
@@ -267,7 +271,7 @@ class ObjectMatcherAiModel {
     }
 
     /** Drop tracks whose flow box has collapsed vs last merged detector area, or is trivially tiny. */
-    _pruneForgottenTracks(fw, fh) {
+    _pruneForgottenTracks(fw, fh, nowMs = Date.now()) {
         const frameArea = Math.max(1, fw * fh);
         const absFloor = Math.max(900, frameArea * this.forgetMinFrameAreaFrac);
         const kept = [];
@@ -291,6 +295,17 @@ class ObjectMatcherAiModel {
             }
 
             const ratio = area / t.anchorArea;
+            if (!t?.manualId) {
+                const staleMs = nowMs - (Number.isFinite(t.lastAnchorUpdateMs) ? t.lastAnchorUpdateMs : 0);
+                if (staleMs > this.forgetStaleMs) {
+                    this._releaseTrackMats(t);
+                    continue;
+                }
+                if ((t.noPointStreak || 0) >= this.forgetNoPointFrames) {
+                    this._releaseTrackMats(t);
+                    continue;
+                }
+            }
             if (!t?.manualId && nearEdge && ratio < this.forgetEdgeAreaRatio) {
                 this._releaseTrackMats(t);
                 continue;
@@ -391,6 +406,8 @@ class ObjectMatcherAiModel {
                     this._setTrackAnchorFromBbox(t, bbox);
                     t._forgetShrinkStreak = 0;
                     t.flowTicks = 0;
+                    t.lastAnchorUpdateMs = Date.now();
+                    t.noPointStreak = 0;
                 }
                 if (source === "groq") {
                     t.class = label;
@@ -420,6 +437,8 @@ class ObjectMatcherAiModel {
                         this._setTrackAnchorFromBbox(t, bbox);
                         t._forgetShrinkStreak = 0;
                         t.flowTicks = 0;
+                        t.lastAnchorUpdateMs = Date.now();
+                        t.noPointStreak = 0;
                     }
                     if (source === "groq") {
                         t.class = label;
@@ -443,6 +462,8 @@ class ObjectMatcherAiModel {
                         anchorH: Math.max(1, bbox[3]),
                         _forgetShrinkStreak: 0,
                         flowTicks: 0,
+                        noPointStreak: 0,
+                        lastAnchorUpdateMs: Date.now(),
                         filterParams: { ...fp, colorStats },
                         needsReinit: true,
                         prevPts: null
@@ -505,6 +526,9 @@ class ObjectMatcherAiModel {
                 this._initTrackPoints(track, curGray);
                 const okPts = track.prevPts && track.prevPts.rows >= fp.minGoodPoints;
                 track.needsReinit = !okPts;
+                if (!okPts) {
+                    track.noPointStreak = (track.noPointStreak || 0) + 1;
+                }
             }
             if (!track.prevPts || track.prevPts.rows < fp.minGoodPoints) continue;
 
@@ -594,6 +618,7 @@ class ObjectMatcherAiModel {
                 const nextMinY = cy - smoothH * 0.5;
                 track.bbox = this._capFlowBboxToAnchor(nextMinX, nextMinY, smoothW, smoothH, track, fw, fh);
                 track.flowTicks = tickCount + 1;
+                track.noPointStreak = 0;
 
                 const flat = [];
                 for (let i = 0; i < goodX.length; i++) {
@@ -602,6 +627,7 @@ class ObjectMatcherAiModel {
                 track.prevPts = cv.matFromArray(flat.length / 2, 1, cv.CV_32FC2, flat);
             } else {
                 track.needsReinit = true;
+                track.noPointStreak = (track.noPointStreak || 0) + 1;
             }
         }
     }
@@ -762,7 +788,7 @@ class ObjectMatcherAiModel {
                 for (const t of this._tracks) t.needsReinit = true;
             }
 
-            this._pruneForgottenTracks(gray.cols, gray.rows);
+            this._pruneForgottenTracks(gray.cols, gray.rows, now);
 
             if (this._prevGray) {
                 try {
@@ -929,6 +955,8 @@ class ObjectMatcherAiModel {
             lockFromFeeds: true,
             _forgetShrinkStreak: 0,
             flowTicks: 0,
+            noPointStreak: 0,
+            lastAnchorUpdateMs: Date.now(),
             filterParams: { ...this.filterParams },
             needsReinit: true,
             prevPts: null
