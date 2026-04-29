@@ -50,6 +50,14 @@ class ObjectMatcherAiModel {
         }
         this.flowMaxBBoxGrow = Number.isFinite(config.flowMaxBBoxGrow) ? config.flowMaxBBoxGrow : 1.45;
         this.flowMaxBBoxGrow = Math.max(1, Math.min(2.5, this.flowMaxBBoxGrow));
+        this.flowSizeInertia = Number.isFinite(config.flowSizeInertia) ? config.flowSizeInertia : 0.88;
+        this.flowSizeInertia = Math.max(0, Math.min(0.98, this.flowSizeInertia));
+        this.flowMaxShrinkPerTick = Number.isFinite(config.flowMaxShrinkPerTick) ? config.flowMaxShrinkPerTick : 0.08;
+        this.flowMaxShrinkPerTick = Math.max(0, Math.min(0.4, this.flowMaxShrinkPerTick));
+        this.flowReinitIntervalFrames = Number.isFinite(config.flowReinitIntervalFrames)
+            ? Math.round(config.flowReinitIntervalFrames)
+            : 20;
+        this.flowReinitIntervalFrames = Math.max(0, Math.min(300, this.flowReinitIntervalFrames));
 
         this.filterParams = {
             maxCorners: Number.isFinite(config.maxCorners) ? Math.round(config.maxCorners) : 40,
@@ -214,6 +222,13 @@ class ObjectMatcherAiModel {
         return i0 === i1 ? a[i0] : a[i0] * (1 - t) + a[i1] * t;
     }
 
+    _median(values) {
+        if (!values || !values.length) return 0;
+        const a = [...values].sort((u, v) => u - v);
+        const mid = Math.floor(a.length / 2);
+        return a.length % 2 ? a[mid] : (a[mid - 1] + a[mid]) * 0.5;
+    }
+
     _setTrackAnchorFromBbox(track, bbox) {
         track.anchorArea = this._bboxArea(bbox);
         track.anchorW = Math.max(1, bbox[2]);
@@ -359,6 +374,7 @@ class ObjectMatcherAiModel {
                     t.bbox = bbox;
                     this._setTrackAnchorFromBbox(t, bbox);
                     t._forgetShrinkStreak = 0;
+                    t.flowTicks = 0;
                 }
                 if (source === "groq") {
                     t.class = label;
@@ -387,6 +403,7 @@ class ObjectMatcherAiModel {
                         t.bbox = bbox;
                         this._setTrackAnchorFromBbox(t, bbox);
                         t._forgetShrinkStreak = 0;
+                        t.flowTicks = 0;
                     }
                     if (source === "groq") {
                         t.class = label;
@@ -409,6 +426,7 @@ class ObjectMatcherAiModel {
                         anchorW: Math.max(1, bbox[2]),
                         anchorH: Math.max(1, bbox[3]),
                         _forgetShrinkStreak: 0,
+                        flowTicks: 0,
                         filterParams: { ...fp, colorStats },
                         needsReinit: true,
                         prevPts: null
@@ -463,6 +481,10 @@ class ObjectMatcherAiModel {
         const criteria = new cv.TermCriteria(cv.TERM_CRITERIA_EPS | cv.TERM_CRITERIA_COUNT, 24, 0.03);
 
         for (const track of this._tracks) {
+            const tickCount = Number.isFinite(track.flowTicks) ? track.flowTicks : 0;
+            if (this.flowReinitIntervalFrames > 0 && tickCount > 0 && tickCount % this.flowReinitIntervalFrames === 0) {
+                track.needsReinit = true;
+            }
             if (track.needsReinit) {
                 this._initTrackPoints(track, curGray);
                 const okPts = track.prevPts && track.prevPts.rows >= fp.minGoodPoints;
@@ -486,12 +508,20 @@ class ObjectMatcherAiModel {
 
             const goodX = [];
             const goodY = [];
+            const goodDx = [];
+            const goodDy = [];
             const st = status.data || status.data8U;
             for (let i = 0; i < status.rows; i++) {
                 const ok = st ? st[i] : 0;
                 if (ok === 1) {
-                    goodX.push(nextPts.data32F[i * 2]);
-                    goodY.push(nextPts.data32F[i * 2 + 1]);
+                    const nx = nextPts.data32F[i * 2];
+                    const ny = nextPts.data32F[i * 2 + 1];
+                    const px = track.prevPts.data32F[i * 2];
+                    const py = track.prevPts.data32F[i * 2 + 1];
+                    goodX.push(nx);
+                    goodY.push(ny);
+                    goodDx.push(nx - px);
+                    goodDy.push(ny - py);
                 }
             }
 
@@ -529,7 +559,25 @@ class ObjectMatcherAiModel {
                 maxY = Math.min(fh, maxY);
                 const bw = Math.max(8, maxX - minX);
                 const bh = Math.max(8, maxY - minY);
-                track.bbox = this._capFlowBboxToAnchor(minX, minY, bw, bh, track, fw, fh);
+                const prevW = Math.max(8, track.bbox[2]);
+                const prevH = Math.max(8, track.bbox[3]);
+                const prevCx = track.bbox[0] + prevW * 0.5;
+                const prevCy = track.bbox[1] + prevH * 0.5;
+                const medDx = this._median(goodDx);
+                const medDy = this._median(goodDy);
+                const cx = prevCx + medDx;
+                const cy = prevCy + medDy;
+                const minW = prevW * (1 - this.flowMaxShrinkPerTick);
+                const minH = prevH * (1 - this.flowMaxShrinkPerTick);
+                const measuredW = Math.max(bw, minW);
+                const measuredH = Math.max(bh, minH);
+                const inertia = this.flowSizeInertia;
+                const smoothW = prevW * inertia + measuredW * (1 - inertia);
+                const smoothH = prevH * inertia + measuredH * (1 - inertia);
+                const nextMinX = cx - smoothW * 0.5;
+                const nextMinY = cy - smoothH * 0.5;
+                track.bbox = this._capFlowBboxToAnchor(nextMinX, nextMinY, smoothW, smoothH, track, fw, fh);
+                track.flowTicks = tickCount + 1;
 
                 const flat = [];
                 for (let i = 0; i < goodX.length; i++) {
@@ -864,6 +912,7 @@ class ObjectMatcherAiModel {
             anchorH: Math.max(1, bbox[3]),
             lockFromFeeds: true,
             _forgetShrinkStreak: 0,
+            flowTicks: 0,
             filterParams: { ...this.filterParams },
             needsReinit: true,
             prevPts: null
@@ -888,6 +937,17 @@ class ObjectMatcherAiModel {
             class: item.class,
             score: item.score,
             bbox: Array.isArray(item.bbox) ? [...item.bbox] : [0, 0, 0, 0]
+        }));
+    }
+
+    /** Current matcher tracks for prompts / `robot.buildState()` (same bbox layout as COCO: [x,y,w,h]). */
+    get results() {
+        return this._tracks.map((t) => ({
+            id: t.id,
+            class: t.class,
+            score: Number(t.score),
+            bbox: Array.isArray(t.bbox) ? [...t.bbox] : [0, 0, 0, 0],
+            labelSource: t.labelSource || "coco"
         }));
     }
 

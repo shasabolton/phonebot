@@ -52,6 +52,7 @@ window.ROBOTS_DATA = {
             aiModels: [
                 {
                     type: "coco",
+                    on: true,
                     frequencyHz: 10,
                     maxNumBoxes: 40,
                     minScore: 0.2,
@@ -62,6 +63,7 @@ window.ROBOTS_DATA = {
                 { type: "groqvision", frequencyHz: 0.2, model: "meta-llama/llama-4-scout-17b-16e-instruct" },
                 {
                     type: "objectmatcher",
+                    on: true,
                     frequencyHz: 10,
                     groqFeedType: "groqvision",
                     cocoFeedType: "coco",
@@ -74,6 +76,7 @@ window.ROBOTS_DATA = {
             objectFilters: [
                 {
                     name: "mainObjectFilter",
+                    on: true,
                     dataFeed: "objectmatcher",
                     filters: ["cup"],
                     minScore: 0.1,
@@ -86,6 +89,7 @@ window.ROBOTS_DATA = {
             pidControllers: [
                 {
                     name: "yaw object tracker PID",
+                    on: true,
                     feedback: "mainObjectFilter.result.output.x",
                     controlInput: "yawSpeed",
                     goal: 0,
@@ -95,10 +99,11 @@ window.ROBOTS_DATA = {
                     frequencyHz: "feedback"
                 }
             ],
-            state: ["goal", "objectFilters.mainObjectFilter.filters", "aiModels.coco.results"],
+            state: ["goal", "objectFilters.mainObjectFilter.filters", "aiModels.objectmatcher.results"],
             actions: [
-                {actionName: "setTrackingFilter", functionPath: "objectFilters.mainObjectFilter.setFiltersFromString", actionArgsHint: "cup, door, human etc" },
-                {actionName: "setYawTrackingGoal", functionPath: "pidControllers.yawObjectTrackerPID.setGoal", actionArgsHint: "0, 1, -1", usage: "set goal to 0 to center an object. Set it between -1 and 1 to move it to the side. Moving an object from one side of the screen to the other can be used as a way to pan your view to explore."} // uses groq vision model
+                {actionName: "setTrackingFilter", functionPath: "objectFilters.mainObjectFilter.setFiltersFromString", actionArgsHint: "cup, door, human etc", usage: "you should only set filters for objects already in your vision or synthetic ones you can create, unless you want to be waiting around for them to appear so you can track them" },
+                {actionName: "setYawTrackingGoal", functionPath: "pidControllers.yawObjectTrackerPID.setGoal", actionArgsHint: "0, 1, -1", usage: "set goal to 0 to center an object. Set it between -1 and 1 to move it to the side. Moving an object from one side of the screen to the other can be used as a way to pan your view to explore."}, // uses groq vision model
+                {actionName: "makeCenterObject", functionPath: "aiModels.objectmatcher.makeCenterObject", actionArgsHint: "none", usage: "Places a synthetic lastCenter bbox in the frame center for panning via object filter + PID."}
             ],
             agentInterface: {
                 name: "Chat agents",

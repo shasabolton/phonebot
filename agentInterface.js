@@ -150,6 +150,31 @@ class AgentInterface {
             .replace(/\{\{ROBOT_ACTIONS\}\}/g, this._buildActionsFromRobotConfig());
     }
 
+    _getIntroductionTemplateSpec() {
+        const list = Array.isArray(this.promptTemplates) ? this.promptTemplates : [];
+        return (
+            list.find((t) => /introductionPrompt\.txt$/i.test(String(t?.path || "").trim())) ||
+            list.find((t) => /introduction/i.test(String(t?.name || ""))) ||
+            list.find((t) => String(t?.path || "").trim()) ||
+            null
+        );
+    }
+
+    async _hydrateDefaultPromptFromIntroductionTemplate() {
+        const spec = this._getIntroductionTemplateSpec();
+        const path = spec && String(spec.path || "").trim();
+        if (!path || !this._promptInput || !this._templateSelect) return;
+        try {
+            const res = await fetch(path, { cache: "no-store" });
+            if (!res.ok) return;
+            const templateText = await res.text();
+            this._promptInput.value = this.buildInstructionPromptFromTemplate(templateText);
+            this._templateSelect.value = path;
+        } catch (_) {
+            /* leave textarea empty if file missing or offline */
+        }
+    }
+
     async _buildPromptFromSelectedTemplate() {
         const selected = this._templateSelect?.value || "";
         if (!selected) throw new Error("Select a prompt template.");
@@ -308,7 +333,15 @@ class AgentInterface {
                 continue;
             }
             if (segment === "aiModels") {
-                const model = this.robot?.getAiModelByName?.(nextSegment) || this._findNamedItem(this.robot?.aiModels, nextSegment);
+                const key = String(nextSegment || "").trim().toLowerCase();
+                const byType =
+                    Array.isArray(this.robot?.aiModels) &&
+                    this.robot.aiModels.find((m) => String(m?.type || "").trim().toLowerCase() === key);
+                const model =
+                    this.robot?.getAiModelByName?.(nextSegment) ||
+                    this._findNamedItem(this.robot?.aiModels, nextSegment) ||
+                    this.robot?.getAiModelByType?.(nextSegment) ||
+                    byType;
                 if (!model) throw new Error(`AI model not found: ${nextSegment}`);
                 current = model;
                 i += 1;
@@ -348,20 +381,50 @@ class AgentInterface {
         return await fn.call(receiver, actionArgs);
     }
 
+    _collectActionsFromPayload(payload) {
+        const specs = [];
+        if (Array.isArray(payload.actions)) {
+            for (const item of payload.actions) {
+                if (!item || typeof item !== "object") continue;
+                if (!Object.prototype.hasOwnProperty.call(item, "actionName")) continue;
+                const actionName = item.actionName;
+                const actionArgs = Object.prototype.hasOwnProperty.call(item, "actionArgs")
+                    ? item.actionArgs
+                    : undefined;
+                specs.push({ actionName, actionArgs });
+            }
+            return specs;
+        }
+        if (Object.prototype.hasOwnProperty.call(payload, "actionName")) {
+            const actionArgs = Object.prototype.hasOwnProperty.call(payload, "actionArgs")
+                ? payload.actionArgs
+                : undefined;
+            specs.push({ actionName: payload.actionName, actionArgs });
+        }
+        return specs;
+    }
+
     async _maybeRunActionFromResponse(contentText, rawText) {
         const fromContent = this._tryParseJson(contentText);
         const fromRaw = this._tryParseJson(rawText);
         const payload = fromContent || fromRaw;
         if (!payload || typeof payload !== "object") return;
-        if (!Object.prototype.hasOwnProperty.call(payload, "actionName")) return;
-        if (!Object.prototype.hasOwnProperty.call(payload, "actionArgs")) return;
 
-        const actionName = payload.actionName;
-        const actionArgs = payload.actionArgs;
-        await this.act(actionName, actionArgs);
+        const specs = this._collectActionsFromPayload(payload);
+        if (!specs.length) return;
+
+        const summaries = [];
+        for (const { actionName, actionArgs } of specs) {
+            try {
+                await this.act(actionName, actionArgs);
+                summaries.push(`${String(actionName)} ${JSON.stringify(actionArgs)} ✓`);
+            } catch (err) {
+                summaries.push(`${String(actionName)} ✗ ${err?.message || "error"}`);
+            }
+        }
         this.messageHistory.push({
             role: "system",
-            text: `Action executed: ${String(actionName)} with args ${JSON.stringify(actionArgs)}`,
+            text: `Actions run: ${summaries.join(" | ")}`,
             at: new Date().toISOString()
         });
     }
@@ -574,6 +637,7 @@ class AgentInterface {
         this._historyEl = historyEl;
 
         this._syncKeyFromSelection();
+        void this._hydrateDefaultPromptFromIntroductionTemplate();
     }
 
     destroy() {

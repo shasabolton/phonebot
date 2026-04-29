@@ -120,32 +120,37 @@ class Robot {
             const cfg = typeof item === "string" ? { type: item } : { ...item };
             const type = String(cfg.type || "").trim().toLowerCase();
             try {
+                let model = null;
                 if (type === "coco") {
                     const CocoModelClass = window.CocoAiModel;
                     if (typeof CocoModelClass !== "function") {
                         throw new Error("CocoAiModel class is unavailable. Check aiModelCoco.js loading.");
                     }
-                    this.aiModels.push(new CocoModelClass(this, cfg));
+                    model = new CocoModelClass(this, cfg);
                 } else if (type === "tracker") {
                     const TrackerModelClass = window.GenericTrackerAiModel;
                     if (typeof TrackerModelClass !== "function") {
                         throw new Error("GenericTrackerAiModel class is unavailable. Check aiModelTracker.js loading.");
                     }
-                    this.aiModels.push(new TrackerModelClass(this, cfg));
+                    model = new TrackerModelClass(this, cfg);
                 } else if (type === "groqvision" || type === "groq") {
                     const GroqVisionModelClass = window.GroqVisionAiModel;
                     if (typeof GroqVisionModelClass !== "function") {
                         throw new Error("GroqVisionAiModel class is unavailable. Check aiModelGroqVision.js loading.");
                     }
-                    this.aiModels.push(new GroqVisionModelClass(this, cfg));
+                    model = new GroqVisionModelClass(this, cfg);
                 } else if (type === "objectmatcher") {
                     const MatcherClass = window.ObjectMatcherAiModel;
                     if (typeof MatcherClass !== "function") {
                         throw new Error("ObjectMatcherAiModel class is unavailable. Check objectMatcher.js loading.");
                     }
-                    this.aiModels.push(new MatcherClass(this, cfg));
+                    model = new MatcherClass(this, cfg);
                 } else if (type) {
                     console.warn(`Unknown AI model type: ${cfg.type}`);
+                }
+                if (model) {
+                    model._startupOn = !!cfg.on;
+                    this.aiModels.push(model);
                 }
             } catch (err) {
                 console.error("AI model build failed:", err);
@@ -193,6 +198,7 @@ class Robot {
                     throw new Error("ObjectFilter class is unavailable. Check objectFilter.js loading.");
                 }
                 const objectFilter = new window.ObjectFilter(this, cfg.name, cfg);
+                objectFilter._startupOn = !!cfg.on;
                 this.objectFilters.push(objectFilter);
             } catch (err) {
                 console.error("Object filter build failed:", err);
@@ -216,6 +222,7 @@ class Robot {
                     throw new Error("PID class is unavailable. Check pid.js loading.");
                 }
                 const pid = new window.PID(this, cfg.name, cfg);
+                pid._startupOn = !!cfg.on;
                 this.pidControllers.push(pid);
             } catch (err) {
                 console.error("PID build failed:", err);
@@ -434,6 +441,37 @@ class Robot {
         details.appendChild(node);
     }
 
+    /** Turn on modules marked `on: true` in robot config after GUI exists (toggle labels sync). */
+    _applyStartupModuleEnabled() {
+        const run = async () => {
+            for (const m of this.aiModels) {
+                if (!m._startupOn || typeof m.setEnabled !== "function") continue;
+                try {
+                    await Promise.resolve(m.setEnabled(true));
+                } catch (err) {
+                    console.error("Startup enable failed (AI model):", err);
+                }
+            }
+            for (const f of this.objectFilters) {
+                if (!f._startupOn || typeof f.setEnabled !== "function") continue;
+                try {
+                    f.setEnabled(true);
+                } catch (err) {
+                    console.error("Startup enable failed (object filter):", err);
+                }
+            }
+            for (const p of this.pidControllers) {
+                if (!p._startupOn || typeof p.setEnabled !== "function") continue;
+                try {
+                    p.setEnabled(true);
+                } catch (err) {
+                    console.error("Startup enable failed (PID):", err);
+                }
+            }
+        };
+        void run();
+    }
+
     _makePanelsCollapsible() {
         const majorPanels = [
             { selector: ".robot-goal", fallback: "Goal" },
@@ -576,5 +614,6 @@ class Robot {
         }
         this.container.appendChild(actuatorsDiv);
         this._makePanelsCollapsible();
+        this._applyStartupModuleEnabled();
     }
 }

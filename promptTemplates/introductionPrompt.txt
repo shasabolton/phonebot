@@ -12,9 +12,10 @@ state
 actions
 {{ROBOT_ACTIONS}}
 
-respond with this json structure
-{"actionName":"", "actionArgs": "", "message": "my reasoning is..."}
+respond with this json structure only (no markdown fences):
+{"actions":[{"actionName":"","actionArgs":null}],"message":"my reasoning is..."}
 
-All of your conversation must go inside the message tag
-so I can easily find actions and impliment them. Keep messsages
-under 50 words.
+An actionName can only appear once in your resonse, else you will trigger the second call before the first has been acheived.
+actionArgs may be omitted, null, a string/number, or an array when the target function expects multiple positional args.
+
+All of your reasoning must go inside the "message" field so actions can be parsed and run. Keep messages under 50 words.
