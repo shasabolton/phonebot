@@ -39,6 +39,10 @@ class ObjectMatcherAiModel {
             ? config.forgetMinFrameAreaFrac
             : 0.00012;
         this.forgetMinFrameAreaFrac = Math.max(1e-6, Math.min(0.01, this.forgetMinFrameAreaFrac));
+        this.forgetEdgeMarginFrac = Number.isFinite(config.forgetEdgeMarginFrac) ? config.forgetEdgeMarginFrac : 0.03;
+        this.forgetEdgeMarginFrac = Math.max(0, Math.min(0.2, this.forgetEdgeMarginFrac));
+        this.forgetEdgeAreaRatio = Number.isFinite(config.forgetEdgeAreaRatio) ? config.forgetEdgeAreaRatio : 0.45;
+        this.forgetEdgeAreaRatio = Math.max(0.05, Math.min(0.95, this.forgetEdgeAreaRatio));
 
         /** Flow bbox from LK points: percentiles reduce edge/outlier stretch; cap limits growth vs last detector size. */
         this.flowBboxPctLow = Number.isFinite(config.flowBboxPctLow) ? config.flowBboxPctLow : 0.1;
@@ -272,6 +276,14 @@ class ObjectMatcherAiModel {
             if (!t.anchorArea || t.anchorArea < 1) {
                 this._setTrackAnchorFromBbox(t, t.bbox);
             }
+            const [x, y, w, h] = t.bbox;
+            const marginX = fw * this.forgetEdgeMarginFrac;
+            const marginY = fh * this.forgetEdgeMarginFrac;
+            const nearEdge =
+                x <= marginX ||
+                y <= marginY ||
+                x + w >= fw - marginX ||
+                y + h >= fh - marginY;
 
             if (area < absFloor) {
                 this._releaseTrackMats(t);
@@ -279,6 +291,10 @@ class ObjectMatcherAiModel {
             }
 
             const ratio = area / t.anchorArea;
+            if (!t?.manualId && nearEdge && ratio < this.forgetEdgeAreaRatio) {
+                this._releaseTrackMats(t);
+                continue;
+            }
             if (ratio < this.forgetMinAreaRatio) {
                 t._forgetShrinkStreak = (t._forgetShrinkStreak || 0) + 1;
             } else {
