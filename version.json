@@ -1,4 +1,4 @@
 {
   "fwVersion": "1.1.1",
-  "appBuildVersion": "25: cocoTracker renamed mainObjectFilter"
+  "appBuildVersion": "26: objectMatcher has makeCenterObject()"
 }

@@ -398,6 +398,68 @@ class Robot {
         return parts.join(",");
     }
 
+    _toTitleCase(input) {
+        return String(input || "")
+            .replace(/[_-]+/g, " ")
+            .replace(/\s+/g, " ")
+            .trim()
+            .replace(/\b\w/g, (m) => m.toUpperCase());
+    }
+
+    _derivePanelTitle(node, fallbackTitle) {
+        if (!node) return fallbackTitle;
+        const heading = node.querySelector("h2, h3, h4, h5, legend");
+        if (heading && heading.textContent) {
+            const text = heading.textContent.trim();
+            if (text) return text;
+        }
+        const label = node.querySelector(":scope > label");
+        if (label && label.textContent) {
+            const text = label.textContent.trim();
+            if (text) return text;
+        }
+        return fallbackTitle;
+    }
+
+    _wrapCollapsible(node, title) {
+        if (!node || !node.parentNode) return;
+        if (node.parentNode.tagName === "DETAILS") return;
+        const details = document.createElement("details");
+        details.className = "cursor-collapsible-panel";
+        details.open = false;
+        const summary = document.createElement("summary");
+        summary.textContent = title;
+        details.appendChild(summary);
+        node.parentNode.insertBefore(details, node);
+        details.appendChild(node);
+    }
+
+    _makePanelsCollapsible() {
+        const majorPanels = [
+            { selector: ".robot-goal", fallback: "Goal" },
+            { selector: ".robot-sensors", fallback: "Sensors" },
+            { selector: ".robot-ai-models", fallback: "AI Models" },
+            { selector: ".robot-agent-interfaces", fallback: "Agent Interfaces" },
+            { selector: ".robot-object-filters", fallback: "Object Filters" },
+            { selector: ".robot-pid", fallback: "PID Controllers" },
+            { selector: ".robot-inputs", fallback: "Inputs" },
+            { selector: ".robot-actuators", fallback: "Actuators" }
+        ];
+        for (const panel of majorPanels) {
+            const node = this.container.querySelector(panel.selector);
+            if (!node) continue;
+            const title = this._derivePanelTitle(node, panel.fallback);
+            this._wrapCollapsible(node, title);
+        }
+
+        const subPanels = Array.from(this.container.querySelectorAll(".ai-model, .joystick-wrap"));
+        for (const node of subPanels) {
+            const fallbackClass = String(node.className || "").split(" ")[0] || "Panel";
+            const title = this._derivePanelTitle(node, this._toTitleCase(fallbackClass));
+            this._wrapCollapsible(node, title);
+        }
+    }
+
     buildGUI() {
         if (!this.container) return;
         const title = document.createElement('h3');
@@ -513,5 +575,6 @@ class Robot {
             }
         }
         this.container.appendChild(actuatorsDiv);
+        this._makePanelsCollapsible();
     }
 }

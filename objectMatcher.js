@@ -84,6 +84,7 @@ class ObjectMatcherAiModel {
         this._freqInput = null;
         this._refreshInput = null;
         this._cocoRefreshInput = null;
+        this._makeCenterBtn = null;
         this._statusEl = null;
         this._outputEl = null;
     }
@@ -219,6 +220,10 @@ class ObjectMatcherAiModel {
         track.anchorH = Math.max(1, bbox[3]);
     }
 
+    _isFeedLockedTrack(track) {
+        return !!track?.lockFromFeeds;
+    }
+
     /** Clamp flow-proposed size so it cannot balloon past last detector box (partial off-screen + bad LK). */
     _capFlowBboxToAnchor(minX, minY, bw, bh, track, fw, fh) {
         const aw = track.anchorW && track.anchorW > 0 ? track.anchorW : bw;
@@ -325,6 +330,7 @@ class ObjectMatcherAiModel {
             let bestIou = 0;
             for (let i = 0; i < this._tracks.length; i++) {
                 const t = this._tracks[i];
+                if (this._isFeedLockedTrack(t)) continue;
                 if (String(t.class || "").toLowerCase() !== label) continue;
                 const iou = this._iou(bbox, t.bbox);
                 if (iou > bestIou) {
@@ -368,6 +374,7 @@ class ObjectMatcherAiModel {
                 let altIdx = -1;
                 let altIou = 0;
                 for (let i = 0; i < this._tracks.length; i++) {
+                    if (this._isFeedLockedTrack(this._tracks[i])) continue;
                     const iou = this._iou(bbox, this._tracks[i].bbox);
                     if (iou > altIou) {
                         altIou = iou;
@@ -816,6 +823,62 @@ class ObjectMatcherAiModel {
         if (this._cocoRefreshInput) this._cocoRefreshInput.value = String(this.cocoRefreshMs);
     }
 
+    makeCenterObject() {
+        const camera = this._getCameraSensor();
+        const videoEl = camera?.getVideoElement?.();
+        const fw = (videoEl?.videoWidth | 0) || (this._frameWidth | 0);
+        const fh = (videoEl?.videoHeight | 0) || (this._frameHeight | 0);
+        if (!fw || !fh) {
+            if (this._statusEl) {
+                this._statusEl.textContent = "Cannot create center object: camera frame unavailable.";
+                this._statusEl.className = "error";
+            }
+            return false;
+        }
+
+        const kept = [];
+        for (const t of this._tracks) {
+            if (t?.manualId === "lastCenter") {
+                this._releaseTrackMats(t);
+                continue;
+            }
+            kept.push(t);
+        }
+        this._tracks = kept;
+
+        const w = Math.max(8, fw * 0.2);
+        const h = Math.max(8, fh * 0.2);
+        const x = (fw - w) * 0.5;
+        const y = (fh - h) * 0.5;
+        const bbox = this._clampBbox([x, y, w, h], fw, fh);
+
+        this._tracks.push({
+            id: this._nextId++,
+            manualId: "lastCenter",
+            class: "lastCenter",
+            labelSource: "manual",
+            score: 1,
+            bbox,
+            anchorArea: this._bboxArea(bbox),
+            anchorW: Math.max(1, bbox[2]),
+            anchorH: Math.max(1, bbox[3]),
+            lockFromFeeds: true,
+            _forgetShrinkStreak: 0,
+            filterParams: { ...this.filterParams },
+            needsReinit: true,
+            prevPts: null
+        });
+
+        this._syncDetectionsFromTracks();
+        if (videoEl) this._drawDetections(videoEl, this._detections);
+        this._renderResponseOutput();
+        if (this._statusEl) {
+            this._statusEl.textContent = "Created center object (label/id: lastCenter).";
+            this._statusEl.className = "muted";
+        }
+        return true;
+    }
+
     getFrequencyHz() {
         return this.frequencyHz;
     }
@@ -886,6 +949,11 @@ class ObjectMatcherAiModel {
         cocoRefreshInput.addEventListener("change", () => this.setCocoRefreshMs(cocoRefreshInput.value));
         cocoRefreshInput.addEventListener("blur", () => this.setCocoRefreshMs(cocoRefreshInput.value));
 
+        const makeCenterBtn = document.createElement("button");
+        makeCenterBtn.type = "button";
+        makeCenterBtn.textContent = "Make Center Object";
+        makeCenterBtn.addEventListener("click", () => this.makeCenterObject());
+
         const hint = document.createElement("p");
         hint.className = "muted";
         hint.textContent = `Uses "${this.cocoFeedType}" for bbox geometry and "${this.groqFeedType}" for label updates. Groq can overwrite labels, COCO cannot overwrite Groq labels.`;
@@ -905,6 +973,7 @@ class ObjectMatcherAiModel {
         controls.appendChild(refreshInput);
         controls.appendChild(cocoRefreshLabel);
         controls.appendChild(cocoRefreshInput);
+        controls.appendChild(makeCenterBtn);
         wrap.appendChild(title);
         wrap.appendChild(controls);
         wrap.appendChild(hint);
@@ -916,6 +985,7 @@ class ObjectMatcherAiModel {
         this._freqInput = freqInput;
         this._refreshInput = refreshInput;
         this._cocoRefreshInput = cocoRefreshInput;
+        this._makeCenterBtn = makeCenterBtn;
         this._statusEl = status;
         this._outputEl = output;
     }

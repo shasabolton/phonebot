@@ -222,15 +222,21 @@ class App {
         controlStatus.textContent = 'Select robot and transmitter.';
         this.controlStatusEl = controlStatus;
 
-        root.appendChild(txLabel);
-        root.appendChild(txSelect);
-        root.appendChild(txMount);
-        root.appendChild(robotLabel);
-        root.appendChild(select);
-        root.appendChild(startBtn);
-        root.appendChild(stopBtn);
-        root.appendChild(controlStatus);
-        root.appendChild(mount);
+        const buildCollapsedSection = (title, children) => {
+            const details = document.createElement("details");
+            details.className = "cursor-collapsible-panel";
+            details.open = false;
+            const summary = document.createElement("summary");
+            summary.textContent = title;
+            details.appendChild(summary);
+            for (const child of children) details.appendChild(child);
+            return details;
+        };
+
+        root.appendChild(buildCollapsedSection("Transmitter", [txLabel, txSelect, txMount]));
+        root.appendChild(buildCollapsedSection("Robot Selection", [robotLabel, select]));
+        root.appendChild(buildCollapsedSection("Run Controls", [startBtn, stopBtn, controlStatus]));
+        root.appendChild(buildCollapsedSection("Robot Panel", [mount]));
 
         txSelect.addEventListener('change', () => this.onTransmitterSelect());
         txSelect.value = 'wifi';

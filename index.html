@@ -221,6 +221,35 @@
       padding: 4px 2px;
       border-bottom: 1px solid #e0e0e0;
     }
+    details.cursor-collapsible-panel {
+      margin-top: 10px;
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      background: #fff;
+      padding: 0;
+    }
+    details.cursor-collapsible-panel > summary {
+      cursor: pointer;
+      font-weight: 600;
+      padding: 10px 12px;
+      list-style: none;
+      user-select: none;
+    }
+    details.cursor-collapsible-panel > summary::-webkit-details-marker {
+      display: none;
+    }
+    details.cursor-collapsible-panel > summary::before {
+      content: "▸";
+      display: inline-block;
+      margin-right: 8px;
+      transition: transform 0.15s ease;
+    }
+    details.cursor-collapsible-panel[open] > summary::before {
+      transform: rotate(90deg);
+    }
+    details.cursor-collapsible-panel > :not(summary) {
+      padding: 0 12px 12px 12px;
+    }
   </style>
 </head>
 
