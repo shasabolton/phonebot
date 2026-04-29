@@ -109,6 +109,7 @@ class ComputerVisionAiModel {
 
         this._toggleBtn = null;
         this._freqInput = null;
+        this._minScoreInput = null;
         this._refreshInput = null;
         this._cocoRefreshInput = null;
         this._makeCenterBtn = null;
@@ -903,6 +904,16 @@ class ComputerVisionAiModel {
         if (this.enabled) this._startLoop();
     }
 
+    setMinScore(nextValue) {
+        const parsed = Number(nextValue);
+        if (!Number.isFinite(parsed)) return;
+        this.minScore = Math.max(
+            ComputerVisionAiModel.MIN_SCORE,
+            Math.min(ComputerVisionAiModel.MAX_SCORE, parsed)
+        );
+        if (this._minScoreInput) this._minScoreInput.value = String(Number(this.minScore.toFixed(3)));
+    }
+
     setGroqRefreshMs(nextMs) {
         const parsed = Number(nextMs);
         if (!Number.isFinite(parsed)) return;
@@ -1035,6 +1046,17 @@ class ComputerVisionAiModel {
         freqInput.addEventListener("change", () => this.setFrequencyHz(freqInput.value));
         freqInput.addEventListener("blur", () => this.setFrequencyHz(freqInput.value));
 
+        const minScoreLabel = document.createElement("label");
+        minScoreLabel.textContent = "COCO min score (detection sensitivity)";
+        const minScoreInput = document.createElement("input");
+        minScoreInput.type = "number";
+        minScoreInput.min = String(ComputerVisionAiModel.MIN_SCORE);
+        minScoreInput.max = String(ComputerVisionAiModel.MAX_SCORE);
+        minScoreInput.step = "0.01";
+        minScoreInput.value = String(Number(this.minScore.toFixed(3)));
+        minScoreInput.addEventListener("change", () => this.setMinScore(minScoreInput.value));
+        minScoreInput.addEventListener("blur", () => this.setMinScore(minScoreInput.value));
+
         const refreshLabel = document.createElement("label");
         refreshLabel.textContent = "Min ms between Groq label merges";
         const refreshInput = document.createElement("input");
@@ -1077,6 +1099,8 @@ class ComputerVisionAiModel {
         controls.appendChild(toggleBtn);
         controls.appendChild(freqLabel);
         controls.appendChild(freqInput);
+        controls.appendChild(minScoreLabel);
+        controls.appendChild(minScoreInput);
         controls.appendChild(refreshLabel);
         controls.appendChild(refreshInput);
         controls.appendChild(cocoRefreshLabel);
@@ -1091,6 +1115,7 @@ class ComputerVisionAiModel {
 
         this._toggleBtn = toggleBtn;
         this._freqInput = freqInput;
+        this._minScoreInput = minScoreInput;
         this._refreshInput = refreshInput;
         this._cocoRefreshInput = cocoRefreshInput;
         this._makeCenterBtn = makeCenterBtn;
