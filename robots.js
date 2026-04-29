@@ -69,6 +69,7 @@ window.ROBOTS_DATA = {
                     cocoFeedType: "coco",
                     groqRefreshMs: 5000,
                     cocoRefreshMs: 500,
+                    forgetStaleMs: 1000,
                     name: "Object matcher (Groq + flow)"
                 }
             ],

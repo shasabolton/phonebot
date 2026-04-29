@@ -43,7 +43,7 @@ class ObjectMatcherAiModel {
         this.forgetEdgeMarginFrac = Math.max(0, Math.min(0.2, this.forgetEdgeMarginFrac));
         this.forgetEdgeAreaRatio = Number.isFinite(config.forgetEdgeAreaRatio) ? config.forgetEdgeAreaRatio : 0.45;
         this.forgetEdgeAreaRatio = Math.max(0.05, Math.min(0.95, this.forgetEdgeAreaRatio));
-        this.forgetStaleMs = Number.isFinite(config.forgetStaleMs) ? Math.round(config.forgetStaleMs) : 4000;
+        this.forgetStaleMs = Number.isFinite(config.forgetStaleMs) ? Math.round(config.forgetStaleMs) : 1000;
         this.forgetStaleMs = Math.max(500, Math.min(120000, this.forgetStaleMs));
         this.forgetNoPointFrames = Number.isFinite(config.forgetNoPointFrames) ? Math.round(config.forgetNoPointFrames) : 18;
         this.forgetNoPointFrames = Math.max(2, Math.min(600, this.forgetNoPointFrames));
@@ -281,6 +281,13 @@ class ObjectMatcherAiModel {
                 this._setTrackAnchorFromBbox(t, t.bbox);
             }
             const [x, y, w, h] = t.bbox;
+            if (t?.manualId === "lastCenter") {
+                const touchesEdge = x <= 0 || y <= 0 || x + w >= fw || y + h >= fh;
+                if (touchesEdge) {
+                    this._releaseTrackMats(t);
+                    continue;
+                }
+            }
             const marginX = fw * this.forgetEdgeMarginFrac;
             const marginY = fh * this.forgetEdgeMarginFrac;
             const nearEdge =
@@ -335,27 +342,6 @@ class ObjectMatcherAiModel {
         }
     }
 
-    _scalarChannel(s, i) {
-        if (!s) return 0;
-        if (s.data64F && Number.isFinite(s.data64F[i])) return s.data64F[i];
-        if (s.data32F && Number.isFinite(s.data32F[i])) return s.data32F[i];
-        if (typeof s[i] === "number") return s[i];
-        return 0;
-    }
-
-    /** Mean RGBA inside ROI — used later for re-acquire / segmentation hints. */
-    _computeRoiColorStats(rgbaRoi) {
-        const cv = window.cv;
-        if (!rgbaRoi || rgbaRoi.empty()) return null;
-        const s = cv.mean(rgbaRoi);
-        return {
-            meanR: this._scalarChannel(s, 0),
-            meanG: this._scalarChannel(s, 1),
-            meanB: this._scalarChannel(s, 2),
-            meanA: this._scalarChannel(s, 3)
-        };
-    }
-
     _mergeAnchorDetections(detections, source, rgbaFull, fw, fh) {
         const fp = this.filterParams;
         for (const det of detections) {
@@ -385,20 +371,6 @@ class ObjectMatcherAiModel {
                 }
             }
 
-            let colorStats = null;
-            if (rgbaFull && !rgbaFull.empty()) {
-                const [x, y, w, h] = bbox;
-                const rect = new window.cv.Rect(Math.round(x), Math.round(y), Math.round(w), Math.round(h));
-                if (rect.x >= 0 && rect.y >= 0 && rect.width > 4 && rect.height > 4) {
-                    const roi = rgbaFull.roi(rect);
-                    try {
-                        colorStats = this._computeRoiColorStats(roi);
-                    } finally {
-                        roi.delete();
-                    }
-                }
-            }
-
             if (bestIdx >= 0 && bestIou >= this.mergeIou) {
                 const t = this._tracks[bestIdx];
                 if (source === "coco" || t.labelSource !== "coco") {
@@ -417,7 +389,7 @@ class ObjectMatcherAiModel {
                     t.labelSource = "coco";
                 }
                 t.score = score;
-                t.filterParams = { ...fp, ...t.filterParams, colorStats: colorStats || t.filterParams?.colorStats };
+                t.filterParams = { ...fp, ...t.filterParams };
                 t.needsReinit = true;
             } else {
                 let altIdx = -1;
@@ -448,7 +420,7 @@ class ObjectMatcherAiModel {
                         t.labelSource = "coco";
                     }
                     t.score = score;
-                    t.filterParams = { ...fp, colorStats };
+                    t.filterParams = { ...fp };
                     t.needsReinit = true;
                 } else {
                     this._tracks.push({
@@ -464,7 +436,7 @@ class ObjectMatcherAiModel {
                         flowTicks: 0,
                         noPointStreak: 0,
                         lastAnchorUpdateMs: Date.now(),
-                        filterParams: { ...fp, colorStats },
+                        filterParams: { ...fp },
                         needsReinit: true,
                         prevPts: null
                     });
@@ -711,8 +683,7 @@ class ObjectMatcherAiModel {
                     y: Number(t.bbox[1].toFixed(1)),
                     width: Number(t.bbox[2].toFixed(1)),
                     height: Number(t.bbox[3].toFixed(1))
-                },
-                filterParams: t.filterParams
+                }
             }))
         };
         this._outputEl.textContent = JSON.stringify(response, null, 2);
