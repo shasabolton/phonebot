@@ -22,10 +22,12 @@ class AgentInterface {
         this.messageHistory = [];
         this._apiKey = "";
         this._rememberKey = false;
+        this._voiceOn = false;
         this._containerEl = null;
         this._agentSelect = null;
         this._keyInput = null;
         this._rememberInput = null;
+        this._voiceInput = null;
         this._modelOverrideInput = null;
         this._templateSelect = null;
         this._insertTemplateBtn = null;
@@ -34,6 +36,7 @@ class AgentInterface {
         this._statusEl = null;
         this._historyEl = null;
         this._loadSavedKeyPreference();
+        this._voiceOn = this._resolveVoiceDefault(null);
     }
 
     _loadSavedKeyPreference() {
@@ -89,6 +92,55 @@ class AgentInterface {
         const override = this._modelOverrideInput?.value?.trim();
         if (override) return override;
         return String(agent?.model || "").trim();
+    }
+
+    _resolveVoiceDefault(agent) {
+        if (agent && Object.prototype.hasOwnProperty.call(agent, "voiceOn")) {
+            return !!agent.voiceOn;
+        }
+        if (Object.prototype.hasOwnProperty.call(this.config, "voiceOn")) {
+            return !!this.config.voiceOn;
+        }
+        return false;
+    }
+
+    _speak(text) {
+        const content = String(text || "").trim();
+        if (!content) return;
+        if (!window.speechSynthesis || typeof window.SpeechSynthesisUtterance !== "function") return;
+        try {
+            window.speechSynthesis.cancel();
+            const utterance = new SpeechSynthesisUtterance(content);
+            window.speechSynthesis.speak(utterance);
+        } catch (err) {
+            console.warn("TTS error:", err);
+        }
+    }
+
+    _extractSpokenText(contentText, rawText) {
+        const content = String(contentText || "").trim();
+        if (!content) return "";
+        const payload = this._tryParseJson(content) || this._tryParseJson(rawText);
+        if (!payload || typeof payload !== "object") {
+            return content;
+        }
+        if (typeof payload.message === "string" && payload.message.trim()) {
+            return payload.message.trim();
+        }
+        if (typeof payload.reply === "string" && payload.reply.trim()) {
+            return payload.reply.trim();
+        }
+        if (typeof payload.text === "string" && payload.text.trim()) {
+            return payload.text.trim();
+        }
+        return "";
+    }
+
+    _buildPromptWithState(userText) {
+        const prompt = String(userText || "").trim();
+        const stateText = JSON.stringify(this.robot?.buildState?.() || {}, null, 2);
+        if (!stateText) return prompt;
+        return prompt ? `${prompt}\n\nState:\n${stateText}` : `State:\n${stateText}`;
     }
 
     _buildBodyPlanFromRobotConfig() {
@@ -432,6 +484,7 @@ class AgentInterface {
     async _onSend() {
         if (!this._sendBtn || !this._promptInput) return;
         const text = this._promptInput.value;
+        const promptWithState = this._buildPromptWithState(text);
         this._apiKey = this._keyInput?.value?.trim() || "";
         const agent = this.getSelectedAgent();
         if (this._rememberInput) this._rememberKey = !!this._rememberInput.checked;
@@ -443,9 +496,9 @@ class AgentInterface {
             this._statusEl.className = "muted";
         }
         try {
-            this.messageHistory.push({ role: "user", text, at: new Date().toISOString() });
+            this.messageHistory.push({ role: "user", text: promptWithState, at: new Date().toISOString() });
             this._renderHistory();
-            const reply = await this.sendPrompt(text);
+            const reply = await this.sendPrompt(promptWithState);
             this.messageHistory.push({
                 role: "assistant",
                 text: reply.contentText || "",
@@ -453,6 +506,9 @@ class AgentInterface {
             });
             await this._maybeRunActionFromResponse(reply.contentText, reply.rawText);
             this._renderHistory();
+            if (this._voiceOn) {
+                this._speak(this._extractSpokenText(reply.contentText, reply.rawText));
+            }
             this._promptInput.value = "";
             if (this._statusEl) {
                 this._statusEl.textContent = "Done.";
@@ -467,6 +523,19 @@ class AgentInterface {
         } finally {
             this._sendBtn.disabled = false;
         }
+    }
+
+    /**
+     * Used by external modules (e.g. SpeechToText model) to submit a prompt.
+     * @param {string} text
+     * @returns {Promise<boolean>}
+     */
+    async submitPrompt(text) {
+        const next = String(text || "").trim();
+        if (!next || !this._promptInput) return false;
+        this._promptInput.value = next;
+        await this._onSend();
+        return true;
     }
 
     _renderHistory() {
@@ -491,9 +560,14 @@ class AgentInterface {
 
     _syncKeyFromSelection() {
         const agent = this.getSelectedAgent();
-        if (!this._keyInput) return;
         this._apiKey = agent ? this._loadKeyForAgent(agent.name) : "";
-        this._keyInput.value = this._apiKey;
+        if (this._keyInput) {
+            this._keyInput.value = this._apiKey;
+        }
+        this._voiceOn = this._resolveVoiceDefault(agent);
+        if (this._voiceInput) {
+            this._voiceInput.checked = this._voiceOn;
+        }
     }
 
     buildGUI(container) {
@@ -553,6 +627,22 @@ class AgentInterface {
         modelOverrideInput.type = "text";
         modelOverrideInput.placeholder = "Leave blank to use agent config model";
 
+        const voiceWrap = document.createElement("label");
+        voiceWrap.style.display = "flex";
+        voiceWrap.style.alignItems = "center";
+        voiceWrap.style.gap = "8px";
+        const voiceInput = document.createElement("input");
+        voiceInput.type = "checkbox";
+        voiceInput.checked = this._voiceOn;
+        voiceInput.addEventListener("change", () => {
+            this._voiceOn = !!voiceInput.checked;
+            if (!this._voiceOn && window.speechSynthesis) {
+                window.speechSynthesis.cancel();
+            }
+        });
+        voiceWrap.appendChild(voiceInput);
+        voiceWrap.appendChild(document.createTextNode("Speak agent replies"));
+
         const templateLabel = document.createElement("label");
         templateLabel.textContent = "Prompt template";
         const templateSelect = document.createElement("select");
@@ -610,6 +700,7 @@ class AgentInterface {
         controls.appendChild(rememberWrap);
         controls.appendChild(modelLabel);
         controls.appendChild(modelOverrideInput);
+        controls.appendChild(voiceWrap);
         controls.appendChild(historyLabel);
         controls.appendChild(historyEl);
         controls.appendChild(promptLabel);
@@ -628,6 +719,7 @@ class AgentInterface {
         this._agentSelect = agentSelect;
         this._keyInput = keyInput;
         this._rememberInput = rememberInput;
+        this._voiceInput = voiceInput;
         this._modelOverrideInput = modelOverrideInput;
         this._templateSelect = templateSelect;
         this._insertTemplateBtn = insertTemplateBtn;
@@ -636,6 +728,8 @@ class AgentInterface {
         this._statusEl = status;
         this._historyEl = historyEl;
 
+        this._voiceOn = this._resolveVoiceDefault(this.getSelectedAgent());
+        this._voiceInput.checked = this._voiceOn;
         this._syncKeyFromSelection();
         void this._hydrateDefaultPromptFromIntroductionTemplate();
     }
@@ -648,6 +742,7 @@ class AgentInterface {
         this._agentSelect = null;
         this._keyInput = null;
         this._rememberInput = null;
+        this._voiceInput = null;
         this._modelOverrideInput = null;
         this._templateSelect = null;
         this._insertTemplateBtn = null;
@@ -655,6 +750,9 @@ class AgentInterface {
         this._sendBtn = null;
         this._statusEl = null;
         this._historyEl = null;
+        if (window.speechSynthesis) {
+            window.speechSynthesis.cancel();
+        }
         this.messageHistory = [];
     }
 }

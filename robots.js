@@ -62,6 +62,16 @@ window.ROBOTS_DATA = {
                     cocoRefreshMs: 500,
                     forgetStaleMs: 1000,
                     name: "Computer vision"
+                },
+                {
+                    type: "speechToText",
+                    name: "Speech to text",
+                    on: true,
+                    VAD: "webRTC",
+                    trigger: "hey robot",
+                    confirmation: "listening",
+                    terminator: "not talking 2000ms",
+                    stt: "browser-webspeech"
                 }
             ],
             targets: [],
@@ -91,7 +101,7 @@ window.ROBOTS_DATA = {
                     frequencyHz: "feedback"
                 }
             ],
-            state: ["goal", "objectFilters.mainObjectFilter.filters", "processing.computervision.results"],
+            state: ["objectFilters.mainObjectFilter.filters", "processing.computervision.results", "pidGoals"],
             actions: [
                 {actionName: "setTrackingFilter", functionPath: "objectFilters.mainObjectFilter.setFiltersFromString", actionArgsHint: "cup, door, human etc", usage: "you should only set filters for objects already in your vision or synthetic ones you can create, unless you want to be waiting around for them to appear so you can track them" },
                 {actionName: "setYawTrackingGoal", functionPath: "pidControllers.yawObjectTrackerPID.setGoal", actionArgsHint: "0, 1, -1", usage: "set goal to 0 to center an object. Set it between -1 and 1 to move it to the side. Moving an object from one side of the screen to the other can be used as a way to pan your view to explore."}, // uses groq vision model
@@ -99,6 +109,7 @@ window.ROBOTS_DATA = {
             ],
             agentInterface: {
                 name: "Chat agents",
+                voiceOn: true,
                 defaultBaseUrl: "https://api.groq.com/openai/v1",
                 promptTemplates: [
                     { name: "Introduction prompt", path: "promptTemplates/introductionPrompt.txt" }

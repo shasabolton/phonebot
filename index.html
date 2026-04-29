@@ -116,6 +116,23 @@
     .sensor-camera-start-btn {
       margin-top: 8px;
     }
+    .sensor-microphone-level {
+      margin-top: 8px;
+      height: 10px;
+      background: #ddd;
+      border-radius: 5px;
+      overflow: hidden;
+    }
+    .sensor-microphone-level-fill {
+      height: 100%;
+      width: 0%;
+      background: #5cb85c;
+      transition: width 0.1s linear;
+    }
+    .sensor-microphone-status {
+      margin: 6px 0 0 0;
+      font-size: 0.9em;
+    }
     .servo-deadband-label {
       display: block;
       margin-top: 8px;
@@ -162,6 +179,19 @@
       max-height: 180px;
       overflow: auto;
       font-size: 12px;
+    }
+    .speech-event-log {
+      margin-top: 8px;
+      max-height: 120px;
+      overflow-y: auto;
+      background: #f7f7f7;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      padding: 6px;
+      font-size: 12px;
+      line-height: 1.4;
+      color: #333;
+      white-space: pre-wrap;
     }
     .robot-agent-interface textarea.agent-prompt-input {
       min-height: 252px;
@@ -270,8 +300,10 @@
     "joystick.js",
     "sensors.js",
     "camera.js",
+    "microphone.js",
     "aiModelGroqVision.js",
     "computerVision.js",
+    "speechToText.js",
     "objectFilter.js",
     "pid.js",
     "agentInterface.js",

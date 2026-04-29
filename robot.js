@@ -98,6 +98,12 @@ class Robot {
             try {
                 if (cfg.type === "camera") {
                     this.sensors.push(new Camera(cfg));
+                } else if (cfg.type === "microphone") {
+                    const MicClass = window.Microphone;
+                    if (typeof MicClass !== "function") {
+                        throw new Error("Microphone class is unavailable. Check microphone.js loading.");
+                    }
+                    this.sensors.push(new MicClass(cfg));
                 } else {
                     this.sensors.push(new Sensor(cfg));
                 }
@@ -133,6 +139,12 @@ class Robot {
                         throw new Error("ComputerVisionAiModel class is unavailable. Check computerVision.js loading.");
                     }
                     model = new VisionClass(this, cfg);
+                } else if (type === "speechtotext" || type === "speachtotext") {
+                    const SpeechClass = window.SpeechToTextAiModel;
+                    if (typeof SpeechClass !== "function") {
+                        throw new Error("SpeechToTextAiModel class is unavailable. Check speechToText.js loading.");
+                    }
+                    model = new SpeechClass(this, cfg);
                 } else if (type) {
                     console.warn(`Unknown AI model type: ${cfg.type}`);
                 }
@@ -343,6 +355,17 @@ class Robot {
         return current;
     }
 
+    _buildPidGoalsState() {
+        const goals = {};
+        for (const pid of this.pidControllers || []) {
+            const name = String(pid?.name || "").trim();
+            if (!name) continue;
+            const goal = Number(pid?.goal);
+            goals[name] = Number.isFinite(goal) ? goal : pid?.goal;
+        }
+        return goals;
+    }
+
     buildState() {
         const configuredPaths = Array.isArray(this.config?.state) ? this.config.state : [];
         const state = {
@@ -359,7 +382,11 @@ class Robot {
         for (const path of configuredPaths) {
             const key = String(path || "").trim();
             if (!key) continue;
-            state[key] = this._readStatePath(key);
+            if (key === "pidGoals") {
+                state[key] = this._buildPidGoalsState();
+            } else {
+                state[key] = this._readStatePath(key);
+            }
         }
         return state;
     }
@@ -406,21 +433,21 @@ class Robot {
     }
 
     _derivePanelTitle(node, fallbackTitle) {
-        if (!node) return fallbackTitle;
-        const heading = node.querySelector("h2, h3, h4, h5, legend");
+        if (!node) return { title: fallbackTitle, sourceEl: null };
+        const heading = node.querySelector(":scope > h2, :scope > h3, :scope > h4, :scope > h5, :scope > legend");
         if (heading && heading.textContent) {
             const text = heading.textContent.trim();
-            if (text) return text;
+            if (text) return { title: text, sourceEl: heading };
         }
         const label = node.querySelector(":scope > label");
         if (label && label.textContent) {
             const text = label.textContent.trim();
-            if (text) return text;
+            if (text) return { title: text, sourceEl: label };
         }
-        return fallbackTitle;
+        return { title: fallbackTitle, sourceEl: null };
     }
 
-    _wrapCollapsible(node, title) {
+    _wrapCollapsible(node, title, sourceEl = null) {
         if (!node || !node.parentNode) return;
         if (node.parentNode.tagName === "DETAILS") return;
         const details = document.createElement("details");
@@ -431,6 +458,9 @@ class Robot {
         details.appendChild(summary);
         node.parentNode.insertBefore(details, node);
         details.appendChild(node);
+        if (sourceEl && sourceEl.parentNode === node) {
+            sourceEl.parentNode.removeChild(sourceEl);
+        }
     }
 
     /** Turn on modules marked `on: true` in robot config after GUI exists (toggle labels sync). */
@@ -466,27 +496,27 @@ class Robot {
 
     _makePanelsCollapsible() {
         const majorPanels = [
-            { selector: ".robot-goal", fallback: "Goal" },
-            { selector: ".robot-sensors", fallback: "Sensors" },
-            { selector: ".robot-ai-models", fallback: "Processing" },
-            { selector: ".robot-agent-interfaces", fallback: "Agent Interfaces" },
-            { selector: ".robot-object-filters", fallback: "Object Filters" },
-            { selector: ".robot-pid", fallback: "PID Controllers" },
-            { selector: ".robot-inputs", fallback: "Inputs" },
-            { selector: ".robot-actuators", fallback: "Actuators" }
+            { selector: ".robot-goal", fallback: "goal" },
+            { selector: ".robot-sensors", fallback: "sensors" },
+            { selector: ".robot-ai-models", fallback: "processing" },
+            { selector: ".robot-agent-interfaces", fallback: "agentInterface" },
+            { selector: ".robot-object-filters", fallback: "objectFilters" },
+            { selector: ".robot-pid", fallback: "pidControllers" },
+            { selector: ".robot-inputs", fallback: "controlInputs" },
+            { selector: ".robot-actuators", fallback: "actuators" }
         ];
         for (const panel of majorPanels) {
             const node = this.container.querySelector(panel.selector);
             if (!node) continue;
-            const title = this._derivePanelTitle(node, panel.fallback);
-            this._wrapCollapsible(node, title);
+            const derived = this._derivePanelTitle(node, panel.fallback);
+            this._wrapCollapsible(node, derived.title, derived.sourceEl);
         }
 
         const subPanels = Array.from(this.container.querySelectorAll(".ai-model, .joystick-wrap"));
         for (const node of subPanels) {
             const fallbackClass = String(node.className || "").split(" ")[0] || "Panel";
-            const title = this._derivePanelTitle(node, this._toTitleCase(fallbackClass));
-            this._wrapCollapsible(node, title);
+            const derived = this._derivePanelTitle(node, this._toTitleCase(fallbackClass));
+            this._wrapCollapsible(node, derived.title, derived.sourceEl);
         }
     }
 
