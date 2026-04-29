@@ -48,29 +48,20 @@ window.ROBOTS_DATA = {
                     y: "speed"
                 }
             ],
-            sensors: ["camera"],
-            aiModels: [
-                {
-                    type: "coco",
-                    on: true,
-                    frequencyHz: 10,
-                    maxNumBoxes: 40,
-                    minScore: 0.2,
-                    trackTimeoutMs: 3000,
-                    matchIouThreshold: 0.2
-                },
-                { type: "tracker", frequencyHz: 10 },
+            sensors: ["camera", "microphone"],
+            processing: [
                 { type: "groqvision", frequencyHz: 0.2, model: "meta-llama/llama-4-scout-17b-16e-instruct" },
                 {
-                    type: "objectmatcher",
+                    type: "computervision",
                     on: true,
                     frequencyHz: 10,
                     groqFeedType: "groqvision",
-                    cocoFeedType: "coco",
+                    maxNumBoxes: 40,
+                    minScore: 0.2,
                     groqRefreshMs: 5000,
                     cocoRefreshMs: 500,
                     forgetStaleMs: 1000,
-                    name: "Object matcher (Groq + flow)"
+                    name: "Computer vision"
                 }
             ],
             targets: [],
@@ -78,7 +69,7 @@ window.ROBOTS_DATA = {
                 {
                     name: "mainObjectFilter",
                     on: true,
-                    dataFeed: "objectmatcher",
+                    dataFeed: "computervision",
                     filters: ["cup"],
                     minScore: 0.1,
                     strategy: "largest",
@@ -100,11 +91,11 @@ window.ROBOTS_DATA = {
                     frequencyHz: "feedback"
                 }
             ],
-            state: ["goal", "objectFilters.mainObjectFilter.filters", "aiModels.objectmatcher.results"],
+            state: ["goal", "objectFilters.mainObjectFilter.filters", "processing.computervision.results"],
             actions: [
                 {actionName: "setTrackingFilter", functionPath: "objectFilters.mainObjectFilter.setFiltersFromString", actionArgsHint: "cup, door, human etc", usage: "you should only set filters for objects already in your vision or synthetic ones you can create, unless you want to be waiting around for them to appear so you can track them" },
                 {actionName: "setYawTrackingGoal", functionPath: "pidControllers.yawObjectTrackerPID.setGoal", actionArgsHint: "0, 1, -1", usage: "set goal to 0 to center an object. Set it between -1 and 1 to move it to the side. Moving an object from one side of the screen to the other can be used as a way to pan your view to explore."}, // uses groq vision model
-                {actionName: "makeCenterObject", functionPath: "aiModels.objectmatcher.makeCenterObject", actionArgsHint: "none", usage: "Places a synthetic lastCenter bbox in the frame center for panning via object filter + PID."}
+                {actionName: "makeCenterObject", functionPath: "processing.computervision.makeCenterObject", actionArgsHint: "none", usage: "Places a synthetic lastCenter bbox in the frame center for panning via object filter + PID."}
             ],
             agentInterface: {
                 name: "Chat agents",

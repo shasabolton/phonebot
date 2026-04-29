@@ -48,7 +48,7 @@ class Robot {
         this.buildControlInputs(this.config.controlInputs || this.config.inputs || {});
         this.buildJoysticks(this.config.joysticks || []);
         this.buildSensors(this.config.sensors || []);
-        this.buildAiModels(this.config.aiModels || []);
+        this.buildAiModels(this.config.processing || this.config.aiModels || []);
         this.buildAgentInterface();
         this.buildObjectFilters(this.config.objectFilters || []);
         this.buildPidControllers(this.config.pidControllers || []);
@@ -121,30 +121,18 @@ class Robot {
             const type = String(cfg.type || "").trim().toLowerCase();
             try {
                 let model = null;
-                if (type === "coco") {
-                    const CocoModelClass = window.CocoAiModel;
-                    if (typeof CocoModelClass !== "function") {
-                        throw new Error("CocoAiModel class is unavailable. Check aiModelCoco.js loading.");
-                    }
-                    model = new CocoModelClass(this, cfg);
-                } else if (type === "tracker") {
-                    const TrackerModelClass = window.GenericTrackerAiModel;
-                    if (typeof TrackerModelClass !== "function") {
-                        throw new Error("GenericTrackerAiModel class is unavailable. Check aiModelTracker.js loading.");
-                    }
-                    model = new TrackerModelClass(this, cfg);
-                } else if (type === "groqvision" || type === "groq") {
+                if (type === "groqvision" || type === "groq") {
                     const GroqVisionModelClass = window.GroqVisionAiModel;
                     if (typeof GroqVisionModelClass !== "function") {
                         throw new Error("GroqVisionAiModel class is unavailable. Check aiModelGroqVision.js loading.");
                     }
                     model = new GroqVisionModelClass(this, cfg);
-                } else if (type === "objectmatcher") {
-                    const MatcherClass = window.ObjectMatcherAiModel;
-                    if (typeof MatcherClass !== "function") {
-                        throw new Error("ObjectMatcherAiModel class is unavailable. Check objectMatcher.js loading.");
+                } else if (type === "computervision") {
+                    const VisionClass = window.ComputerVisionAiModel;
+                    if (typeof VisionClass !== "function") {
+                        throw new Error("ComputerVisionAiModel class is unavailable. Check computerVision.js loading.");
                     }
-                    model = new MatcherClass(this, cfg);
+                    model = new VisionClass(this, cfg);
                 } else if (type) {
                     console.warn(`Unknown AI model type: ${cfg.type}`);
                 }
@@ -341,6 +329,10 @@ class Robot {
         let current = this;
         for (const segment of segments) {
             if (current == null) return undefined;
+            if (current === this && segment === "processing") {
+                current = this.aiModels;
+                continue;
+            }
             if (Array.isArray(current)) {
                 current = this._resolveNamedCollectionItem(current, segment);
             } else {
@@ -476,7 +468,7 @@ class Robot {
         const majorPanels = [
             { selector: ".robot-goal", fallback: "Goal" },
             { selector: ".robot-sensors", fallback: "Sensors" },
-            { selector: ".robot-ai-models", fallback: "AI Models" },
+            { selector: ".robot-ai-models", fallback: "Processing" },
             { selector: ".robot-agent-interfaces", fallback: "Agent Interfaces" },
             { selector: ".robot-object-filters", fallback: "Object Filters" },
             { selector: ".robot-pid", fallback: "PID Controllers" },
@@ -530,9 +522,9 @@ class Robot {
         const aiModelsDiv = document.createElement('div');
         aiModelsDiv.className = 'robot-ai-models';
         const aiTitle = document.createElement('h4');
-        aiTitle.textContent = 'AI Models';
+        aiTitle.textContent = 'Processing';
         aiModelsDiv.appendChild(aiTitle);
-        const requestedAiModels = Array.isArray(this.config.aiModels) ? this.config.aiModels.length : 0;
+        const requestedAiModels = Array.isArray(this.config.processing) ? this.config.processing.length : (Array.isArray(this.config.aiModels) ? this.config.aiModels.length : 0);
         for (const model of this.aiModels) {
             if (typeof model.buildGUI === 'function') {
                 model.buildGUI(aiModelsDiv);

@@ -332,7 +332,7 @@ class AgentInterface {
                 i += 1;
                 continue;
             }
-            if (segment === "aiModels") {
+            if (segment === "aiModels" || segment === "processing") {
                 const key = String(nextSegment || "").trim().toLowerCase();
                 const byType =
                     Array.isArray(this.robot?.aiModels) &&
