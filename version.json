@@ -1,4 +1,4 @@
 {
   "fwVersion": "1.1.1",
-  "appBuildVersion": "44: mic level stream off by default"
+  "appBuildVersion": "45: reccord audio as well as transcribe"
 }
