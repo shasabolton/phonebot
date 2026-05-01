@@ -26,6 +26,8 @@ class SpeechToTextAiModel {
         this._outputEl = null;
         this._eventLogEl = null;
         this._lastInterimSpeechLogAt = 0;
+        /** @type {'idle'|'wake_listening'|'capture'|'finalizing'} */
+        this._speechSessionState = "idle";
     }
 
     _extractTerminatorPhrase(raw) {
@@ -257,17 +259,17 @@ class SpeechToTextAiModel {
         };
 
         rec.onend = () => {
-            this._logEvent("onend");
+            this._logEvent(`onend (session=${this._speechSessionState})`);
             if (!this.enabled) return;
             setTimeout(() => {
                 if (!this.enabled) return;
-                if (this._isRecording) {
-                    this._logEvent("onend → skip rec.start (recording active)");
+                if (!this._shouldRestartRecognitionAfterEnd()) {
+                    this._logEvent(`onend → skip rec.start (session=${this._speechSessionState})`);
                     return;
                 }
                 try {
                     rec.start();
-                    this._logEvent("onend → rec.start() retry");
+                    this._logEvent(`onend → rec.start() (${this._speechSessionState})`);
                 } catch (err) {
                     this._logEvent(`onend → rec.start() failed: ${err?.message || err}`);
                 }
@@ -278,25 +280,45 @@ class SpeechToTextAiModel {
         this._isWakeArmed = true;
         try {
             rec.start();
+            this._speechSessionState = "wake_listening";
             this._setStatus(`Listening for "${this.wakePhrase}"`, "ok");
             this._logEvent("Wake listening active.");
         } catch (err) {
+            this._speechSessionState = "idle";
             this._setStatus(`Failed to start speech recognition: ${err?.message || "unknown"}`, "error");
         }
     }
 
+    _shouldRestartRecognitionAfterEnd() {
+        return this._speechSessionState === "wake_listening" || this._speechSessionState === "capture";
+    }
+
     async _onWakeTriggered() {
         if (this._isRecording) return;
-        await this._startRecording();
-        this._confirmationInProgress = true;
-        this._recordIgnoreUntil = Number.POSITIVE_INFINITY;
-        this._setStatus(`Confirmation: "${this.confirmationText}"`, "muted");
-        await this._speakListeningCueAndWait();
-        this._confirmationInProgress = false;
-        this._recordIgnoreUntil = Date.now() + 350;
-        this._lastSpeechAt = Date.now();
-        this._setStatus("Recording...", "ok");
-        this._logEvent("Confirmation finished; speech capture active.");
+        this._speechSessionState = "capture";
+        this._logEvent("Session → capture (wake phrase; onend will restart recognition if needed)");
+        try {
+            await this._startRecording();
+            this._confirmationInProgress = true;
+            this._recordIgnoreUntil = Number.POSITIVE_INFINITY;
+            this._setStatus(`Confirmation: "${this.confirmationText}"`, "muted");
+            await this._speakListeningCueAndWait();
+            this._confirmationInProgress = false;
+            this._recordIgnoreUntil = Date.now() + 350;
+            this._lastSpeechAt = Date.now();
+            this._setStatus("Recording...", "ok");
+            this._logEvent("Confirmation finished; speech capture active.");
+        } catch (err) {
+            this._logEvent(`Wake flow failed: ${err?.message || err}`);
+            this._isRecording = false;
+            this._confirmationInProgress = false;
+            this._recordIgnoreUntil = 0;
+            if (this._monitorTimer) {
+                clearInterval(this._monitorTimer);
+                this._monitorTimer = null;
+            }
+            this._speechSessionState = this.enabled ? "wake_listening" : "idle";
+        }
     }
 
     async _startRecording() {
@@ -382,6 +404,7 @@ class SpeechToTextAiModel {
     _stopRecording(reason) {
         if (!this._isRecording) return;
         this._isRecording = false;
+        this._speechSessionState = "finalizing";
         if (this._monitorTimer) {
             clearInterval(this._monitorTimer);
             this._monitorTimer = null;
@@ -392,23 +415,32 @@ class SpeechToTextAiModel {
     }
 
     async _finalizeRecording() {
-        const transcriptSnapshot = String(this._latestRecordingTranscript || "").trim();
-        if (transcriptSnapshot) this._logEvent("Transcription source: browser recognition");
-        if (!transcriptSnapshot) this._logEvent("No browser transcript captured for this utterance.");
+        try {
+            const transcriptSnapshot = String(this._latestRecordingTranscript || "").trim();
+            if (transcriptSnapshot) this._logEvent("Transcription source: browser recognition");
+            if (!transcriptSnapshot) this._logEvent("No browser transcript captured for this utterance.");
 
-        if (!transcriptSnapshot) {
-            this._setStatus(`No speech detected. Listening for "${this.wakePhrase}"`, "warn");
-            this._cooldownUntil = Date.now() + 1000;
-            return;
-        }
+            if (!transcriptSnapshot) {
+                this._setStatus(`No speech detected. Listening for "${this.wakePhrase}"`, "warn");
+                this._cooldownUntil = Date.now() + 1000;
+                return;
+            }
 
-        const cleaned = this._cleanUtteranceForAgent(transcriptSnapshot);
-        if (!cleaned) {
-            this._setStatus(`Heard wake phrase only. Listening for "${this.wakePhrase}"`, "warn");
-            this._cooldownUntil = Date.now() + 1000;
-            return;
+            const cleaned = this._cleanUtteranceForAgent(transcriptSnapshot);
+            if (!cleaned) {
+                this._setStatus(`Heard wake phrase only. Listening for "${this.wakePhrase}"`, "warn");
+                this._cooldownUntil = Date.now() + 1000;
+                return;
+            }
+            await this._sendCleanedToChatbot(cleaned);
+        } finally {
+            if (this.enabled) {
+                this._speechSessionState = "wake_listening";
+                this._logEvent("Session → wake_listening (ready for next wake)");
+            } else {
+                this._speechSessionState = "idle";
+            }
         }
-        await this._sendCleanedToChatbot(cleaned);
     }
 
     async setEnabled(nextEnabled) {
@@ -437,6 +469,7 @@ class SpeechToTextAiModel {
                 this._monitorTimer = null;
             }
             this._isRecording = false;
+            this._speechSessionState = "idle";
             if (this._recognition) {
                 try {
                     this._recognition.stop();
