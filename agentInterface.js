@@ -538,69 +538,6 @@ class AgentInterface {
         return true;
     }
 
-    /**
-     * OpenAI-compatible speech-to-text (POST multipart to …/audio/transcriptions).
-     * Uses the selected agent's baseUrl and the API key field (same as chat).
-     * @param {Blob} blob
-     * @returns {Promise<string>} trimmed transcript text
-     */
-    async transcribeAudioBlob(blob) {
-        const agent = this.getSelectedAgent();
-        if (!agent) {
-            throw new Error("No agent selected.");
-        }
-        if (!blob || typeof blob.size !== "number" || blob.size < 1) {
-            throw new Error("No audio data to transcribe.");
-        }
-        this._apiKey = String(this._keyInput?.value?.trim() || this._apiKey || "").trim();
-        if (!this._apiKey) {
-            throw new Error("Enter an API key for this provider.");
-        }
-        const base = String(agent.baseUrl || this.defaultBaseUrl || "").replace(/\/$/, "");
-        if (!base) {
-            throw new Error("Agent has no baseUrl.");
-        }
-        const url = `${base}/audio/transcriptions`;
-        const baseLower = base.toLowerCase();
-        const model =
-            String(agent.transcriptionModel || "").trim() ||
-            (baseLower.includes("groq.com") ? "whisper-large-v3-turbo" : "whisper-1");
-
-        const type = String(blob.type || "").toLowerCase();
-        let ext = "webm";
-        if (type.includes("mp4") || type.includes("m4a") || type.includes("aac")) ext = "m4a";
-        else if (type.includes("wav")) ext = "wav";
-
-        const fd = new FormData();
-        fd.append("file", blob, `recording.${ext}`);
-        fd.append("model", model);
-
-        const authHeader = String(agent.authHeader || "Authorization").trim();
-        const authPrefix = agent.authPrefix !== undefined ? String(agent.authPrefix) : "Bearer ";
-        const headers = {
-            [authHeader]: `${authPrefix}${this._apiKey}`
-        };
-        if (agent.extraHeaders && typeof agent.extraHeaders === "object") {
-            for (const [k, v] of Object.entries(agent.extraHeaders)) {
-                if (k && v != null) headers[k] = String(v);
-            }
-        }
-
-        const res = await fetch(url, { method: "POST", headers, body: fd });
-        const rawText = await res.text();
-        if (!res.ok) {
-            throw new Error(`Transcription HTTP ${res.status}: ${rawText.slice(0, 500)}`);
-        }
-        let json;
-        try {
-            json = JSON.parse(rawText);
-        } catch (_) {
-            throw new Error("Transcription response was not JSON.");
-        }
-        const text = String(json.text || "").trim();
-        return text;
-    }
-
     _renderHistory() {
         if (!this._historyEl) return;
         this._historyEl.replaceChildren();

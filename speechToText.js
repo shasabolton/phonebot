@@ -25,14 +25,7 @@ class SpeechToTextAiModel {
         this._statusEl = null;
         this._outputEl = null;
         this._eventLogEl = null;
-        this._playClipBtn = null;
-        this._transcribeClipBtn = null;
-        this._lastRecordingBlob = null;
-        this._audioStream = null;
-        this._mediaRecorder = null;
-        this._recordChunks = [];
-        this._previewAudio = null;
-        this._previewObjectUrl = null;
+        this._lastInterimSpeechLogAt = 0;
     }
 
     _extractTerminatorPhrase(raw) {
@@ -55,7 +48,41 @@ class SpeechToTextAiModel {
         if (!this._eventLogEl) return;
         const now = new Date();
         const stamp = now.toLocaleTimeString();
-        this._eventLogEl.textContent = `${stamp} ${text}\n${this._eventLogEl.textContent}`.slice(0, 6000);
+        this._eventLogEl.textContent = `${stamp} ${text}\n${this._eventLogEl.textContent}`.slice(0, 12000);
+    }
+
+    _speechResultsDebug(evt) {
+        const parts = [];
+        const n = evt?.results?.length ?? 0;
+        const start = Number.isFinite(evt?.resultIndex) ? evt.resultIndex : 0;
+        for (let i = start; i < n; i++) {
+            const r = evt.results[i];
+            const alt = r && r[0];
+            const raw = alt ? String(alt.transcript || "") : "";
+            const t = raw.trim();
+            const slice = t.length > 100 ? `${t.slice(0, 100)}…` : t;
+            const conf = alt && typeof alt.confidence === "number" ? alt.confidence.toFixed(3) : "—";
+            parts.push(`#${i} final=${!!r?.isFinal} conf=${conf} "${slice}"`);
+        }
+        return parts.length ? parts.join(" | ") : "(no segments)";
+    }
+
+    _eventHasFinalSpeechResult(evt) {
+        const n = evt?.results?.length ?? 0;
+        const start = Number.isFinite(evt?.resultIndex) ? evt.resultIndex : 0;
+        for (let i = start; i < n; i++) {
+            if (evt.results[i]?.isFinal) return true;
+        }
+        return false;
+    }
+
+    _maybeLogRecognitionResult(evt, extra = "") {
+        const now = Date.now();
+        const hasFinal = this._eventHasFinalSpeechResult(evt);
+        if (!hasFinal && now - this._lastInterimSpeechLogAt < 450) return;
+        this._lastInterimSpeechLogAt = now;
+        const suffix = extra ? ` ${extra}` : "";
+        this._logEvent(`onresult ${this._speechResultsDebug(evt)}${suffix}`);
     }
 
     _setStatus(text, tone = "muted") {
@@ -153,19 +180,61 @@ class SpeechToTextAiModel {
         rec.interimResults = true;
         rec.maxAlternatives = 1;
 
+        rec.onstart = () => {
+            this._logEvent("onstart");
+        };
+
+        rec.onaudiostart = () => {
+            this._logEvent("onaudiostart");
+        };
+
+        rec.onaudioend = () => {
+            this._logEvent("onaudioend");
+        };
+
+        rec.onspeechstart = () => {
+            this._logEvent("onspeechstart");
+        };
+
+        rec.onspeechend = () => {
+            this._logEvent("onspeechend");
+        };
+
+        rec.onnomatch = () => {
+            this._logEvent("onnomatch (no final match)");
+        };
+
         rec.onresult = async (evt) => {
             const now = Date.now();
-            if (!this.enabled || now < this._cooldownUntil) return;
+            if (!this.enabled) {
+                this._maybeLogRecognitionResult(evt, "[ignored: speech model off]");
+                return;
+            }
+            if (now < this._cooldownUntil) {
+                this._maybeLogRecognitionResult(evt, "[ignored: cooldown]");
+                return;
+            }
+
             let transcript = "";
             for (let i = evt.resultIndex; i < evt.results.length; i++) {
                 const alt = evt.results[i]?.[0]?.transcript;
                 if (alt) transcript += ` ${alt}`;
             }
             const clean = transcript.trim();
-            if (!clean) return;
+
+            if (this._isRecording && now < this._recordIgnoreUntil) {
+                this._maybeLogRecognitionResult(evt, "[ignored: post-wake / TTS ignore window]");
+                return;
+            }
+
+            if (!clean) {
+                this._maybeLogRecognitionResult(evt, "[empty combined transcript]");
+                return;
+            }
+
+            this._maybeLogRecognitionResult(evt, `[combined="${clean.length > 80 ? `${clean.slice(0, 80)}…` : clean}"]`);
 
             if (this._isRecording) {
-                if (Date.now() < this._recordIgnoreUntil) return;
                 this._latestRecordingTranscript = clean;
                 this._lastSpeechAt = now;
                 if (this._containsTerminator(clean)) {
@@ -182,16 +251,26 @@ class SpeechToTextAiModel {
         };
 
         rec.onerror = (evt) => {
-            this._logEvent(`Speech recognition error: ${evt?.error || "unknown"}`);
+            const code = evt?.error != null ? String(evt.error) : "unknown";
+            const msg = evt?.message != null ? String(evt.message) : "";
+            this._logEvent(`onerror code=${code}${msg ? ` message=${msg}` : ""}`);
         };
 
         rec.onend = () => {
+            this._logEvent("onend");
             if (!this.enabled) return;
             setTimeout(() => {
-                if (!this.enabled || this._isRecording) return;
+                if (!this.enabled) return;
+                if (this._isRecording) {
+                    this._logEvent("onend → skip rec.start (recording active)");
+                    return;
+                }
                 try {
                     rec.start();
-                } catch (_) {}
+                    this._logEvent("onend → rec.start() retry");
+                } catch (err) {
+                    this._logEvent(`onend → rec.start() failed: ${err?.message || err}`);
+                }
             }, 300);
         };
 
@@ -229,167 +308,7 @@ class SpeechToTextAiModel {
         this._isRecording = true;
         this._setStatus("Recording...", "ok");
         this._logEvent("Recording started.");
-        await this._beginMediaRecorder();
         this._startVADMonitor();
-    }
-
-    _pickMediaRecorderMime() {
-        if (typeof MediaRecorder === "undefined" || !MediaRecorder.isTypeSupported) return "";
-        const candidates = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/aac"];
-        for (const c of candidates) {
-            if (MediaRecorder.isTypeSupported(c)) return c;
-        }
-        return "";
-    }
-
-    async _beginMediaRecorder() {
-        if (typeof MediaRecorder === "undefined") {
-            this._logEvent("MediaRecorder unavailable; no audio clip will be stored.");
-            return;
-        }
-        this._abortMediaRecorderSync();
-        this._recordChunks = [];
-        try {
-            const stream = await navigator.mediaDevices.getUserMedia({
-                audio: {
-                    echoCancellation: true,
-                    noiseSuppression: true,
-                    autoGainControl: true
-                },
-                video: false
-            });
-            this._audioStream = stream;
-            const mime = this._pickMediaRecorderMime();
-            const mr = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
-            mr.ondataavailable = (e) => {
-                if (e.data && e.data.size > 0) this._recordChunks.push(e.data);
-            };
-            mr.onerror = (e) => {
-                this._logEvent(`MediaRecorder error: ${e?.error || "unknown"}`);
-            };
-            mr.start(200);
-            this._mediaRecorder = mr;
-            this._logEvent("Parallel audio clip capture started (MediaRecorder).");
-        } catch (err) {
-            this._logEvent(`Audio clip capture failed: ${err?.message || err}`);
-            this._abortMediaRecorderSync();
-        }
-    }
-
-    _stopAudioStreamTracks() {
-        if (!this._audioStream) return;
-        for (const t of this._audioStream.getTracks()) {
-            try {
-                t.stop();
-            } catch (_) {}
-        }
-        this._audioStream = null;
-    }
-
-    /**
-     * @param {boolean} collectBlob - if true, resolve Blob from onstop; if false, discard chunks
-     * @returns {Promise<Blob|null>}
-     */
-    async _flushMediaRecorder(collectBlob = true) {
-        const mr = this._mediaRecorder;
-        if (mr && mr.state !== "inactive") {
-            return new Promise((resolve) => {
-                const chunks = this._recordChunks;
-                const done = () => {
-                    this._mediaRecorder = null;
-                    this._recordChunks = [];
-                    this._stopAudioStreamTracks();
-                };
-                mr.onstop = () => {
-                    if (!collectBlob) {
-                        done();
-                        resolve(null);
-                        return;
-                    }
-                    const type = mr.mimeType || "audio/webm";
-                    const blob = chunks.length ? new Blob(chunks, { type }) : null;
-                    done();
-                    resolve(blob && blob.size > 0 ? blob : null);
-                };
-                try {
-                    if (typeof mr.requestData === "function") {
-                        try {
-                            mr.requestData();
-                        } catch (_) {}
-                    }
-                    mr.stop();
-                } catch (_) {
-                    done();
-                    resolve(null);
-                }
-            });
-        }
-        this._mediaRecorder = null;
-        this._recordChunks = [];
-        this._stopAudioStreamTracks();
-        return null;
-    }
-
-    _abortMediaRecorderSync() {
-        const mr = this._mediaRecorder;
-        if (mr && mr.state !== "inactive") {
-            try {
-                mr.onstop = null;
-                if (typeof mr.requestData === "function") {
-                    try {
-                        mr.requestData();
-                    } catch (_) {}
-                }
-                mr.stop();
-            } catch (_) {}
-        }
-        this._mediaRecorder = null;
-        this._recordChunks = [];
-        this._stopAudioStreamTracks();
-    }
-
-    _setLastRecordingBlob(blob) {
-        if (!blob || blob.size < 1) return;
-        this._lastRecordingBlob = blob;
-        this._logEvent(`Stored last clip (${Math.round(blob.size / 1024)} KB, ${blob.type || "audio"}).`);
-        this._updateClipButtons();
-    }
-
-    _updateClipButtons() {
-        const has = !!(this._lastRecordingBlob && this._lastRecordingBlob.size > 0);
-        if (this._playClipBtn) this._playClipBtn.disabled = !has;
-        if (this._transcribeClipBtn) this._transcribeClipBtn.disabled = !has;
-    }
-
-    _disposePreviewPlayback() {
-        try {
-            if (this._previewAudio) {
-                this._previewAudio.pause();
-                this._previewAudio.src = "";
-            }
-        } catch (_) {}
-        if (this._previewObjectUrl) {
-            try {
-                URL.revokeObjectURL(this._previewObjectUrl);
-            } catch (_) {}
-            this._previewObjectUrl = null;
-        }
-    }
-
-    _playLastRecording() {
-        if (!this._lastRecordingBlob || this._lastRecordingBlob.size < 1) {
-            this._setStatus("No saved clip to play.", "warn");
-            return;
-        }
-        this._disposePreviewPlayback();
-        this._previewObjectUrl = URL.createObjectURL(this._lastRecordingBlob);
-        this._previewAudio = this._previewAudio || new Audio();
-        this._previewAudio.src = this._previewObjectUrl;
-        this._previewAudio.play().catch((err) => {
-            this._logEvent(`Playback failed: ${err?.message || err}`);
-            this._setStatus("Could not play clip (see log).", "warn");
-        });
-        this._logEvent("Playing last saved clip.");
     }
 
     _cleanUtteranceForAgent(transcript) {
@@ -436,36 +355,6 @@ class SpeechToTextAiModel {
         }
     }
 
-    async transcribeLastClipAndSend() {
-        if (!this._lastRecordingBlob || this._lastRecordingBlob.size < 1) {
-            this._setStatus("No saved clip to transcribe.", "warn");
-            return;
-        }
-        const agent = this.robot.agentInterface;
-        if (!agent || typeof agent.transcribeAudioBlob !== "function") {
-            this._setStatus("Agent interface has no transcribe support.", "error");
-            return;
-        }
-        this._setStatus("Transcribing clip…", "muted");
-        this._logEvent("Transcribing last clip via API…");
-        try {
-            const raw = await agent.transcribeAudioBlob(this._lastRecordingBlob);
-            this._logEvent(`API transcript: "${raw.slice(0, 200)}${raw.length > 200 ? "…" : ""}"`);
-            const cleaned = this._cleanUtteranceForAgent(raw);
-            if (!cleaned) {
-                this._setStatus("Transcription empty after cleaning wake/confirm noise.", "warn");
-                this._cooldownUntil = Date.now() + 1000;
-                return;
-            }
-            await this._sendCleanedToChatbot(cleaned);
-        } catch (err) {
-            this._setStatus(`Transcription failed: ${err?.message || "unknown"}`, "error");
-            this._logEvent(`Transcription failed: ${err?.message || "unknown"}`);
-        } finally {
-            this._updateClipButtons();
-        }
-    }
-
     _startVADMonitor() {
         if (this._monitorTimer) clearInterval(this._monitorTimer);
         this._monitorTimer = setInterval(() => {
@@ -504,21 +393,11 @@ class SpeechToTextAiModel {
 
     async _finalizeRecording() {
         const transcriptSnapshot = String(this._latestRecordingTranscript || "").trim();
-        const blob = await this._flushMediaRecorder(true);
-        if (blob) this._setLastRecordingBlob(blob);
-
         if (transcriptSnapshot) this._logEvent("Transcription source: browser recognition");
         if (!transcriptSnapshot) this._logEvent("No browser transcript captured for this utterance.");
 
         if (!transcriptSnapshot) {
-            if (blob && blob.size > 0) {
-                this._setStatus(
-                    `No on-device transcript; saved ${Math.round(blob.size / 1024)} KB clip — use Transcribe clip (API key).`,
-                    "warn"
-                );
-            } else {
-                this._setStatus(`No speech detected. Listening for "${this.wakePhrase}"`, "warn");
-            }
+            this._setStatus(`No speech detected. Listening for "${this.wakePhrase}"`, "warn");
             this._cooldownUntil = Date.now() + 1000;
             return;
         }
@@ -558,7 +437,6 @@ class SpeechToTextAiModel {
                 this._monitorTimer = null;
             }
             this._isRecording = false;
-            this._abortMediaRecorderSync();
             if (this._recognition) {
                 try {
                     this._recognition.stop();
@@ -605,29 +483,9 @@ class SpeechToTextAiModel {
         output.className = "ai-model-output";
         output.textContent = "{}";
 
-        const clipRow = document.createElement("div");
-        clipRow.className = "ai-model-speech-clip-controls";
-        const playClipBtn = document.createElement("button");
-        playClipBtn.type = "button";
-        playClipBtn.textContent = "Play last clip";
-        playClipBtn.disabled = true;
-        playClipBtn.addEventListener("click", () => this._playLastRecording());
-        const transcribeClipBtn = document.createElement("button");
-        transcribeClipBtn.type = "button";
-        transcribeClipBtn.textContent = "Transcribe clip & send";
-        transcribeClipBtn.disabled = true;
-        transcribeClipBtn.addEventListener("click", async () => {
-            transcribeClipBtn.disabled = true;
-            await this.transcribeLastClipAndSend();
-            transcribeClipBtn.disabled = false;
-        });
-        clipRow.appendChild(playClipBtn);
-        clipRow.appendChild(transcribeClipBtn);
-
         controls.appendChild(toggleBtn);
         wrap.appendChild(title);
         wrap.appendChild(controls);
-        wrap.appendChild(clipRow);
         wrap.appendChild(hint);
         wrap.appendChild(status);
         wrap.appendChild(eventLog);
@@ -638,13 +496,9 @@ class SpeechToTextAiModel {
         this._statusEl = status;
         this._eventLogEl = eventLog;
         this._outputEl = output;
-        this._playClipBtn = playClipBtn;
-        this._transcribeClipBtn = transcribeClipBtn;
-        this._updateClipButtons();
     }
 
     destroy() {
-        this._disposePreviewPlayback();
         void this.setEnabled(false);
     }
 }
