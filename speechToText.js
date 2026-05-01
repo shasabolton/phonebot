@@ -122,10 +122,6 @@ class SpeechToTextAiModel {
         if (!this._mic) {
             throw new Error("Microphone sensor not found.");
         }
-        if (!this._mic.isOn()) {
-            const ok = await this._mic.start();
-            if (!ok) throw new Error("Could not start microphone.");
-        }
         return this._mic;
     }
 
@@ -163,6 +159,7 @@ class SpeechToTextAiModel {
             if (this._isRecording) {
                 if (Date.now() < this._recordIgnoreUntil) return;
                 this._latestRecordingTranscript = clean;
+                this._lastSpeechAt = now;
                 if (this._containsTerminator(clean)) {
                     this._logEvent("Terminator phrase detected.");
                     this._stopRecording("terminator_phrase");
@@ -232,10 +229,12 @@ class SpeechToTextAiModel {
         this._monitorTimer = setInterval(() => {
             if (!this._isRecording || !this._mic) return;
             if (this._confirmationInProgress) return;
-            const level = this._mic.getAudioLevel();
             const now = Date.now();
-            if (level > 0.02) {
-                this._lastSpeechAt = now;
+            if (this._mic.isOn() && typeof this._mic.getAudioLevel === "function") {
+                const level = this._mic.getAudioLevel();
+                if (level > 0.02) {
+                    this._lastSpeechAt = now;
+                }
             }
             if (now - this._lastSpeechAt > this.silenceMs) {
                 this._logEvent(`Silence timeout reached (${this.silenceMs}ms).`);

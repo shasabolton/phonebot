@@ -9,8 +9,10 @@ class Microphone extends Sensor {
         this._levelData = null;
         this._levelTimer = null;
         this._statusEl = null;
+        this._levelWrapEl = null;
         this._levelFillEl = null;
-        this._startBtn = null;
+        this._holdBtn = null;
+        this._holdWanted = false;
     }
 
     async start() {
@@ -36,8 +38,12 @@ class Microphone extends Sensor {
             this._sourceNode.connect(this._analyserNode);
             this._levelData = new Uint8Array(this._analyserNode.fftSize);
             this._startLevelLoop();
-            this._setStatus("Microphone on.", false, true);
-            if (this._startBtn) this._startBtn.style.display = "none";
+            if (!this._holdWanted) {
+                this.stop();
+                return false;
+            }
+            this._setStatus("Level meter active (release button to stop).", false, true);
+            if (this._levelWrapEl) this._levelWrapEl.classList.remove("sensor-microphone-level--off");
             return true;
         } catch (err) {
             console.error("Microphone start failed:", err);
@@ -71,7 +77,13 @@ class Microphone extends Sensor {
             this._stream = null;
         }
         if (this._levelFillEl) this._levelFillEl.style.width = "0%";
-        if (this._startBtn) this._startBtn.style.display = "";
+        if (this._levelWrapEl) this._levelWrapEl.classList.add("sensor-microphone-level--off");
+        if (!this._holdWanted && this._statusEl) {
+            const isErr = this._statusEl.classList.contains("error");
+            if (!isErr) {
+                this._setStatus("Microphone idle. Hold the button to test level.", false);
+            }
+        }
     }
 
     isOn() {
@@ -130,29 +142,52 @@ class Microphone extends Sensor {
 
         const status = document.createElement("p");
         status.className = "muted sensor-microphone-status";
-        status.textContent = "Starting microphone…";
+        status.textContent = "Microphone idle. Hold the button to test level.";
 
-        const startBtn = document.createElement("button");
-        startBtn.type = "button";
-        startBtn.textContent = "Start microphone";
-        startBtn.addEventListener("click", async () => {
-            startBtn.disabled = true;
+        level.classList.add("sensor-microphone-level--off");
+
+        const holdBtn = document.createElement("button");
+        holdBtn.type = "button";
+        holdBtn.className = "sensor-microphone-hold-btn";
+        holdBtn.textContent = "Test mic level (hold)";
+
+        const endHold = (ev) => {
+            if (ev?.pointerId != null && holdBtn.hasPointerCapture(ev.pointerId)) {
+                try {
+                    holdBtn.releasePointerCapture(ev.pointerId);
+                } catch (_) {}
+            }
+            this._holdWanted = false;
+            this.stop();
+        };
+
+        holdBtn.addEventListener("pointerdown", async (e) => {
+            if (e.button !== 0 && e.pointerType === "mouse") return;
+            this._holdWanted = true;
+            try {
+                holdBtn.setPointerCapture(e.pointerId);
+            } catch (_) {}
             await this.start();
-            startBtn.disabled = false;
+            if (!this._holdWanted) this.stop();
+        });
+        holdBtn.addEventListener("pointerup", endHold);
+        holdBtn.addEventListener("pointercancel", endHold);
+        holdBtn.addEventListener("lostpointercapture", () => {
+            this._holdWanted = false;
+            this.stop();
         });
 
         wrap.appendChild(title);
         wrap.appendChild(level);
         wrap.appendChild(status);
-        wrap.appendChild(startBtn);
+        wrap.appendChild(holdBtn);
         container.appendChild(wrap);
 
         this.gui = wrap;
+        this._levelWrapEl = level;
         this._levelFillEl = levelFill;
         this._statusEl = status;
-        this._startBtn = startBtn;
-
-        void this.start();
+        this._holdBtn = holdBtn;
     }
 
     destroy() {
