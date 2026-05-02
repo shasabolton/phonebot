@@ -40,8 +40,27 @@ class AgentInterface {
         this._showFullSpeechPrompt = false;
         this._fullSpeechPromptInput = null;
         this._openingPromptAutoScheduled = false;
+        this._agentEnabled = true;
+        this._sendInProgress = false;
+        this._agentPowerBtn = null;
         this._loadSavedKeyPreference();
         this._voiceOn = this._resolveVoiceDefault(null);
+    }
+
+    _setAgentEnabled(on) {
+        this._agentEnabled = !!on;
+        if (this._agentPowerBtn) {
+            this._agentPowerBtn.textContent = this._agentEnabled ? "Turn off agent" : "Turn on agent";
+        }
+        if (!this._agentEnabled && window.speechSynthesis) {
+            window.speechSynthesis.cancel();
+        }
+        this._syncSendButtonState();
+    }
+
+    _syncSendButtonState() {
+        if (!this._sendBtn) return;
+        this._sendBtn.disabled = this._sendInProgress || !this._agentEnabled;
     }
 
     /**
@@ -282,6 +301,7 @@ class AgentInterface {
     }
 
     async _runOpeningPromptAuto() {
+        if (!this._agentEnabled) return;
         if (!this._promptInput || !this._sendBtn) return;
         const agent = this.getSelectedAgent();
         if (!agent) return;
@@ -309,7 +329,8 @@ class AgentInterface {
         if (this._rememberInput) this._rememberKey = !!this._rememberInput.checked;
         if (agent) this._persistKeyForAgent(agent.name, this._apiKey);
 
-        this._sendBtn.disabled = true;
+        this._sendInProgress = true;
+        this._syncSendButtonState();
         if (this._statusEl) {
             this._statusEl.textContent = "Sending opening prompt…";
             this._statusEl.className = "muted";
@@ -343,7 +364,8 @@ class AgentInterface {
                 this._statusEl.className = "error";
             }
         } finally {
-            this._sendBtn.disabled = false;
+            this._sendInProgress = false;
+            this._syncSendButtonState();
         }
     }
 
@@ -366,7 +388,9 @@ class AgentInterface {
                 await new Promise((r) => setTimeout(r, 800));
             }
             await new Promise((r) => setTimeout(r, 400));
-            await this._runOpeningPromptAuto();
+            if (this._agentEnabled) {
+                await this._runOpeningPromptAuto();
+            }
         } catch (err) {
             console.error("Opening prompt schedule error:", err);
         }
@@ -618,12 +642,19 @@ class AgentInterface {
         if (Array.isArray(rawActions)) {
             for (const item of rawActions) {
                 if (!item || typeof item !== "object") continue;
-                if (!Object.prototype.hasOwnProperty.call(item, "actionName")) continue;
-                const actionName = item.actionName;
-                const actionArgs = Object.prototype.hasOwnProperty.call(item, "actionArgs")
-                    ? item.actionArgs
-                    : undefined;
-                specs.push({ actionName, actionArgs });
+                if (Object.prototype.hasOwnProperty.call(item, "actionName")) {
+                    const actionName = item.actionName;
+                    const actionArgs = Object.prototype.hasOwnProperty.call(item, "actionArgs")
+                        ? item.actionArgs
+                        : undefined;
+                    specs.push({ actionName, actionArgs });
+                    continue;
+                }
+                for (const [actionName, actionArgs] of Object.entries(item)) {
+                    if (actionName === "__proto__" || actionName === "constructor") continue;
+                    if (!String(actionName || "").trim()) continue;
+                    specs.push({ actionName, actionArgs });
+                }
             }
             return specs;
         }
@@ -671,13 +702,21 @@ class AgentInterface {
     async _submitSpeechPrompt(transcript) {
         const text = String(transcript || "").trim();
         if (!text) return;
+        if (!this._agentEnabled) {
+            if (this._statusEl) {
+                this._statusEl.textContent = "Agent is off. Turn the agent on to send voice prompts.";
+                this._statusEl.className = "warn";
+            }
+            return;
+        }
 
         this._apiKey = this._keyInput?.value?.trim() || "";
         const agent = this.getSelectedAgent();
         if (this._rememberInput) this._rememberKey = !!this._rememberInput.checked;
         if (agent) this._persistKeyForAgent(agent.name, this._apiKey);
 
-        if (this._sendBtn) this._sendBtn.disabled = true;
+        this._sendInProgress = true;
+        this._syncSendButtonState();
         if (this._statusEl) {
             this._statusEl.textContent = "Sending…";
             this._statusEl.className = "muted";
@@ -721,19 +760,28 @@ class AgentInterface {
                 this._statusEl.className = "error";
             }
         } finally {
-            if (this._sendBtn) this._sendBtn.disabled = false;
+            this._sendInProgress = false;
+            this._syncSendButtonState();
         }
     }
 
     async _onSend() {
         if (!this._sendBtn || !this._promptInput) return;
+        if (!this._agentEnabled) {
+            if (this._statusEl) {
+                this._statusEl.textContent = "Agent is off. Turn the agent on to send.";
+                this._statusEl.className = "warn";
+            }
+            return;
+        }
         const text = String(this._promptInput.value || "").trim();
         this._apiKey = this._keyInput?.value?.trim() || "";
         const agent = this.getSelectedAgent();
         if (this._rememberInput) this._rememberKey = !!this._rememberInput.checked;
         if (agent) this._persistKeyForAgent(agent.name, this._apiKey);
 
-        this._sendBtn.disabled = true;
+        this._sendInProgress = true;
+        this._syncSendButtonState();
         if (this._statusEl) {
             this._statusEl.textContent = "Sending…";
             this._statusEl.className = "muted";
@@ -764,7 +812,8 @@ class AgentInterface {
                 this._statusEl.className = "error";
             }
         } finally {
-            this._sendBtn.disabled = false;
+            this._sendInProgress = false;
+            this._syncSendButtonState();
         }
     }
 
@@ -775,6 +824,9 @@ class AgentInterface {
      * @returns {Promise<boolean>}
      */
     async submitPrompt(text, options = {}) {
+        if (!this._agentEnabled) {
+            return false;
+        }
         const next = String(text || "").trim();
         if (!next) return false;
         if (options.fromSpeech) {
@@ -901,6 +953,15 @@ class AgentInterface {
         voiceWrap.appendChild(voiceInput);
         voiceWrap.appendChild(document.createTextNode("Speak agent replies"));
 
+        const agentPowerBtn = document.createElement("button");
+        agentPowerBtn.type = "button";
+        agentPowerBtn.textContent = "Turn off agent";
+        agentPowerBtn.style.marginTop = "6px";
+        agentPowerBtn.style.width = "100%";
+        agentPowerBtn.addEventListener("click", () => {
+            this._setAgentEnabled(!this._agentEnabled);
+        });
+
         const fullSpeechPromptWrap = document.createElement("label");
         fullSpeechPromptWrap.style.display = "flex";
         fullSpeechPromptWrap.style.alignItems = "center";
@@ -971,6 +1032,7 @@ class AgentInterface {
         controls.appendChild(modelLabel);
         controls.appendChild(modelOverrideInput);
         controls.appendChild(voiceWrap);
+        controls.appendChild(agentPowerBtn);
         controls.appendChild(fullSpeechPromptWrap);
         controls.appendChild(historyLabel);
         controls.appendChild(historyEl);
@@ -997,12 +1059,14 @@ class AgentInterface {
         this._insertTemplateBtn = insertTemplateBtn;
         this._promptInput = promptInput;
         this._sendBtn = sendBtn;
+        this._agentPowerBtn = agentPowerBtn;
         this._statusEl = status;
         this._historyEl = historyEl;
 
         this._voiceOn = this._resolveVoiceDefault(this.getSelectedAgent());
         this._voiceInput.checked = this._voiceOn;
         this._syncKeyFromSelection();
+        this._syncSendButtonState();
         void this._hydrateDefaultPromptFromIntroductionTemplate();
         void this._scheduleOpeningPromptAfterInit();
     }
@@ -1022,6 +1086,7 @@ class AgentInterface {
         this._insertTemplateBtn = null;
         this._promptInput = null;
         this._sendBtn = null;
+        this._agentPowerBtn = null;
         this._statusEl = null;
         this._historyEl = null;
         if (window.speechSynthesis) {

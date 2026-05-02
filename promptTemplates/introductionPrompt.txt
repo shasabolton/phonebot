@@ -37,7 +37,7 @@ actions
 
 {{ROBOT_ACTIONS}}
 
-Respond with this json only (no markdown fences). Use an "actions" object whose keys match the action names above (e.g. filter and x), plus a string "message".
+Respond with this json only (no markdown fences). Use an "actions" array: each item is an object with one key — that key is the action name (e.g. filter or x) and the value is the argument. Include a string "message".
 
 Examples (same shape as your replies):
 {{ACTIONS-EXAMPLES}}
