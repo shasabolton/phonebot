@@ -112,6 +112,7 @@ class ComputerVisionAiModel {
         this._minScoreInput = null;
         this._refreshInput = null;
         this._cocoRefreshInput = null;
+        this._forgetStaleInput = null;
         this._makeCenterBtn = null;
         this._statusEl = null;
         this._outputEl = null;
@@ -928,6 +929,13 @@ class ComputerVisionAiModel {
         if (this._cocoRefreshInput) this._cocoRefreshInput.value = String(this.cocoRefreshMs);
     }
 
+    setForgetStaleMs(nextMs) {
+        const parsed = Number(nextMs);
+        if (!Number.isFinite(parsed)) return;
+        this.forgetStaleMs = Math.max(500, Math.min(120000, Math.round(parsed)));
+        if (this._forgetStaleInput) this._forgetStaleInput.value = String(this.forgetStaleMs);
+    }
+
     makeCenterObject() {
         const camera = this._getCameraSensor();
         const videoEl = camera?.getVideoElement?.();
@@ -1079,6 +1087,17 @@ class ComputerVisionAiModel {
         cocoRefreshInput.addEventListener("change", () => this.setCocoRefreshMs(cocoRefreshInput.value));
         cocoRefreshInput.addEventListener("blur", () => this.setCocoRefreshMs(cocoRefreshInput.value));
 
+        const forgetStaleLabel = document.createElement("label");
+        forgetStaleLabel.textContent = "Max ms since last COCO/Groq anchor before dropping track";
+        const forgetStaleInput = document.createElement("input");
+        forgetStaleInput.type = "number";
+        forgetStaleInput.min = "500";
+        forgetStaleInput.max = "120000";
+        forgetStaleInput.step = "100";
+        forgetStaleInput.value = String(this.forgetStaleMs);
+        forgetStaleInput.addEventListener("change", () => this.setForgetStaleMs(forgetStaleInput.value));
+        forgetStaleInput.addEventListener("blur", () => this.setForgetStaleMs(forgetStaleInput.value));
+
         const makeCenterBtn = document.createElement("button");
         makeCenterBtn.type = "button";
         makeCenterBtn.textContent = "Make Center Object";
@@ -1105,6 +1124,8 @@ class ComputerVisionAiModel {
         controls.appendChild(refreshInput);
         controls.appendChild(cocoRefreshLabel);
         controls.appendChild(cocoRefreshInput);
+        controls.appendChild(forgetStaleLabel);
+        controls.appendChild(forgetStaleInput);
         controls.appendChild(makeCenterBtn);
         wrap.appendChild(title);
         wrap.appendChild(controls);
@@ -1118,6 +1139,7 @@ class ComputerVisionAiModel {
         this._minScoreInput = minScoreInput;
         this._refreshInput = refreshInput;
         this._cocoRefreshInput = cocoRefreshInput;
+        this._forgetStaleInput = forgetStaleInput;
         this._makeCenterBtn = makeCenterBtn;
         this._statusEl = status;
         this._outputEl = output;
