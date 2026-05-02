@@ -17,6 +17,10 @@ class SpeechToTextAiModel {
         this._mediaRecorder = null;
         this._recordChunks = [];
         this._recordedBlob = null;
+        this._vadAudioContext = null;
+        this._vadSource = null;
+        this._vadAnalyser = null;
+        this._vadData = null;
         this._isRecording = false;
         this._isWakeArmed = false;
         this._lastSpeechAt = 0;
@@ -62,11 +66,23 @@ class SpeechToTextAiModel {
         this._eventLogEl.textContent = `${stamp} ${text}\n${this._eventLogEl.textContent}`.slice(0, 12000);
     }
 
+    /** Full session transcript: all result segments in order (fixes delta-only overwrite from resultIndex…end). */
+    _fullSpeechResultsTranscript(evt) {
+        const n = evt?.results?.length ?? 0;
+        if (!n) return "";
+        const parts = [];
+        for (let i = 0; i < n; i++) {
+            const alt = evt.results[i]?.[0]?.transcript;
+            const t = alt != null ? String(alt).trim() : "";
+            if (t) parts.push(t);
+        }
+        return parts.join(" ").replace(/\s+/g, " ").trim();
+    }
+
     _speechResultsDebug(evt) {
         const parts = [];
         const n = evt?.results?.length ?? 0;
-        const start = Number.isFinite(evt?.resultIndex) ? evt.resultIndex : 0;
-        for (let i = start; i < n; i++) {
+        for (let i = 0; i < n; i++) {
             const r = evt.results[i];
             const alt = r && r[0];
             const raw = alt ? String(alt.transcript || "") : "";
@@ -75,13 +91,15 @@ class SpeechToTextAiModel {
             const conf = alt && typeof alt.confidence === "number" ? alt.confidence.toFixed(3) : "—";
             parts.push(`#${i} final=${!!r?.isFinal} conf=${conf} "${slice}"`);
         }
-        return parts.length ? parts.join(" | ") : "(no segments)";
+        const detail = parts.length ? parts.join(" | ") : "(no segments)";
+        const full = this._fullSpeechResultsTranscript(evt);
+        const fullHint = full && full.length > 60 ? `${full.slice(0, 60)}…` : full;
+        return fullHint ? `${detail} | combined="${fullHint}"` : detail;
     }
 
     _eventHasFinalSpeechResult(evt) {
         const n = evt?.results?.length ?? 0;
-        const start = Number.isFinite(evt?.resultIndex) ? evt.resultIndex : 0;
-        for (let i = start; i < n; i++) {
+        for (let i = 0; i < n; i++) {
             if (evt.results[i]?.isFinal) return true;
         }
         return false;
@@ -119,7 +137,35 @@ class SpeechToTextAiModel {
         this._hintEl.textContent = `Wake: "${this.wakePhrase}". Silence stop: ${this.silenceMs}ms. Primary STT: ${this.sttEngine}. API fallback if empty: ${fb}.`;
     }
 
-    _recordingCleanupTracksOnly() {
+    _releaseRecordingCapture() {
+        if (this._mediaRecorder) {
+            try {
+                if (this._mediaRecorder.state !== "inactive") {
+                    this._mediaRecorder.stop();
+                }
+            } catch (_) {}
+            this._mediaRecorder = null;
+        }
+        this._recordChunks = [];
+        if (this._vadSource) {
+            try {
+                this._vadSource.disconnect();
+            } catch (_) {}
+            this._vadSource = null;
+        }
+        if (this._vadAnalyser) {
+            try {
+                this._vadAnalyser.disconnect();
+            } catch (_) {}
+            this._vadAnalyser = null;
+        }
+        if (this._vadAudioContext) {
+            try {
+                this._vadAudioContext.close();
+            } catch (_) {}
+            this._vadAudioContext = null;
+        }
+        this._vadData = null;
         if (this._recordingStream) {
             for (const tr of this._recordingStream.getTracks()) {
                 try {
@@ -128,26 +174,64 @@ class SpeechToTextAiModel {
             }
             this._recordingStream = null;
         }
-        this._mediaRecorder = null;
-        this._recordChunks = [];
-        this._recordedBlob = null;
     }
 
-    async _startMediaRecorderCapture() {
-        this._recordingCleanupTracksOnly();
-        this._recordChunks = [];
-        if (typeof MediaRecorder === "undefined" || !navigator.mediaDevices?.getUserMedia) {
-            this._logEvent("MediaRecorder/getUserMedia unavailable; API fallback recording skipped.");
+    _getCaptureVadLevel() {
+        if (!this._vadAnalyser || !this._vadData) return 0;
+        this._vadAnalyser.getByteTimeDomainData(this._vadData);
+        let sumSquares = 0;
+        for (let i = 0; i < this._vadData.length; i++) {
+            const norm = (this._vadData[i] - 128) / 128;
+            sumSquares += norm * norm;
+        }
+        return Math.sqrt(sumSquares / this._vadData.length);
+    }
+
+    /**
+     * One getUserMedia stream per capture: Web Audio VAD always; MediaRecorder only when API fallback is on.
+     */
+    async _acquireRecordingCapture() {
+        this._releaseRecordingCapture();
+        if (!navigator.mediaDevices?.getUserMedia) {
+            this._logEvent("getUserMedia unavailable; using recognition-only VAD.");
             return;
         }
-        this._recordingStream = await navigator.mediaDevices.getUserMedia({
-            audio: {
-                echoCancellation: true,
-                noiseSuppression: true,
-                autoGainControl: true
-            },
-            video: false
-        });
+        try {
+            this._recordingStream = await navigator.mediaDevices.getUserMedia({
+                audio: {
+                    echoCancellation: true,
+                    noiseSuppression: true,
+                    autoGainControl: true
+                },
+                video: false
+            });
+        } catch (err) {
+            this._logEvent(`Capture stream failed: ${err?.message || err}`);
+            return;
+        }
+
+        try {
+            const AC = window.AudioContext || window.webkitAudioContext;
+            if (AC) {
+                this._vadAudioContext = new AC();
+                if (this._vadAudioContext.state === "suspended") {
+                    await this._vadAudioContext.resume().catch(() => {});
+                }
+                this._vadSource = this._vadAudioContext.createMediaStreamSource(this._recordingStream);
+                this._vadAnalyser = this._vadAudioContext.createAnalyser();
+                this._vadAnalyser.fftSize = 1024;
+                this._vadSource.connect(this._vadAnalyser);
+                this._vadData = new Uint8Array(this._vadAnalyser.fftSize);
+            }
+        } catch (err) {
+            this._logEvent(`VAD analyser setup failed: ${err?.message || err}`);
+        }
+
+        if (!this.agentTranscribeFallback || typeof MediaRecorder === "undefined") {
+            this._logEvent("Capture stream active (audio-level silence detection).");
+            return;
+        }
+
         let mimeType = "";
         for (const t of ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"]) {
             if (MediaRecorder.isTypeSupported(t)) {
@@ -155,59 +239,55 @@ class SpeechToTextAiModel {
                 break;
             }
         }
-        this._mediaRecorder = mimeType
-            ? new MediaRecorder(this._recordingStream, { mimeType })
-            : new MediaRecorder(this._recordingStream);
-        this._mediaRecorder.addEventListener(
-            "dataavailable",
-            (e) => {
-                if (e.data && e.data.size > 0) this._recordChunks.push(e.data);
-            },
-            false
-        );
-        this._mediaRecorder.start(250);
-        this._logEvent(`MediaRecorder started (${mimeType || "default"}).`);
+        try {
+            this._mediaRecorder = mimeType
+                ? new MediaRecorder(this._recordingStream, { mimeType })
+                : new MediaRecorder(this._recordingStream);
+            this._mediaRecorder.addEventListener(
+                "dataavailable",
+                (e) => {
+                    if (e.data && e.data.size > 0) this._recordChunks.push(e.data);
+                },
+                false
+            );
+            this._mediaRecorder.start(250);
+            this._logEvent(`Capture + MediaRecorder (${mimeType || "default"}).`);
+        } catch (err) {
+            this._logEvent(`MediaRecorder failed: ${err?.message || err}`);
+            this._mediaRecorder = null;
+        }
     }
 
     async _finalizeMediaRecorderIfNeeded() {
         this._recordedBlob = null;
-        if (!this.agentTranscribeFallback) {
-            this._recordingCleanupTracksOnly();
-            return;
-        }
         const mr = this._mediaRecorder;
         this._mediaRecorder = null;
-        if (!mr) {
-            this._recordingCleanupTracksOnly();
-            return;
-        }
-        await new Promise((resolve) => {
-            const finish = () => {
-                const chunks = this._recordChunks;
-                this._recordChunks = [];
-                const t = mr.mimeType || "audio/webm";
-                this._recordedBlob = chunks.length ? new Blob(chunks, { type: t }) : null;
-                resolve();
-            };
-            if (mr.state === "inactive") {
-                finish();
-                return;
-            }
-            mr.addEventListener("stop", finish, { once: true });
-            try {
-                mr.stop();
-            } catch (_) {
-                finish();
-            }
-        });
-        if (this._recordingStream) {
-            for (const tr of this._recordingStream.getTracks()) {
+
+        if (mr && this.agentTranscribeFallback) {
+            await new Promise((resolve) => {
+                const finish = () => {
+                    const chunks = this._recordChunks;
+                    this._recordChunks = [];
+                    const t = mr.mimeType || "audio/webm";
+                    this._recordedBlob = chunks.length ? new Blob(chunks, { type: t }) : null;
+                    resolve();
+                };
+                if (mr.state === "inactive") {
+                    finish();
+                    return;
+                }
+                mr.addEventListener("stop", finish, { once: true });
                 try {
-                    tr.stop();
-                } catch (_) {}
-            }
-            this._recordingStream = null;
+                    mr.stop();
+                } catch (_) {
+                    finish();
+                }
+            });
+        } else {
+            this._recordChunks = [];
         }
+
+        this._releaseRecordingCapture();
     }
 
     _getMicrophoneSensor() {
@@ -329,12 +409,7 @@ class SpeechToTextAiModel {
                 return;
             }
 
-            let transcript = "";
-            for (let i = evt.resultIndex; i < evt.results.length; i++) {
-                const alt = evt.results[i]?.[0]?.transcript;
-                if (alt) transcript += ` ${alt}`;
-            }
-            const clean = transcript.trim();
+            const clean = this._fullSpeechResultsTranscript(evt);
 
             if (this._isRecording && now < this._recordIgnoreUntil) {
                 this._maybeLogRecognitionResult(evt, "[ignored: post-wake / TTS ignore window]");
@@ -443,12 +518,10 @@ class SpeechToTextAiModel {
         this._isRecording = true;
         this._setStatus("Recording...", "ok");
         this._logEvent("Recording started.");
-        if (this.agentTranscribeFallback) {
-            try {
-                await this._startMediaRecorderCapture();
-            } catch (err) {
-                this._logEvent(`Parallel mic recording failed: ${err?.message || err}`);
-            }
+        try {
+            await this._acquireRecordingCapture();
+        } catch (err) {
+            this._logEvent(`Capture pipeline failed: ${err?.message || err}`);
         }
         this._startVADMonitor();
     }
@@ -503,10 +576,13 @@ class SpeechToTextAiModel {
     _startVADMonitor() {
         if (this._monitorTimer) clearInterval(this._monitorTimer);
         this._monitorTimer = setInterval(() => {
-            if (!this._isRecording || !this._mic) return;
+            if (!this._isRecording) return;
             if (this._confirmationInProgress) return;
             const now = Date.now();
-            if (this._mic.isOn() && typeof this._mic.getAudioLevel === "function") {
+            const capLevel = this._getCaptureVadLevel();
+            if (capLevel > 0.018) {
+                this._lastSpeechAt = now;
+            } else if (this._mic.isOn() && typeof this._mic.getAudioLevel === "function") {
                 const level = this._mic.getAudioLevel();
                 if (level > 0.02) {
                     this._lastSpeechAt = now;
@@ -658,7 +734,7 @@ class SpeechToTextAiModel {
             this._setStatus("Speech model off.", "muted");
             this._renderOutput({ state: "off" });
             this._logEvent("Speech model disabled.");
-            this._recordingCleanupTracksOnly();
+            this._releaseRecordingCapture();
         }
     }
 
@@ -739,7 +815,7 @@ class SpeechToTextAiModel {
 
     destroy() {
         void this.setEnabled(false);
-        this._recordingCleanupTracksOnly();
+        this._releaseRecordingCapture();
     }
 }
 
