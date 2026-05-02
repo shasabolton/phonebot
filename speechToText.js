@@ -10,7 +10,13 @@ class SpeechToTextAiModel {
         this.silenceMs = this._extractSilenceMs(config.terminator, config.silenceMs);
         this.maxRecordMs = Number.isFinite(config.maxRecordMs) ? Math.max(3000, Math.round(config.maxRecordMs)) : 25000;
         this.sttEngine = "browser-webspeech";
+        /** When true, capture mic to blob; if browser transcript is empty, call agent API transcription (no chat context), then run normal speech→agent pipeline. */
+        this.agentTranscribeFallback = !!config.agentTranscribeFallback;
         this._mic = null;
+        this._recordingStream = null;
+        this._mediaRecorder = null;
+        this._recordChunks = [];
+        this._recordedBlob = null;
         this._isRecording = false;
         this._isWakeArmed = false;
         this._lastSpeechAt = 0;
@@ -22,9 +28,12 @@ class SpeechToTextAiModel {
         this._recordIgnoreUntil = 0;
         this._confirmationInProgress = false;
         this._toggleBtn = null;
+        this._fallbackToggle = null;
+        this._transcriberLineEl = null;
         this._statusEl = null;
         this._outputEl = null;
         this._eventLogEl = null;
+        this._hintEl = null;
         this._lastInterimSpeechLogAt = 0;
         /** @type {'idle'|'wake_listening'|'capture'|'finalizing'} */
         this._speechSessionState = "idle";
@@ -96,6 +105,109 @@ class SpeechToTextAiModel {
     _renderOutput(payload) {
         if (!this._outputEl) return;
         this._outputEl.textContent = JSON.stringify(payload, null, 2);
+    }
+
+    _setTranscriberLine(text) {
+        if (this._transcriberLineEl) {
+            this._transcriberLineEl.textContent = String(text || "").trim() || "Last transcriber: —";
+        }
+    }
+
+    _syncHintText() {
+        if (!this._hintEl) return;
+        const fb = this.agentTranscribeFallback ? "on" : "off";
+        this._hintEl.textContent = `Wake: "${this.wakePhrase}". Silence stop: ${this.silenceMs}ms. Primary STT: ${this.sttEngine}. API fallback if empty: ${fb}.`;
+    }
+
+    _recordingCleanupTracksOnly() {
+        if (this._recordingStream) {
+            for (const tr of this._recordingStream.getTracks()) {
+                try {
+                    tr.stop();
+                } catch (_) {}
+            }
+            this._recordingStream = null;
+        }
+        this._mediaRecorder = null;
+        this._recordChunks = [];
+        this._recordedBlob = null;
+    }
+
+    async _startMediaRecorderCapture() {
+        this._recordingCleanupTracksOnly();
+        this._recordChunks = [];
+        if (typeof MediaRecorder === "undefined" || !navigator.mediaDevices?.getUserMedia) {
+            this._logEvent("MediaRecorder/getUserMedia unavailable; API fallback recording skipped.");
+            return;
+        }
+        this._recordingStream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true
+            },
+            video: false
+        });
+        let mimeType = "";
+        for (const t of ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"]) {
+            if (MediaRecorder.isTypeSupported(t)) {
+                mimeType = t;
+                break;
+            }
+        }
+        this._mediaRecorder = mimeType
+            ? new MediaRecorder(this._recordingStream, { mimeType })
+            : new MediaRecorder(this._recordingStream);
+        this._mediaRecorder.addEventListener(
+            "dataavailable",
+            (e) => {
+                if (e.data && e.data.size > 0) this._recordChunks.push(e.data);
+            },
+            false
+        );
+        this._mediaRecorder.start(250);
+        this._logEvent(`MediaRecorder started (${mimeType || "default"}).`);
+    }
+
+    async _finalizeMediaRecorderIfNeeded() {
+        this._recordedBlob = null;
+        if (!this.agentTranscribeFallback) {
+            this._recordingCleanupTracksOnly();
+            return;
+        }
+        const mr = this._mediaRecorder;
+        this._mediaRecorder = null;
+        if (!mr) {
+            this._recordingCleanupTracksOnly();
+            return;
+        }
+        await new Promise((resolve) => {
+            const finish = () => {
+                const chunks = this._recordChunks;
+                this._recordChunks = [];
+                const t = mr.mimeType || "audio/webm";
+                this._recordedBlob = chunks.length ? new Blob(chunks, { type: t }) : null;
+                resolve();
+            };
+            if (mr.state === "inactive") {
+                finish();
+                return;
+            }
+            mr.addEventListener("stop", finish, { once: true });
+            try {
+                mr.stop();
+            } catch (_) {
+                finish();
+            }
+        });
+        if (this._recordingStream) {
+            for (const tr of this._recordingStream.getTracks()) {
+                try {
+                    tr.stop();
+                } catch (_) {}
+            }
+            this._recordingStream = null;
+        }
     }
 
     _getMicrophoneSensor() {
@@ -317,6 +429,7 @@ class SpeechToTextAiModel {
                 clearInterval(this._monitorTimer);
                 this._monitorTimer = null;
             }
+            void this._finalizeMediaRecorderIfNeeded();
             this._speechSessionState = this.enabled ? "wake_listening" : "idle";
         }
     }
@@ -330,6 +443,13 @@ class SpeechToTextAiModel {
         this._isRecording = true;
         this._setStatus("Recording...", "ok");
         this._logEvent("Recording started.");
+        if (this.agentTranscribeFallback) {
+            try {
+                await this._startMediaRecorderCapture();
+            } catch (err) {
+                this._logEvent(`Parallel mic recording failed: ${err?.message || err}`);
+            }
+        }
         this._startVADMonitor();
     }
 
@@ -345,7 +465,7 @@ class SpeechToTextAiModel {
         return t.replace(leadingNoiseRegex, "").trim();
     }
 
-    async _sendCleanedToChatbot(cleaned) {
+    async _sendCleanedToChatbot(cleaned, transcriberLabel = "Browser Web Speech API") {
         const text = String(cleaned || "").trim();
         if (!text) {
             this._setStatus("Nothing to send after cleaning.", "warn");
@@ -358,17 +478,20 @@ class SpeechToTextAiModel {
             this._logEvent("Cannot send transcript: agent interface missing.");
             return;
         }
+        const transcriber = String(transcriberLabel || "").trim() || "Unknown";
+        this._setTranscriberLine(`Last transcriber: ${transcriber}`);
         this._setStatus("Sending transcript to chat…", "muted");
         this._renderOutput({
             state: "sending",
             transcript: text,
+            transcriber,
             trigger: this.wakePhrase,
             silenceMs: this.silenceMs,
             sttEngine: this.sttEngine
         });
-        this._logEvent(`Sending transcript: "${text}"`);
+        this._logEvent(`Sending transcript (${transcriber}): "${text}"`);
         try {
-            await agent.submitPrompt(text, { fromSpeech: true });
+            await agent.submitPrompt(text, { fromSpeech: true, speechTranscriber: transcriber });
             this._setStatus(`Sent. Listening for "${this.wakePhrase}"`, "ok");
             this._cooldownUntil = Date.now() + 1500;
         } catch (err) {
@@ -410,29 +533,20 @@ class SpeechToTextAiModel {
             this._monitorTimer = null;
         }
         this._setStatus("Processing speech…", "muted");
-        this._logEvent(`Recording stopped: ${reason}`);
-        void this._finalizeRecording();
+        void this._afterRecordingStopped(reason);
     }
 
-    async _finalizeRecording() {
+    async _afterRecordingStopped(reason) {
+        this._logEvent(`Recording stopped: ${reason}`);
         try {
-            const transcriptSnapshot = String(this._latestRecordingTranscript || "").trim();
-            if (transcriptSnapshot) this._logEvent("Transcription source: browser recognition");
-            if (!transcriptSnapshot) this._logEvent("No browser transcript captured for this utterance.");
-
-            if (!transcriptSnapshot) {
-                this._setStatus(`No speech detected. Listening for "${this.wakePhrase}"`, "warn");
-                this._cooldownUntil = Date.now() + 1000;
-                return;
-            }
-
-            const cleaned = this._cleanUtteranceForAgent(transcriptSnapshot);
-            if (!cleaned) {
-                this._setStatus(`Heard wake phrase only. Listening for "${this.wakePhrase}"`, "warn");
-                this._cooldownUntil = Date.now() + 1000;
-                return;
-            }
-            await this._sendCleanedToChatbot(cleaned);
+            await this._finalizeMediaRecorderIfNeeded();
+        } catch (err) {
+            this._logEvent(`Media finalize error: ${err?.message || err}`);
+        }
+        try {
+            await this._finalizeRecording();
+        } catch (err) {
+            this._logEvent(`Finalize error: ${err?.message || err}`);
         } finally {
             if (this.enabled) {
                 this._speechSessionState = "wake_listening";
@@ -441,6 +555,69 @@ class SpeechToTextAiModel {
                 this._speechSessionState = "idle";
             }
         }
+    }
+
+    async _finalizeRecording() {
+        const transcriptSnapshot = String(this._latestRecordingTranscript || "").trim();
+
+        if (transcriptSnapshot) {
+            this._logEvent("Transcription source: browser recognition");
+            const cleaned = this._cleanUtteranceForAgent(transcriptSnapshot);
+            if (!cleaned) {
+                this._setStatus(`Heard wake phrase only. Listening for "${this.wakePhrase}"`, "warn");
+                this._cooldownUntil = Date.now() + 1000;
+                return;
+            }
+            await this._sendCleanedToChatbot(cleaned, "Browser Web Speech API");
+            return;
+        }
+
+        this._logEvent("No browser transcript captured for this utterance.");
+
+        if (!this.agentTranscribeFallback) {
+            this._setStatus(`No speech detected. Listening for "${this.wakePhrase}"`, "warn");
+            this._cooldownUntil = Date.now() + 1000;
+            return;
+        }
+
+        const agent = this.robot.agentInterface;
+        if (!agent || typeof agent.transcribeSpeechBlob !== "function") {
+            this._setStatus("Agent interface cannot transcribe audio.", "error");
+            this._logEvent("transcribeSpeechBlob missing on agent interface.");
+            this._cooldownUntil = Date.now() + 1000;
+            return;
+        }
+
+        if (!this._recordedBlob || this._recordedBlob.size < 32) {
+            this._setStatus("No recorded audio for API transcription.", "warn");
+            this._logEvent("Recorded blob missing or too small.");
+            this._cooldownUntil = Date.now() + 1000;
+            return;
+        }
+
+        this._setStatus("Transcribing with API (no chat context)…", "muted");
+        let apiText = "";
+        try {
+            const ext = String(this._recordedBlob.type || "").includes("mp4") ? "m4a" : "webm";
+            apiText = await agent.transcribeSpeechBlob(this._recordedBlob, { filename: `speech.${ext}` });
+        } catch (err) {
+            this._setStatus(`API transcription failed: ${err?.message || "unknown"}`, "error");
+            this._logEvent(`API transcription failed: ${err?.message || err}`);
+            this._cooldownUntil = Date.now() + 1500;
+            return;
+        }
+
+        const model =
+            typeof agent.getTranscriptionModelLabel === "function" ? agent.getTranscriptionModelLabel() : "API";
+        this._logEvent(`API raw transcript (${model}): "${apiText.slice(0, 160)}${apiText.length > 160 ? "…" : ""}"`);
+
+        const cleaned = this._cleanUtteranceForAgent(apiText);
+        if (!cleaned) {
+            this._setStatus("API transcript empty after cleaning wake/confirm.", "warn");
+            this._cooldownUntil = Date.now() + 1000;
+            return;
+        }
+        await this._sendCleanedToChatbot(cleaned, `API transcription (${model})`);
     }
 
     async setEnabled(nextEnabled) {
@@ -455,8 +632,10 @@ class SpeechToTextAiModel {
                     wakePhrase: this.wakePhrase,
                     terminatorPhrase: this.terminatorPhrase || null,
                     silenceMs: this.silenceMs,
-                    sttEngine: this.sttEngine
+                    sttEngine: this.sttEngine,
+                    agentTranscribeFallback: this.agentTranscribeFallback
                 });
+                this._syncHintText();
             } catch (err) {
                 this.enabled = false;
                 if (this._toggleBtn) this._toggleBtn.textContent = "Off";
@@ -479,6 +658,7 @@ class SpeechToTextAiModel {
             this._setStatus("Speech model off.", "muted");
             this._renderOutput({ state: "off" });
             this._logEvent("Speech model disabled.");
+            this._recordingCleanupTracksOnly();
         }
     }
 
@@ -500,9 +680,29 @@ class SpeechToTextAiModel {
             toggleBtn.disabled = false;
         });
 
+        const fallbackWrap = document.createElement("label");
+        fallbackWrap.style.display = "flex";
+        fallbackWrap.style.alignItems = "center";
+        fallbackWrap.style.gap = "8px";
+        fallbackWrap.style.marginTop = "8px";
+        const fallbackToggle = document.createElement("input");
+        fallbackToggle.type = "checkbox";
+        fallbackToggle.checked = this.agentTranscribeFallback;
+        fallbackToggle.addEventListener("change", () => {
+            this.agentTranscribeFallback = !!fallbackToggle.checked;
+            this._syncHintText();
+            this._logEvent(`API transcription fallback ${this.agentTranscribeFallback ? "on" : "off"}.`);
+        });
+        fallbackWrap.appendChild(fallbackToggle);
+        fallbackWrap.appendChild(document.createTextNode("Record mic + use agent API if browser transcript is empty"));
+
         const hint = document.createElement("p");
         hint.className = "muted";
-        hint.textContent = `Wake: "${this.wakePhrase}". Silence stop: ${this.silenceMs}ms. STT: ${this.sttEngine}`;
+        hint.textContent = "";
+
+        const transcriberLine = document.createElement("p");
+        transcriberLine.className = "muted";
+        transcriberLine.textContent = "Last transcriber: —";
 
         const status = document.createElement("p");
         status.className = "muted";
@@ -517,22 +717,29 @@ class SpeechToTextAiModel {
         output.textContent = "{}";
 
         controls.appendChild(toggleBtn);
+        controls.appendChild(fallbackWrap);
         wrap.appendChild(title);
         wrap.appendChild(controls);
         wrap.appendChild(hint);
+        wrap.appendChild(transcriberLine);
         wrap.appendChild(status);
         wrap.appendChild(eventLog);
         wrap.appendChild(output);
         container.appendChild(wrap);
 
         this._toggleBtn = toggleBtn;
+        this._fallbackToggle = fallbackToggle;
+        this._hintEl = hint;
+        this._transcriberLineEl = transcriberLine;
         this._statusEl = status;
         this._eventLogEl = eventLog;
         this._outputEl = output;
+        this._syncHintText();
     }
 
     destroy() {
         void this.setEnabled(false);
+        this._recordingCleanupTracksOnly();
     }
 }
 

@@ -17,6 +17,7 @@ class PID {
         this._timer = null;
         this._busy = false;
         this._toggleBtn = null;
+        this._goalInput = null;
         this._statusEl = null;
         this._outputEl = null;
     }
@@ -66,6 +67,8 @@ class PID {
         const parsed = Number(value);
         if (!Number.isFinite(parsed)) return;
         this.goal = parsed;
+        if (this._goalInput) this._goalInput.value = String(this.goal);
+        this._renderOutput(this._resolveFeedbackValue());
     }
 
     _renderOutput(feedbackValue = null) {
@@ -180,6 +183,15 @@ class PID {
         toggleBtn.textContent = "Off";
         toggleBtn.addEventListener("click", () => this.setEnabled(!this.enabled));
 
+        const goalLabel = document.createElement("label");
+        goalLabel.textContent = "Goal";
+        const goalInput = document.createElement("input");
+        goalInput.type = "number";
+        goalInput.step = "any";
+        goalInput.value = String(this.goal);
+        goalInput.addEventListener("change", () => this.setGoal(goalInput.value));
+        goalInput.addEventListener("blur", () => this.setGoal(goalInput.value));
+
         const kpLabel = document.createElement("label");
         kpLabel.textContent = "Kp";
         const kpInput = document.createElement("input");
@@ -214,6 +226,8 @@ class PID {
 
         wrap.appendChild(title);
         wrap.appendChild(toggleBtn);
+        wrap.appendChild(goalLabel);
+        wrap.appendChild(goalInput);
         wrap.appendChild(kpLabel);
         wrap.appendChild(kpInput);
         wrap.appendChild(kiLabel);
@@ -225,6 +239,7 @@ class PID {
         container.appendChild(wrap);
 
         this._toggleBtn = toggleBtn;
+        this._goalInput = goalInput;
         this._statusEl = status;
         this._outputEl = output;
         this._renderOutput(null);

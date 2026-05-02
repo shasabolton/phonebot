@@ -120,6 +120,87 @@ class AgentInterface {
         return `${base}${path}`;
     }
 
+    _resolveTranscribeUrl(agent) {
+        if (!agent) return null;
+        if (agent.transcriptionUrl) return String(agent.transcriptionUrl).trim();
+        const base = String(agent.baseUrl || this.defaultBaseUrl || "").replace(/\/$/, "");
+        const rawPath = agent.transcriptionPath != null ? String(agent.transcriptionPath) : "/audio/transcriptions";
+        const path = rawPath.startsWith("/") ? rawPath : `/${rawPath}`;
+        if (!base) return null;
+        return `${base}${path}`;
+    }
+
+    _resolveTranscriptionModel(agent) {
+        const fromAgent = agent && String(agent.transcriptionModel || "").trim();
+        if (fromAgent) return fromAgent;
+        const fromCfg = String(this.config.transcriptionModel || "").trim();
+        return fromCfg || "whisper-large-v3";
+    }
+
+    /** Label for speech UI: which model the API uses for `transcribeSpeechBlob`. */
+    getTranscriptionModelLabel() {
+        return this._resolveTranscriptionModel(this.getSelectedAgent());
+    }
+
+    /**
+     * OpenAI-compatible audio transcription (multipart). No chat context.
+     * @param {Blob} blob
+     * @param {{ filename?: string }} [options]
+     * @returns {Promise<string>} trimmed transcript text
+     */
+    async transcribeSpeechBlob(blob, options = {}) {
+        if (!blob || blob.size < 32) {
+            throw new Error("No audio captured for transcription.");
+        }
+        const agent = this.getSelectedAgent();
+        if (!agent) {
+            throw new Error("No agent selected.");
+        }
+        const url = this._resolveTranscribeUrl(agent);
+        if (!url) {
+            throw new Error("Agent has no transcription URL (set baseUrl or transcriptionUrl).");
+        }
+        const model = this._resolveTranscriptionModel(agent);
+        const apiKey = String(this._apiKey || "").trim();
+        if (!apiKey) {
+            throw new Error("Enter an API key for this provider.");
+        }
+        const authHeader = String(agent.authHeader || "Authorization").trim();
+        const authPrefix = agent.authPrefix !== undefined ? String(agent.authPrefix) : "Bearer ";
+        const filename = String(options.filename || "speech.webm").trim() || "speech.webm";
+        const form = new FormData();
+        form.append("file", blob, filename);
+        form.append("model", model);
+        const headers = {
+            [authHeader]: `${authPrefix}${apiKey}`
+        };
+        if (agent.extraHeaders && typeof agent.extraHeaders === "object") {
+            for (const [k, v] of Object.entries(agent.extraHeaders)) {
+                if (k && v != null) headers[k] = String(v);
+            }
+        }
+        const res = await fetch(url, {
+            method: "POST",
+            headers,
+            body: form
+        });
+        const rawText = await res.text();
+        if (!res.ok) {
+            throw new Error(`Transcription HTTP ${res.status}: ${rawText.slice(0, 500)}`);
+        }
+        let json;
+        try {
+            json = JSON.parse(rawText);
+        } catch (_) {
+            throw new Error("Transcription response was not JSON.");
+        }
+        const text = String(json?.text ?? "").trim();
+        if (!text) {
+            throw new Error("Transcription returned empty text.");
+        }
+        return text;
+    }
+
     _resolveModel(agent) {
         const override = this._modelOverrideInput?.value?.trim();
         if (override) return override;
@@ -711,9 +792,10 @@ class AgentInterface {
         });
     }
 
-    async _submitSpeechPrompt(transcript) {
+    async _submitSpeechPrompt(transcript, options = {}) {
         const text = String(transcript || "").trim();
         if (!text) return;
+        const speechTranscriber = String(options.speechTranscriber || "").trim();
         if (!this._agentEnabled) {
             if (this._statusEl) {
                 this._statusEl.textContent = "Agent is off. Turn the agent on to send voice prompts.";
@@ -759,10 +841,15 @@ class AgentInterface {
             await this._maybeRunActionFromResponse(reply.contentText, reply.rawText);
             this._renderHistory();
             if (this._voiceOn) {
-                this._speak(this._extractSpokenText(reply.contentText, reply.rawText));
+                const spoken = this._extractSpokenText(reply.contentText, reply.rawText);
+                if (this._statusEl && speechTranscriber) {
+                    this._statusEl.textContent = `Speaking… (input: ${speechTranscriber})`;
+                    this._statusEl.className = "muted";
+                }
+                this._speak(spoken);
             }
             if (this._statusEl) {
-                this._statusEl.textContent = "Done.";
+                this._statusEl.textContent = speechTranscriber ? `Done. (heard you via ${speechTranscriber})` : "Done.";
                 this._statusEl.className = "ok";
             }
         } catch (err) {
@@ -832,7 +919,7 @@ class AgentInterface {
     /**
      * Used by external modules (e.g. SpeechToText model) to submit a prompt.
      * @param {string} text
-     * @param {{ fromSpeech?: boolean }} [options] If fromSpeech, sends full user/assistant history plus current state and this transcript (introduction is not re-fetched).
+     * @param {{ fromSpeech?: boolean, speechTranscriber?: string }} [options] If fromSpeech, sends full user/assistant history plus current state and this transcript (introduction is not re-fetched). speechTranscriber labels the STT path for status/TTS hints.
      * @returns {Promise<boolean>}
      */
     async submitPrompt(text, options = {}) {
@@ -842,7 +929,7 @@ class AgentInterface {
         const next = String(text || "").trim();
         if (!next) return false;
         if (options.fromSpeech) {
-            await this._submitSpeechPrompt(next);
+            await this._submitSpeechPrompt(next, options);
             return true;
         }
         if (!this._promptInput) return false;

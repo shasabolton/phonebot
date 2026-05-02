@@ -72,7 +72,8 @@ window.ROBOTS_DATA = {
                     trigger: "hey robot",
                     confirmation: "listening",
                     terminator: "not talking 2000ms",
-                    stt: "browser-webspeech"
+                    stt: "browser-webspeech",
+                    agentTranscribeFallback: false
                 }
             ],
             targets: [],
@@ -124,6 +125,7 @@ window.ROBOTS_DATA = {
                 voiceOn: true,
                 shortTermMemory: "",
                 defaultBaseUrl: "https://api.groq.com/openai/v1",
+                transcriptionModel: "whisper-large-v3",
                 promptTemplates: [
                     { name: "Introduction prompt", path: "promptTemplates/introductionPrompt.txt" }
                 ],
@@ -132,13 +134,15 @@ window.ROBOTS_DATA = {
                         name: "Groq — Llama 4 Scout",
                         baseUrl: "https://api.groq.com/openai/v1",
                         chatPath: "/chat/completions",
-                        model: "meta-llama/llama-4-scout-17b-16e-instruct"
+                        model: "meta-llama/llama-4-scout-17b-16e-instruct",
+                        transcriptionModel: "whisper-large-v3"
                     },
                     {
                         name: "OpenAI-compatible (example)",
                         baseUrl: "https://api.openai.com/v1",
                         chatPath: "/chat/completions",
-                        model: "gpt-4o-mini"
+                        model: "gpt-4o-mini",
+                        transcriptionModel: "whisper-1"
                     }
                 ]
             },
