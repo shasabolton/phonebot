@@ -1,4 +1,4 @@
 {
   "fwVersion": "1.1.1",
-  "appBuildVersion": "50: accepts compact action reply"
+  "appBuildVersion": "51: action paths now work for arrays"
 }

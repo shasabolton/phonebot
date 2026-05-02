@@ -603,10 +603,22 @@ class AgentInterface {
                 continue;
             }
 
-            if (current == null || !(segment in current)) {
+            if (current == null) {
                 throw new Error(`Path segment not found: ${segment}`);
             }
-            current = current[segment];
+            if (segment in current) {
+                current = current[segment];
+                continue;
+            }
+            if (Array.isArray(current)) {
+                const named = this._findNamedItem(current, segment);
+                if (!named) {
+                    throw new Error(`Path segment not found: ${segment}`);
+                }
+                current = named;
+                continue;
+            }
+            throw new Error(`Path segment not found: ${segment}`);
         }
 
         const fnName = parts[parts.length - 1];

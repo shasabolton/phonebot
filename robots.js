@@ -96,7 +96,7 @@ window.ROBOTS_DATA = {
                     feedback: "mainObjectFilter.result.output.x",
                     controlInput: "yawSpeed",
                     goal: 0,
-                    kp: -0.12,
+                    kp: -0.05,
                     ki: 0.0,
                     kd: -0.01,
                     frequencyHz: "feedback"
