@@ -19,6 +19,8 @@ class AgentInterface {
         this.promptTemplates = Array.isArray(this.config.promptTemplates)
             ? this.config.promptTemplates
             : [{ name: "Introduction prompt", path: "promptTemplates/introductionPrompt.txt" }];
+        const stm = this.config.shortTermMemory;
+        this.shortTermMemory = stm != null && typeof stm === "string" ? stm : "";
         this.messageHistory = [];
         this._apiKey = "";
         this._rememberKey = false;
@@ -35,8 +37,19 @@ class AgentInterface {
         this._sendBtn = null;
         this._statusEl = null;
         this._historyEl = null;
+        this._showFullSpeechPrompt = false;
+        this._fullSpeechPromptInput = null;
+        this._openingPromptAutoScheduled = false;
         this._loadSavedKeyPreference();
         this._voiceOn = this._resolveVoiceDefault(null);
+    }
+
+    /**
+     * Persists scratch notes for the next model turn. Visible in state at `agentInterface.shortTermMemory`.
+     * @param {string|null|undefined} value
+     */
+    setShortTermMemory(value) {
+        this.shortTermMemory = String(value == null ? "" : value);
     }
 
     _loadSavedKeyPreference() {
@@ -136,13 +149,6 @@ class AgentInterface {
         return "";
     }
 
-    _buildPromptWithState(userText) {
-        const prompt = String(userText || "").trim();
-        const stateText = JSON.stringify(this.robot?.buildState?.() || {}, null, 2);
-        if (!stateText) return prompt;
-        return prompt ? `${prompt}\n\nState:\n${stateText}` : `State:\n${stateText}`;
-    }
-
     _buildBodyPlanFromRobotConfig() {
         const cfg = this.robot?.config || {};
         const configuredBodyPlan = this.config?.bodyPlan ?? cfg?.bodyPlan;
@@ -182,24 +188,188 @@ class AgentInterface {
 
     _buildActionsFromRobotConfig() {
         const actions = Array.isArray(this.robot?.config?.actions) ? this.robot.config.actions : [];
-        return JSON.stringify(actions, null, 2);
+        const forPrompt = actions.map((a) => {
+            if (!a || typeof a !== "object") return a;
+            return Object.fromEntries(Object.entries(a).filter(([k]) => k !== "functionPath"));
+        });
+        return JSON.stringify(forPrompt, null, 2);
     }
 
-    _buildStateConfigFromRobotConfig() {
-        const cfg = this.robot?.config || {};
-        const state = cfg.state;
-        if (state == null) return "[]";
-        if (typeof state === "string") return state.trim() || "(empty)";
-        return JSON.stringify(state, null, 2);
+    _buildActionExamplesFromRobotConfig() {
+        const examples = this.robot?.config?.actionExamples;
+        if (!Array.isArray(examples) || !examples.length) {
+            return "(no examples configured)";
+        }
+        return examples
+            .map((ex, i) => {
+                try {
+                    return `Example ${i + 1}:\n${JSON.stringify(ex, null, 2)}`;
+                } catch (_) {
+                    return `Example ${i + 1}:\n${String(ex)}`;
+                }
+            })
+            .join("\n\n");
+    }
+
+    _buildCurrentStateForIntroductionPrompt() {
+        const sm = this.robot?.stateMachine;
+        if (sm && typeof sm.getStateAsJson === "function") {
+            return sm.getStateAsJson();
+        }
+        return "";
     }
 
     buildInstructionPromptFromTemplate(templateText) {
+        const stateJson = this._buildCurrentStateForIntroductionPrompt();
         const template = String(templateText || "");
         return template
             .replace(/\{\{ROBOT_BODY_PLAN\}\}/g, this._buildBodyPlanFromRobotConfig())
             .replace(/\{\{ROBOT_CONTROL_PLAN\}\}/g, this._buildControlPlanFromRobotConfig())
-            .replace(/\{\{ROBOT_STATE\}\}/g, this._buildStateConfigFromRobotConfig())
-            .replace(/\{\{ROBOT_ACTIONS\}\}/g, this._buildActionsFromRobotConfig());
+            .replace(/\{\{ROBOT_STATE\}\}/g, stateJson)
+            .replace(/\{\{state\}\}/g, stateJson)
+            .replace(/\{state\}/g, stateJson)
+            .replace(/\{\{ROBOT_ACTIONS\}\}/g, this._buildActionsFromRobotConfig())
+            .replace(/\{\{ACTIONS-EXAMPLES\}\}/g, this._buildActionExamplesFromRobotConfig());
+    }
+
+    /**
+     * Wait until a camera video element has non-zero dimensions (user may need to allow permission / tap Start).
+     * @param {number} maxMs
+     * @returns {Promise<boolean>}
+     */
+    async _waitForCameraVideoReady(maxMs) {
+        const cam = this.robot?.sensors?.find((s) => typeof s.getVideoElement === "function");
+        if (!cam) return true;
+        const videoEl = () => cam.getVideoElement?.();
+        const ok = () => {
+            const v = videoEl();
+            return !!(v && v.videoWidth > 0 && v.videoHeight > 0);
+        };
+        if (ok()) return true;
+        return new Promise((resolve) => {
+            const deadline = Date.now() + maxMs;
+            const v = videoEl();
+            const tick = () => {
+                if (!this._containerEl) {
+                    cleanup();
+                    resolve(false);
+                    return;
+                }
+                if (ok()) {
+                    cleanup();
+                    resolve(true);
+                    return;
+                }
+                if (Date.now() >= deadline) {
+                    cleanup();
+                    resolve(false);
+                }
+            };
+            const onVid = () => tick();
+            const cleanup = () => {
+                clearInterval(iv);
+                if (v) {
+                    v.removeEventListener("loadeddata", onVid);
+                    v.removeEventListener("playing", onVid);
+                }
+            };
+            if (v) {
+                v.addEventListener("loadeddata", onVid);
+                v.addEventListener("playing", onVid);
+            }
+            const iv = setInterval(tick, 200);
+        });
+    }
+
+    async _runOpeningPromptAuto() {
+        if (!this._promptInput || !this._sendBtn) return;
+        const agent = this.getSelectedAgent();
+        if (!agent) return;
+        this._apiKey = this._keyInput?.value?.trim() || "";
+        if (!this._apiKey) {
+            if (this._statusEl) {
+                this._statusEl.textContent = "Enter an API key to send the opening prompt automatically.";
+                this._statusEl.className = "warn";
+            }
+            return;
+        }
+        const spec = this._getIntroductionTemplateSpec();
+        const path = spec && String(spec.path || "").trim();
+        if (!path) return;
+        let templateText = "";
+        try {
+            const res = await fetch(path, { cache: "no-store" });
+            if (!res.ok) return;
+            templateText = await res.text();
+        } catch (_) {
+            return;
+        }
+        const content = this.buildInstructionPromptFromTemplate(templateText);
+        this._promptInput.value = content;
+        if (this._rememberInput) this._rememberKey = !!this._rememberInput.checked;
+        if (agent) this._persistKeyForAgent(agent.name, this._apiKey);
+
+        this._sendBtn.disabled = true;
+        if (this._statusEl) {
+            this._statusEl.textContent = "Sending opening prompt…";
+            this._statusEl.className = "muted";
+        }
+        this.messageHistory.push({ role: "user", text: content, at: new Date().toISOString() });
+        this._renderHistory();
+        try {
+            const reply = await this.sendPrompt(content);
+            this.messageHistory.push({
+                role: "assistant",
+                text: reply.contentText || "",
+                at: new Date().toISOString()
+            });
+            await this._maybeRunActionFromResponse(reply.contentText, reply.rawText);
+            this._renderHistory();
+            if (this._voiceOn) {
+                this._speak(this._extractSpokenText(reply.contentText, reply.rawText));
+            }
+            if (this._statusEl) {
+                this._statusEl.textContent = "Opening prompt sent.";
+                this._statusEl.className = "ok";
+            }
+        } catch (err) {
+            console.error("Opening prompt auto-send error:", err);
+            if (this.messageHistory.length && this.messageHistory[this.messageHistory.length - 1]?.role === "user") {
+                this.messageHistory.pop();
+            }
+            this._renderHistory();
+            if (this._statusEl) {
+                this._statusEl.textContent = err?.message || "Opening prompt failed.";
+                this._statusEl.className = "error";
+            }
+        } finally {
+            this._sendBtn.disabled = false;
+        }
+    }
+
+    async _scheduleOpeningPromptAfterInit() {
+        if (this._openingPromptAutoScheduled) return;
+        this._openingPromptAutoScheduled = true;
+        try {
+            const hasCam = this.robot?.sensors?.some((s) => typeof s.getVideoElement === "function");
+            if (hasCam) {
+                const ready = await this._waitForCameraVideoReady(120000);
+                if (!ready) {
+                    if (this._statusEl) {
+                        this._statusEl.textContent =
+                            "Start the camera to send the opening prompt automatically (or press Send after the camera is on).";
+                        this._statusEl.className = "warn";
+                    }
+                    return;
+                }
+            } else {
+                await new Promise((r) => setTimeout(r, 800));
+            }
+            await new Promise((r) => setTimeout(r, 400));
+            await this._runOpeningPromptAuto();
+        } catch (err) {
+            console.error("Opening prompt schedule error:", err);
+        }
     }
 
     _getIntroductionTemplateSpec() {
@@ -230,9 +400,6 @@ class AgentInterface {
     async _buildPromptFromSelectedTemplate() {
         const selected = this._templateSelect?.value || "";
         if (!selected) throw new Error("Select a prompt template.");
-        if (selected === "__robot_state__") {
-            return JSON.stringify(this.robot?.buildState?.() || {}, null, 2);
-        }
         const res = await fetch(selected, { cache: "no-store" });
         if (!res.ok) throw new Error(`Failed to load template: ${selected}`);
         const templateText = await res.text();
@@ -244,12 +411,7 @@ class AgentInterface {
         this._insertTemplateBtn.disabled = true;
         try {
             const prompt = await this._buildPromptFromSelectedTemplate();
-            if ((this._templateSelect?.value || "") === "__robot_state__") {
-                const existing = String(this._promptInput.value || "").trim();
-                this._promptInput.value = existing ? `${existing}\n\nState:\n${prompt}` : `State:\n${prompt}`;
-            } else {
-                this._promptInput.value = prompt;
-            }
+            this._promptInput.value = prompt;
             this._promptInput.focus();
             if (this._statusEl) {
                 this._statusEl.className = "ok";
@@ -265,14 +427,16 @@ class AgentInterface {
         }
     }
 
-    async sendPrompt(userText) {
+    /**
+     * @param {string} userText
+     * @param {{ singleTurn?: boolean, messages?: Array<{role:string,content:string}> }} [options]
+     * If `messages` is provided, it is sent as-is. If singleTurn, only `userText` is sent as one user message.
+     */
+    async sendPrompt(userText, options = {}) {
         const agent = this.getSelectedAgent();
         const prompt = String(userText || "").trim();
         if (!agent) {
             throw new Error("No agent selected.");
-        }
-        if (!prompt) {
-            throw new Error("Enter a prompt.");
         }
         const url = this._resolveChatUrl(agent);
         if (!url) {
@@ -289,15 +453,30 @@ class AgentInterface {
 
         const authHeader = String(agent.authHeader || "Authorization").trim();
         const authPrefix = agent.authPrefix !== undefined ? String(agent.authPrefix) : "Bearer ";
-        const conversationMessages = this.messageHistory
-            .filter((m) => m && (m.role === "user" || m.role === "assistant"))
-            .map((m) => ({
-                role: m.role,
-                content: String(m.text || "")
-            }));
+        const singleTurn = !!options.singleTurn;
+        const overrideMessages = Array.isArray(options.messages) ? options.messages : null;
+        let conversationMessages;
+        if (overrideMessages && overrideMessages.length) {
+            conversationMessages = overrideMessages;
+        } else if (singleTurn) {
+            if (!prompt) {
+                throw new Error("Enter a prompt.");
+            }
+            conversationMessages = [{ role: "user", content: prompt }];
+        } else {
+            if (!prompt) {
+                throw new Error("Enter a prompt.");
+            }
+            conversationMessages = this.messageHistory
+                .filter((m) => m && (m.role === "user" || m.role === "assistant"))
+                .map((m) => ({
+                    role: m.role,
+                    content: String(m.text || "")
+                }));
 
-        if (!conversationMessages.length) {
-            conversationMessages.push({ role: "user", content: prompt });
+            if (!conversationMessages.length) {
+                conversationMessages.push({ role: "user", content: prompt });
+            }
         }
 
         const body = {
@@ -435,14 +614,22 @@ class AgentInterface {
 
     _collectActionsFromPayload(payload) {
         const specs = [];
-        if (Array.isArray(payload.actions)) {
-            for (const item of payload.actions) {
+        const rawActions = payload.actions;
+        if (Array.isArray(rawActions)) {
+            for (const item of rawActions) {
                 if (!item || typeof item !== "object") continue;
                 if (!Object.prototype.hasOwnProperty.call(item, "actionName")) continue;
                 const actionName = item.actionName;
                 const actionArgs = Object.prototype.hasOwnProperty.call(item, "actionArgs")
                     ? item.actionArgs
                     : undefined;
+                specs.push({ actionName, actionArgs });
+            }
+            return specs;
+        }
+        if (rawActions && typeof rawActions === "object") {
+            for (const [actionName, actionArgs] of Object.entries(rawActions)) {
+                if (!String(actionName || "").trim()) continue;
                 specs.push({ actionName, actionArgs });
             }
             return specs;
@@ -481,10 +668,66 @@ class AgentInterface {
         });
     }
 
+    async _submitSpeechPrompt(transcript) {
+        const text = String(transcript || "").trim();
+        if (!text) return;
+
+        this._apiKey = this._keyInput?.value?.trim() || "";
+        const agent = this.getSelectedAgent();
+        if (this._rememberInput) this._rememberKey = !!this._rememberInput.checked;
+        if (agent) this._persistKeyForAgent(agent.name, this._apiKey);
+
+        if (this._sendBtn) this._sendBtn.disabled = true;
+        if (this._statusEl) {
+            this._statusEl.textContent = "Sending…";
+            this._statusEl.className = "muted";
+        }
+        try {
+            const stateBlock = this._buildCurrentStateForIntroductionPrompt();
+            const fullUserContent = `Current state (json):\n${stateBlock || "[]"}\n\nUser said:\n${text}`;
+            const prior = this.messageHistory
+                .filter((m) => m && (m.role === "user" || m.role === "assistant"))
+                .map((m) => ({
+                    role: m.role,
+                    content: String(m.text || "")
+                }));
+            const conversationMessages = [...prior, { role: "user", content: fullUserContent }];
+            this.messageHistory.push({
+                role: "user",
+                text,
+                fullPrompt: fullUserContent,
+                at: new Date().toISOString()
+            });
+            this._renderHistory();
+            const reply = await this.sendPrompt("", { messages: conversationMessages });
+            this.messageHistory.push({
+                role: "assistant",
+                text: reply.contentText || "",
+                at: new Date().toISOString()
+            });
+            await this._maybeRunActionFromResponse(reply.contentText, reply.rawText);
+            this._renderHistory();
+            if (this._voiceOn) {
+                this._speak(this._extractSpokenText(reply.contentText, reply.rawText));
+            }
+            if (this._statusEl) {
+                this._statusEl.textContent = "Done.";
+                this._statusEl.className = "ok";
+            }
+        } catch (err) {
+            console.error("AgentInterface speech send error:", err);
+            if (this._statusEl) {
+                this._statusEl.textContent = err?.message || "Request failed";
+                this._statusEl.className = "error";
+            }
+        } finally {
+            if (this._sendBtn) this._sendBtn.disabled = false;
+        }
+    }
+
     async _onSend() {
         if (!this._sendBtn || !this._promptInput) return;
-        const text = this._promptInput.value;
-        const promptWithState = this._buildPromptWithState(text);
+        const text = String(this._promptInput.value || "").trim();
         this._apiKey = this._keyInput?.value?.trim() || "";
         const agent = this.getSelectedAgent();
         if (this._rememberInput) this._rememberKey = !!this._rememberInput.checked;
@@ -496,9 +739,9 @@ class AgentInterface {
             this._statusEl.className = "muted";
         }
         try {
-            this.messageHistory.push({ role: "user", text: promptWithState, at: new Date().toISOString() });
+            this.messageHistory.push({ role: "user", text, at: new Date().toISOString() });
             this._renderHistory();
-            const reply = await this.sendPrompt(promptWithState);
+            const reply = await this.sendPrompt(text);
             this.messageHistory.push({
                 role: "assistant",
                 text: reply.contentText || "",
@@ -528,11 +771,17 @@ class AgentInterface {
     /**
      * Used by external modules (e.g. SpeechToText model) to submit a prompt.
      * @param {string} text
+     * @param {{ fromSpeech?: boolean }} [options] If fromSpeech, sends full user/assistant history plus current state and this transcript (introduction is not re-fetched).
      * @returns {Promise<boolean>}
      */
-    async submitPrompt(text) {
+    async submitPrompt(text, options = {}) {
         const next = String(text || "").trim();
-        if (!next || !this._promptInput) return false;
+        if (!next) return false;
+        if (options.fromSpeech) {
+            await this._submitSpeechPrompt(next);
+            return true;
+        }
+        if (!this._promptInput) return false;
         this._promptInput.value = next;
         await this._onSend();
         return true;
@@ -550,7 +799,16 @@ class AgentInterface {
             who.textContent = m.role === "user" ? "You" : m.role === "system" ? "System" : "Agent";
             const body = document.createElement("div");
             body.className = "agent-history-body";
-            body.textContent = m.text != null ? String(m.text) : "";
+            let displayText = m.text != null ? String(m.text) : "";
+            if (
+                m.role === "user" &&
+                this._showFullSpeechPrompt &&
+                typeof m.fullPrompt === "string" &&
+                m.fullPrompt.trim() !== ""
+            ) {
+                displayText = m.fullPrompt;
+            }
+            body.textContent = displayText;
             bubble.appendChild(who);
             bubble.appendChild(body);
             this._historyEl.appendChild(bubble);
@@ -643,13 +901,25 @@ class AgentInterface {
         voiceWrap.appendChild(voiceInput);
         voiceWrap.appendChild(document.createTextNode("Speak agent replies"));
 
+        const fullSpeechPromptWrap = document.createElement("label");
+        fullSpeechPromptWrap.style.display = "flex";
+        fullSpeechPromptWrap.style.alignItems = "center";
+        fullSpeechPromptWrap.style.gap = "8px";
+        const fullSpeechPromptInput = document.createElement("input");
+        fullSpeechPromptInput.type = "checkbox";
+        fullSpeechPromptInput.checked = this._showFullSpeechPrompt;
+        fullSpeechPromptInput.addEventListener("change", () => {
+            this._showFullSpeechPrompt = !!fullSpeechPromptInput.checked;
+            this._renderHistory();
+        });
+        fullSpeechPromptWrap.appendChild(fullSpeechPromptInput);
+        fullSpeechPromptWrap.appendChild(
+            document.createTextNode("Show full prompt for voice (not just speech text)")
+        );
+
         const templateLabel = document.createElement("label");
         templateLabel.textContent = "Prompt template";
         const templateSelect = document.createElement("select");
-        const stateOpt = document.createElement("option");
-        stateOpt.value = "__robot_state__";
-        stateOpt.textContent = "State";
-        templateSelect.appendChild(stateOpt);
         if (!this.promptTemplates.length) {
             const opt = document.createElement("option");
             opt.value = "";
@@ -701,6 +971,7 @@ class AgentInterface {
         controls.appendChild(modelLabel);
         controls.appendChild(modelOverrideInput);
         controls.appendChild(voiceWrap);
+        controls.appendChild(fullSpeechPromptWrap);
         controls.appendChild(historyLabel);
         controls.appendChild(historyEl);
         controls.appendChild(promptLabel);
@@ -720,6 +991,7 @@ class AgentInterface {
         this._keyInput = keyInput;
         this._rememberInput = rememberInput;
         this._voiceInput = voiceInput;
+        this._fullSpeechPromptInput = fullSpeechPromptInput;
         this._modelOverrideInput = modelOverrideInput;
         this._templateSelect = templateSelect;
         this._insertTemplateBtn = insertTemplateBtn;
@@ -732,6 +1004,7 @@ class AgentInterface {
         this._voiceInput.checked = this._voiceOn;
         this._syncKeyFromSelection();
         void this._hydrateDefaultPromptFromIntroductionTemplate();
+        void this._scheduleOpeningPromptAfterInit();
     }
 
     destroy() {
@@ -743,6 +1016,7 @@ class AgentInterface {
         this._keyInput = null;
         this._rememberInput = null;
         this._voiceInput = null;
+        this._fullSpeechPromptInput = null;
         this._modelOverrideInput = null;
         this._templateSelect = null;
         this._insertTemplateBtn = null;

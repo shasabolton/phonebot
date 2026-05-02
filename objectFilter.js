@@ -60,6 +60,19 @@ class ObjectFilter {
             .split(",")
             .map((v) => v.trim().toLowerCase())
             .filter((v) => v.length > 0);
+        if (this.filters.includes("lastcenter")) {
+            const model = this._getFeedModel();
+            if (model && typeof model.makeCenterObject === "function") {
+                model.makeCenterObject();
+            } else {
+                const fallback =
+                    this.robot?.getAiModelByType?.("computervision") ||
+                    this.robot?.getAiModelByName?.("computervision");
+                if (fallback && typeof fallback.makeCenterObject === "function") {
+                    fallback.makeCenterObject();
+                }
+            }
+        }
         if (this._filterInput) {
             this._filterInput.value = this.filters.join(", ");
         }

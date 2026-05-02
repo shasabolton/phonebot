@@ -62,6 +62,12 @@ class PID {
         if (name === "kd") this.kd = parsed;
     }
 
+    setGoal(value) {
+        const parsed = Number(value);
+        if (!Number.isFinite(parsed)) return;
+        this.goal = parsed;
+    }
+
     _renderOutput(feedbackValue = null) {
         if (!this._outputEl) return;
         this._outputEl.textContent = JSON.stringify({

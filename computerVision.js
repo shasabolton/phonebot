@@ -999,7 +999,7 @@ class ComputerVisionAiModel {
         }));
     }
 
-    /** Current matcher tracks for prompts / `robot.buildState()` (same bbox layout as COCO: [x,y,w,h]). */
+    /** Current matcher tracks (same bbox layout as COCO: [x,y,w,h]); readable via `robot.stateMachine` paths. */
     get results() {
         return this._tracks.map((t) => ({
             id: t.id,

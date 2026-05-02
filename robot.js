@@ -19,6 +19,8 @@ class Robot {
         this.deciders = [];
         this.goal="";
         this._goalInputEl = null;
+        this.stateMachine = null;
+        this.strategies = null;
         //if mode === track, if trackcoods!= null it means open cv has found the trackTarget.
         // PID controllers read targets/sensors and may set control inputs. Mix functions map control inputs to actuators.
         // Actuators have their own sliders; mixing updates angles when control inputs change.
@@ -35,6 +37,8 @@ class Robot {
         this.teardownAgentInterface();
         this.teardownObjectFilters();
         this.teardownPidControllers();
+        this.teardownStateMachine();
+        this.teardownStrategies();
     }
 
     step() {
@@ -52,6 +56,8 @@ class Robot {
         this.buildAgentInterface();
         this.buildObjectFilters(this.config.objectFilters || []);
         this.buildPidControllers(this.config.pidControllers || []);
+        this.buildStrategies();
+        this.buildStateMachine();
         this.buildActuatorMixing();
     }
 
@@ -237,6 +243,49 @@ class Robot {
         this.pidControllers = [];
     }
 
+    buildStrategies() {
+        this.teardownStrategies();
+        const Strategies = window.RobotStrategies;
+        if (typeof Strategies !== "function") {
+            console.error("RobotStrategies class is unavailable. Check strategies.js loading.");
+            return;
+        }
+        try {
+            this.strategies = new Strategies(this);
+        } catch (err) {
+            console.error("Strategies build failed:", err);
+            this.strategies = null;
+        }
+    }
+
+    teardownStrategies() {
+        this.strategies = null;
+    }
+
+    buildStateMachine() {
+        this.teardownStateMachine();
+        const cfg = this.config.stateMachine;
+        if (!Array.isArray(cfg) || !cfg.length) {
+            this.stateMachine = null;
+            return;
+        }
+        const SM = window.StateMachine;
+        if (typeof SM !== "function") {
+            console.error("StateMachine class is unavailable. Check stateMachine.js loading.");
+            return;
+        }
+        try {
+            this.stateMachine = new SM(this, cfg);
+        } catch (err) {
+            console.error("State machine build failed:", err);
+            this.stateMachine = null;
+        }
+    }
+
+    teardownStateMachine() {
+        this.stateMachine = null;
+    }
+
     getAiModelByType(type) {
         const key = String(type || "").trim().toLowerCase();
         return this.aiModels.find((model) => String(model?.type || "").toLowerCase() === key) || null;
@@ -355,40 +404,9 @@ class Robot {
         return current;
     }
 
-    _buildPidGoalsState() {
-        const goals = {};
-        for (const pid of this.pidControllers || []) {
-            const name = String(pid?.name || "").trim();
-            if (!name) continue;
-            const goal = Number(pid?.goal);
-            goals[name] = Number.isFinite(goal) ? goal : pid?.goal;
-        }
-        return goals;
-    }
-
-    buildState() {
-        const configuredPaths = Array.isArray(this.config?.state) ? this.config.state : [];
-        const state = {
-            robotName: this.name || "Robot",
-            mode: this.mode,
-            goal: this.goal
-        };
-
-        if (!configuredPaths.length) {
-            state.controlInputs = this.getControlInputValues();
-            return state;
-        }
-
-        for (const path of configuredPaths) {
-            const key = String(path || "").trim();
-            if (!key) continue;
-            if (key === "pidGoals") {
-                state[key] = this._buildPidGoalsState();
-            } else {
-                state[key] = this._readStatePath(key);
-            }
-        }
-        return state;
+    /** Resolve a dot path on the robot (e.g. objectFilters.mainObjectFilter.filters). */
+    readStatePath(path) {
+        return this._readStatePath(path);
     }
 
     addActuator(config) {

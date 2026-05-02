@@ -12,7 +12,8 @@ window.ROBOTS_DATA = {
         {
             name: "rover1",
             bodyPlan: "A rover with two wheels and a camera",
-            controlPlan:"A pid controller receives feedback from the filtered bounding boxes detected in the camera feed and sets the yaw speed accordingly. Set tracking filter to target different objects. eg cup, door, human etc",
+            controlPlan:
+                "Move by placing an object in your camera view at a desired x location.",
             actuators: [
                 {
                     type: "servo",
@@ -101,15 +102,27 @@ window.ROBOTS_DATA = {
                     frequencyHz: "feedback"
                 }
             ],
-            state: ["objectFilters.mainObjectFilter.filters", "processing.computervision.results", "pidGoals"],
+            stateMachine: [
+                 {name: "objects seen", path: "processing.computervision.results", description:"the current objects detected in your camera feed"},
+                ],
             actions: [
-                {actionName: "setTrackingFilter", functionPath: "objectFilters.mainObjectFilter.setFiltersFromString", actionArgsHint: "cup, door, human etc", usage: "you should only set filters for objects already in your vision or synthetic ones you can create, unless you want to be waiting around for them to appear so you can track them" },
-                {actionName: "setYawTrackingGoal", functionPath: "pidControllers.yawObjectTrackerPID.setGoal", actionArgsHint: "0, 1, -1", usage: "set goal to 0 to center an object. Set it between -1 and 1 to move it to the side. Moving an object from one side of the screen to the other can be used as a way to pan your view to explore."}, // uses groq vision model
-                {actionName: "makeCenterObject", functionPath: "processing.computervision.makeCenterObject", actionArgsHint: "none", usage: "Places a synthetic lastCenter bbox in the frame center for panning via object filter + PID."}
+                {actionName: "filter", functionPath: "objectFilters.mainObjectFilter.setFiltersFromString", actionArgsHint: "cup, door, human, lastCenter etc", usage: "Only set filters for objects already in your vision, except for lastCenter." },
+                {actionName: "x", functionPath: "pidControllers.yaw object tracker PID.setGoal", actionArgsHint: "0, 1, -1", type: "float", min: -1, max: 1, increment:0.1, usage: "set goal to 0 to center an object. Set it between -1 and 1 to move it to the side. Moving an object from one side of the screen to the other can be used as a way to pan your view to explore."}
+            ],
+            actionExamples: [
+                {
+                    actions: [{ filter: "person"}, {x: 0 }],
+                    message: "I have just been turned on so I will face a person."
+                },
+                {
+                    actions: [{ filter: "lastCenter"}, {x: -1 }],
+                    message: "I don't see a person so I will turn left to look for one."
+                }
             ],
             agentInterface: {
                 name: "Chat agents",
                 voiceOn: true,
+                shortTermMemory: "",
                 defaultBaseUrl: "https://api.groq.com/openai/v1",
                 promptTemplates: [
                     { name: "Introduction prompt", path: "promptTemplates/introductionPrompt.txt" }

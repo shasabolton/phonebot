@@ -368,7 +368,7 @@ class SpeechToTextAiModel {
         });
         this._logEvent(`Sending transcript: "${text}"`);
         try {
-            await agent.submitPrompt(text);
+            await agent.submitPrompt(text, { fromSpeech: true });
             this._setStatus(`Sent. Listening for "${this.wakePhrase}"`, "ok");
             this._cooldownUntil = Date.now() + 1500;
         } catch (err) {
