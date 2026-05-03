@@ -153,7 +153,12 @@ class PID {
     }
 
     setEnabled(nextEnabled) {
-        this.enabled = !!nextEnabled;
+        const on = !!nextEnabled;
+        if (on === this.enabled) {
+            if (this._toggleBtn) this._toggleBtn.textContent = this.enabled ? "On" : "Off";
+            return;
+        }
+        this.enabled = on;
         if (this._toggleBtn) this._toggleBtn.textContent = this.enabled ? "On" : "Off";
         if (this.enabled) {
             this.integral = 0;

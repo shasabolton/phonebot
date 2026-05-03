@@ -103,6 +103,13 @@ window.ROBOTS_DATA = {
                     frequencyHz: "feedback"
                 }
             ],
+            strategies: {
+                frequencyHz: 10,
+                defaultStrategy: "trackWithoutSearch",
+                searchPanYaw: 0.2,
+                searchGraceMs: 2000,
+                searchPanWindowMs: 10000
+            },
             stateMachine: [
                  {name: "objects seen", path: "processing.computervision.results", description:"the current objects detected in your camera feed"},
                 ],

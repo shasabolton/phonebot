@@ -32,13 +32,13 @@ class Robot {
     destroy() {
         this.teardownJoysticks();
         this.teardownInputMixSubscriptions();
+        this.teardownStrategies();
         this.teardownSensors();
         this.teardownAiModels();
         this.teardownAgentInterface();
         this.teardownObjectFilters();
         this.teardownPidControllers();
         this.teardownStateMachine();
-        this.teardownStrategies();
     }
 
     step() {
@@ -250,8 +250,14 @@ class Robot {
             console.error("RobotStrategies class is unavailable. Check strategies.js loading.");
             return;
         }
+        if (this.config.strategies === false) {
+            this.strategies = null;
+            return;
+        }
+        const raw = this.config.strategies;
+        const cfg = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
         try {
-            this.strategies = new Strategies(this);
+            this.strategies = new Strategies(this, cfg);
         } catch (err) {
             console.error("Strategies build failed:", err);
             this.strategies = null;
@@ -259,6 +265,9 @@ class Robot {
     }
 
     teardownStrategies() {
+        if (this.strategies && typeof this.strategies.destroy === "function") {
+            this.strategies.destroy();
+        }
         this.strategies = null;
     }
 
@@ -520,6 +529,7 @@ class Robot {
             { selector: ".robot-agent-interfaces", fallback: "agentInterface" },
             { selector: ".robot-object-filters", fallback: "objectFilters" },
             { selector: ".robot-pid", fallback: "pidControllers" },
+            { selector: ".robot-strategies", fallback: "strategies" },
             { selector: ".robot-inputs", fallback: "controlInputs" },
             { selector: ".robot-actuators", fallback: "actuators" }
         ];
@@ -631,6 +641,21 @@ class Robot {
         }
         this.container.appendChild(pidDiv);
 
+        const strategiesDiv = document.createElement("div");
+        strategiesDiv.className = "robot-strategies";
+        const strategiesTitle = document.createElement("h4");
+        strategiesTitle.textContent = "Strategies";
+        strategiesDiv.appendChild(strategiesTitle);
+        if (this.strategies && typeof this.strategies.buildGUI === "function") {
+            this.strategies.buildGUI(strategiesDiv);
+        } else {
+            const none = document.createElement("p");
+            none.className = "muted";
+            none.textContent = "No strategies runner (disabled or RobotStrategies unavailable).";
+            strategiesDiv.appendChild(none);
+        }
+        this.container.appendChild(strategiesDiv);
+
         const inputsDiv = document.createElement('div');
         inputsDiv.className = 'robot-inputs';
         for (const joystick of this.joysticks) {
@@ -655,5 +680,8 @@ class Robot {
         this.container.appendChild(actuatorsDiv);
         this._makePanelsCollapsible();
         this._applyStartupModuleEnabled();
+        if (this.strategies && typeof this.strategies.start === "function") {
+            this.strategies.start();
+        }
     }
 }
