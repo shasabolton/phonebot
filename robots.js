@@ -96,7 +96,7 @@ window.ROBOTS_DATA = {
                     feedback: "mainObjectFilter.result.output.x",
                     controlInput: "yawSpeed",
                     goal: 0.5,
-                    kp: -0.05,
+                    kp: -0.1,
                     ki: 0.0,
                     kd: -0.01,
                     frequencyHz: "feedback"
@@ -106,8 +106,8 @@ window.ROBOTS_DATA = {
                     on: true,
                     feedback: "mainObjectFilter.result.bbox.width",
                     controlInput: "speed",
-                    goal: 0.8,
-                    kp: -0.05,
+                    goal: 0.5,
+                    kp: -0.2,
                     ki: 0.0,
                     kd: -0.01,
                     frequencyHz: "feedback"
@@ -116,7 +116,7 @@ window.ROBOTS_DATA = {
             strategies: {
                 frequencyHz: 10,
                 defaultStrategy: "trackWithoutSearch",
-                searchPanYaw: 0.05,
+                searchPanYaw: 0.02,
                 frameSearchGraceMs: 10000,
                 panSearchGraceMs: 30000,
                 changeFilterGraceMs: 10000
