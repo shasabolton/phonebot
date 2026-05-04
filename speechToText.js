@@ -12,6 +12,12 @@ class SpeechToTextAiModel {
         this.sttEngine = "browser-webspeech";
         /** When true, capture mic to blob; if browser transcript is empty, call agent API transcription (no chat context), then run normal speech→agent pipeline. */
         this.agentTranscribeFallback = !!config.agentTranscribeFallback;
+        /** Ignore wake for this long after TTS stops; laptops often still echo / deliver late transcripts. */
+        this.postTtsWakeGuardMs = Number.isFinite(config.postTtsWakeGuardMs)
+            ? Math.max(0, Math.round(config.postTtsWakeGuardMs))
+            : 750;
+        this._postTtsWakeGuardUntil = 0;
+        this._lastTtsSpeaking = false;
         this._mic = null;
         this._recordingStream = null;
         this._mediaRecorder = null;
@@ -134,7 +140,7 @@ class SpeechToTextAiModel {
     _syncHintText() {
         if (!this._hintEl) return;
         const fb = this.agentTranscribeFallback ? "on" : "off";
-        this._hintEl.textContent = `Wake: "${this.wakePhrase}". Silence stop: ${this.silenceMs}ms. Primary STT: ${this.sttEngine}. API fallback if empty: ${fb}.`;
+        this._hintEl.textContent = `Wake: "${this.wakePhrase}". Silence stop: ${this.silenceMs}ms. Post-TTS wake guard: ${this.postTtsWakeGuardMs}ms. Primary STT: ${this.sttEngine}. API fallback if empty: ${fb}.`;
     }
 
     _releaseRecordingCapture() {
@@ -355,6 +361,8 @@ class SpeechToTextAiModel {
     }
 
     _startWakeRecognition() {
+        this._postTtsWakeGuardUntil = 0;
+        this._lastTtsSpeaking = false;
         const RecognitionClass = this._getSpeechRecognitionClass();
         if (!RecognitionClass) {
             this._setStatus("Browser speech recognition unavailable.", "warn");
@@ -433,9 +441,25 @@ class SpeechToTextAiModel {
                 return;
             }
 
+            const synth = window.speechSynthesis;
+            const ttsSpeaking = !!(synth && synth.speaking);
+            if (this.postTtsWakeGuardMs > 0) {
+                if (ttsSpeaking) {
+                    this._postTtsWakeGuardUntil = now + this.postTtsWakeGuardMs;
+                } else if (this._lastTtsSpeaking) {
+                    // speaking just went false; extend from now (laptop echo / late results)
+                    this._postTtsWakeGuardUntil = now + this.postTtsWakeGuardMs;
+                }
+                this._lastTtsSpeaking = ttsSpeaking;
+            }
+
             if (this._containsTrigger(clean)) {
-                if (window.speechSynthesis?.speaking) {
-                    this._maybeLogRecognitionResult(evt, "[ignored: wake while TTS]");
+                const inPostTtsGuard = this.postTtsWakeGuardMs > 0 && now < this._postTtsWakeGuardUntil;
+                if (ttsSpeaking || inPostTtsGuard) {
+                    this._maybeLogRecognitionResult(
+                        evt,
+                        ttsSpeaking ? "[ignored: wake while TTS]" : "[ignored: post-TTS echo guard]"
+                    );
                     return;
                 }
                 this._logEvent(`Wake phrase detected: "${this.wakePhrase}"`);
@@ -729,6 +753,8 @@ class SpeechToTextAiModel {
             }
             this._isRecording = false;
             this._speechSessionState = "idle";
+            this._postTtsWakeGuardUntil = 0;
+            this._lastTtsSpeaking = false;
             if (this._recognition) {
                 try {
                     this._recognition.stop();

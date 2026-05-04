@@ -1,4 +1,4 @@
 {
   "fwVersion": "1.1.1",
-  "appBuildVersion": "57: no wake detection when TTS"
+  "appBuildVersion": "59: no wake detection delayed when TTS"
 }
