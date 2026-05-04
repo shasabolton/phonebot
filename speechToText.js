@@ -434,6 +434,10 @@ class SpeechToTextAiModel {
             }
 
             if (this._containsTrigger(clean)) {
+                if (window.speechSynthesis?.speaking) {
+                    this._maybeLogRecognitionResult(evt, "[ignored: wake while TTS]");
+                    return;
+                }
                 this._logEvent(`Wake phrase detected: "${this.wakePhrase}"`);
                 await this._onWakeTriggered();
             }
