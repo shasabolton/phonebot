@@ -124,12 +124,18 @@ class GroqVisionAiModel {
         ctx.font = "12px Arial";
         ctx.textBaseline = "top";
 
+        const fw = videoEl.videoWidth || 1;
+        const fh = videoEl.videoHeight || 1;
         detections.forEach((item) => {
-            const [x, y, w, h] = item.bbox;
-            const bx = x * widthScale;
-            const by = y * heightScale;
-            const bw = w * widthScale;
-            const bh = h * heightScale;
+            const [nx, ny, nw, nh] = item.bbox;
+            const px = nx * fw;
+            const py = ny * fh;
+            const pw = nw * fw;
+            const ph = nh * fh;
+            const bx = px * widthScale;
+            const by = py * heightScale;
+            const bw = pw * widthScale;
+            const bh = ph * heightScale;
             const label = `${item.class} ${(item.score * 100).toFixed(0)}%`;
 
             ctx.strokeStyle = "#ffcc00";
@@ -158,11 +164,12 @@ class GroqVisionAiModel {
                 name: item.class,
                 score: Number(item.score.toFixed(3)),
                 bbox: {
-                    x: Number(item.bbox[0].toFixed(1)),
-                    y: Number(item.bbox[1].toFixed(1)),
-                    width: Number(item.bbox[2].toFixed(1)),
-                    height: Number(item.bbox[3].toFixed(1))
-                }
+                    x: Number(item.bbox[0].toFixed(4)),
+                    y: Number(item.bbox[1].toFixed(4)),
+                    width: Number(item.bbox[2].toFixed(4)),
+                    height: Number(item.bbox[3].toFixed(4))
+                },
+                bboxUnit: "normalized01"
             }))
         };
         this._outputEl.textContent = JSON.stringify(response, null, 2);
@@ -407,10 +414,10 @@ class GroqVisionAiModel {
         }
     }
 
-    _isDetectionPlausibleForTracking(detection, frameWidth, frameHeight) {
-        const area = detection.bbox[2] * detection.bbox[3];
-        const frameArea = Math.max(1, frameWidth * frameHeight);
-        const areaRatio = area / frameArea;
+    _isDetectionPlausibleForTracking(detection) {
+        const nw = detection.bbox[2];
+        const nh = detection.bbox[3];
+        const areaRatio = nw * nh;
         if (areaRatio < this.minBoxAreaRatio) return false;
         if (detection.fullObjectCoverage < this.minFullObjectCoverage) return false;
         if (detection.bboxConfidence < this.minBboxConfidence) return false;
@@ -440,10 +447,10 @@ class GroqVisionAiModel {
             const wNorm = Number(box?.width);
             const hNorm = Number(box?.height);
             if (![xNorm, yNorm, wNorm, hNorm].every(Number.isFinite)) continue;
-            const x = Math.max(0, Math.min(frameWidth, xNorm * frameWidth));
-            const y = Math.max(0, Math.min(frameHeight, yNorm * frameHeight));
-            const width = Math.max(1, Math.min(frameWidth - x, wNorm * frameWidth));
-            const height = Math.max(1, Math.min(frameHeight - y, hNorm * frameHeight));
+            const x = Math.max(0, Math.min(1, xNorm));
+            const y = Math.max(0, Math.min(1, yNorm));
+            const width = Math.max(1e-4, Math.min(1 - x, wNorm));
+            const height = Math.max(1e-4, Math.min(1 - y, hNorm));
             const detection = {
                 class: label,
                 score,
@@ -451,7 +458,7 @@ class GroqVisionAiModel {
                 bboxConfidence,
                 bbox: [x, y, width, height]
             };
-            if (this._isDetectionPlausibleForTracking(detection, frameWidth, frameHeight)) {
+            if (this._isDetectionPlausibleForTracking(detection)) {
                 normalized.push(detection);
             } else {
                 filteredOut += 1;
@@ -482,7 +489,7 @@ class GroqVisionAiModel {
             "    }",
             "  ]",
             "}",
-            "bbox values must be normalized to 0..1 relative to image width/height.",
+            "bbox values must be normalized 0..1: x and width are fractions of image width; y and height are fractions of image height.",
             "Only include clearly visible objects."
         ].join("\n");
 
@@ -626,7 +633,8 @@ class GroqVisionAiModel {
         return this._detections.map((item) => ({
             class: item.class,
             score: item.score,
-            bbox: Array.isArray(item.bbox) ? [...item.bbox] : [0, 0, 0, 0]
+            bbox: Array.isArray(item.bbox) ? [...item.bbox] : [0, 0, 0, 0],
+            bboxUnit: "normalized01"
         }));
     }
 

@@ -244,6 +244,20 @@ class ComputerVisionAiModel {
         return [x, y, w, h];
     }
 
+    /** Pixel bbox [x,y,w,h] → normalized [nx,ny,nw,nh] (x,w vs frame width; y,h vs frame height). */
+    _bboxPixelsToNormalized(bbox, fw, fh) {
+        if (!fw || !fh) return [0, 0, 0, 0];
+        const [x, y, w, h] = bbox;
+        return [x / fw, y / fh, w / fw, h / fh];
+    }
+
+    /** Normalized bbox from Groq (0–1 per axis) → pixel bbox for internal tracking / IOU. */
+    _bboxNormalizedToPixels(bbox, fw, fh) {
+        if (!fw || !fh) return [0, 0, 0, 0];
+        const [nx, ny, nw, nh] = bbox;
+        return [nx * fw, ny * fh, nw * fw, nh * fh];
+    }
+
     _bboxArea(bbox) {
         const w = bbox[2];
         const h = bbox[3];
@@ -387,6 +401,9 @@ class ComputerVisionAiModel {
                 bbox = [det.bbox.x, det.bbox.y, det.bbox.width, det.bbox.height];
             } else {
                 bbox = [0, 0, 0, 0];
+            }
+            if (source === "groq") {
+                bbox = this._bboxNormalizedToPixels(bbox, fw, fh);
             }
             bbox = this._clampBbox(bbox, fw, fh);
 
@@ -705,18 +722,24 @@ class ComputerVisionAiModel {
             groqRefreshMs: this.groqRefreshMs,
             cocoFeed: "internal",
             cocoRefreshMs: this.cocoRefreshMs,
-            tracks: this._tracks.map((t) => ({
-                id: t.id,
-                name: t.class,
-                labelSource: t.labelSource || "coco",
-                score: Number(t.score.toFixed(3)),
-                bbox: {
-                    x: Number(t.bbox[0].toFixed(1)),
-                    y: Number(t.bbox[1].toFixed(1)),
-                    width: Number(t.bbox[2].toFixed(1)),
-                    height: Number(t.bbox[3].toFixed(1))
-                }
-            }))
+            tracks: this._tracks.map((t) => {
+                const fw = this._frameWidth || 1;
+                const fh = this._frameHeight || 1;
+                const [nx, ny, nw, nh] = this._bboxPixelsToNormalized(t.bbox, fw, fh);
+                return {
+                    id: t.id,
+                    name: t.class,
+                    labelSource: t.labelSource || "coco",
+                    score: Number(t.score.toFixed(3)),
+                    bbox: {
+                        x: Number(nx.toFixed(4)),
+                        y: Number(ny.toFixed(4)),
+                        width: Number(nw.toFixed(4)),
+                        height: Number(nh.toFixed(4))
+                    },
+                    bboxUnit: "normalized01"
+                };
+            })
         };
         this._outputEl.textContent = JSON.stringify(response, null, 2);
     }
@@ -1000,20 +1023,31 @@ class ComputerVisionAiModel {
     }
 
     getLatestDetections() {
+        const fw = this._frameWidth || 1;
+        const fh = this._frameHeight || 1;
         return this._detections.map((item) => ({
             class: item.class,
             score: item.score,
-            bbox: Array.isArray(item.bbox) ? [...item.bbox] : [0, 0, 0, 0]
+            bbox: Array.isArray(item.bbox)
+                ? this._bboxPixelsToNormalized(item.bbox, fw, fh)
+                : [0, 0, 0, 0],
+            bboxUnit: "normalized01"
         }));
     }
 
-    /** Current matcher tracks (same bbox layout as COCO: [x,y,w,h]); readable via `robot.stateMachine` paths. */
+    /**
+     * Tracks as normalized boxes: bbox is [x,y,w,h] with x,w relative to frame width and y,h to height (0–1).
+     * Readable via `robot.stateMachine` paths.
+     */
     get results() {
+        const fw = this._frameWidth || 1;
+        const fh = this._frameHeight || 1;
         return this._tracks.map((t) => ({
             id: t.id,
             class: t.class,
             score: Number(t.score),
-            bbox: Array.isArray(t.bbox) ? [...t.bbox] : [0, 0, 0, 0],
+            bbox: Array.isArray(t.bbox) ? this._bboxPixelsToNormalized(t.bbox, fw, fh) : [0, 0, 0, 0],
+            bboxUnit: "normalized01",
             labelSource: t.labelSource || "coco"
         }));
     }
@@ -1105,7 +1139,7 @@ class ComputerVisionAiModel {
 
         const hint = document.createElement("p");
         hint.className = "muted";
-        hint.textContent = `Uses internal COCO for bbox geometry and "${this.groqFeedType}" for label updates. Groq can overwrite labels, COCO cannot overwrite Groq labels.`;
+        hint.textContent = `Uses internal COCO for bbox geometry (pixels) and "${this.groqFeedType}" for label updates; exported detections/results use bbox 0–1 (x,w vs width, y,h vs height). Groq can overwrite labels, COCO cannot overwrite Groq labels.`;
 
         const status = document.createElement("p");
         status.className = "muted";

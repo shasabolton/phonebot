@@ -13,7 +13,7 @@ window.ROBOTS_DATA = {
             name: "rover1",
             bodyPlan: "A rover with two wheels and a camera",
             controlPlan:
-                "Move by placing an object in your camera view at a desired x location.",
+                "Move by placing an object in your camera view at a desired horizontal position: x is 0 to 1 (0.5 = center).",
             actuators: [
                 {
                     type: "servo",
@@ -84,7 +84,7 @@ window.ROBOTS_DATA = {
                     filters: ["person", "human", "face", "head"],
                     minScore: 0.1,
                     strategy: "largest",
-                    outputRange: "minusOneToOne",
+                    outputRange: "zeroToOne",
                     invertX: false,
                     frequencyHz: "dataFeed"
                 }
@@ -95,7 +95,7 @@ window.ROBOTS_DATA = {
                     on: true,
                     feedback: "mainObjectFilter.result.output.x",
                     controlInput: "yawSpeed",
-                    goal: 0,
+                    goal: 0.5,
                     kp: -0.05,
                     ki: 0.0,
                     kd: -0.01,
@@ -122,19 +122,19 @@ window.ROBOTS_DATA = {
                 changeFilterGraceMs: 10000
             },
             stateMachine: [
-                 {name: "objects seen", path: "processing.computervision.results", description:"the current objects detected in your camera feed"},
+                 {name: "objects seen", path: "processing.computervision.results", description: "Tracks in the camera feed. Each bbox is normalized: x and width are 0–1 fractions of frame width, y and height are 0–1 fractions of frame height. Field bboxUnit is \"normalized01\"."},
                 ],
             actions: [
                 {actionName: "filter", functionPath: "objectFilters.mainObjectFilter.setFilters", actionArgsHint: '["cup"], ["door","doorway"], ["human","person","face","head"]', usage: "Set filters for objects already in your vision to track them, else set objects to pan and search for. Value may be a comma-separated string, a JSON array of label strings, or objects (e.g. type label/bbox)." },
-                {actionName: "x", functionPath: "pidControllers.yaw object tracker PID.setGoal", actionArgsHint: "0, 1, -1, -0.5, 0.5", type: "float", min: -1, max: 1, increment:0.1, usage: "set goal to 0 to center an object. Set it between -1 and 1 to move it to the side. Moving an object from one side of the screen to the other can be used as a way to pan your view to explore."}
+                {actionName: "x", functionPath: "pidControllers.yaw object tracker PID.setGoal", actionArgsHint: "0, 0.25, 0.5, 0.75, 1", type: "float", min: 0, max: 1, increment: 0.05, usage: "Horizontal aim for the tracked object: 0.5 centers it in the view; 0 and 1 are the left and right extremes (values are 0–1, same units as filter output x)." }
             ],
             actionExamples: [
                 {
-                    actions: [{ filter: ["person", "human", "face", "head"]}, {x: 0 }],
+                    actions: [{ filter: ["person", "human", "face", "head"]}, { x: 0.5 }],
                     message: "I have just been turned on so I will face a person."
                 },
                 {
-                    actions: [{ filter: ["door", "doorway"]}, {x: 0 }],
+                    actions: [{ filter: ["door", "doorway"]}, { x: 0.5 }],
                     message: "I don't see a person so I will look for a door to go through."
                 }
             ],

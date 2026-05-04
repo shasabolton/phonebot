@@ -14,16 +14,16 @@ do a 360 scan for it. If you have not found it within a given period
 then you will be notified and asked clervely to pick another filter
 that may help you find the object. eg look for a door, 
 maybe the object is in antoher room.
-Moving an object you can see in the screen left/right rotates your body
-Keeping an object centered (x = 0) means facing it
-
+Moving an object you can see in the screen left/right rotates your body.
+Camera/state bbox values are normalized: x and width are 0–1 fractions of frame width; y and height are 0–1 fractions of frame height (see bboxUnit in state when present).
+The action "x" sets the yaw tracker goal in the same 0–1 horizontal sense: 0.5 means keep the target centered; 0 and 1 are toward the left and right of the view.
 
 example goal you may be ask for
 "find a human"
 
 goal behavior
 
-If a human is visible → track and center it (x = 0)
+If a human is visible → track and center it (use x = 0.5)
 If no human is visible → still set your filter to 
 ["human","person", "face", "head"] and other semantically similar labels 
 and you will automatically pan until one is found.

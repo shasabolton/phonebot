@@ -9,7 +9,8 @@ class ObjectFilter {
         this.filters = [];
         this.minScore = Number.isFinite(config.minScore) ? config.minScore : 0.45;
         this.strategy = config.strategy || "largest";
-        this.outputRange = config.outputRange === "pixels" ? "pixels" : "minusOneToOne";
+        const or = String(config.outputRange || "zeroToOne").trim();
+        this.outputRange = or === "pixels" ? "pixels" : "zeroToOne";
         this.invertX = !!config.invertX;
         this.frequencyHz = Number.isFinite(config.frequencyHz) ? config.frequencyHz : 0;
         this.runBoundToFeed = !this.frequencyHz || config.frequencyHz === "dataFeed" || config.freq === "dataFeed";
@@ -240,10 +241,12 @@ class ObjectFilter {
     }
 
     setOutputRange(range) {
-        const valid = ["minusOneToOne", "pixels"];
-        if (!valid.includes(range)) return;
-        this.outputRange = range;
-        if (this._outputRangeSelect) this._outputRangeSelect.value = range;
+        const r = String(range || "").trim();
+        const normalized = r === "minusOneToOne" ? "zeroToOne" : r;
+        const valid = ["zeroToOne", "pixels"];
+        if (!valid.includes(normalized)) return;
+        this.outputRange = normalized;
+        if (this._outputRangeSelect) this._outputRangeSelect.value = normalized;
     }
 
     setInvertX(nextInvert) {
@@ -251,17 +254,17 @@ class ObjectFilter {
         if (this._invertXInput) this._invertXInput.checked = this.invertX;
     }
 
-    _pickDetection(detections, frameWidth) {
+    _pickDetection(detections) {
         if (!detections.length) return null;
         if (this.strategy === "highestScore") {
             return detections.slice().sort((a, b) => b.score - a.score)[0];
         }
         if (this.strategy === "closestCenter") {
-            const centerX = frameWidth / 2;
+            const centerLine = 0.5;
             return detections.slice().sort((a, b) => {
                 const aCx = a.bbox[0] + a.bbox[2] / 2;
                 const bCx = b.bbox[0] + b.bbox[2] / 2;
-                return Math.abs(aCx - centerX) - Math.abs(bCx - centerX);
+                return Math.abs(aCx - centerLine) - Math.abs(bCx - centerLine);
             })[0];
         }
         return detections.slice().sort((a, b) => b.bbox[2] * b.bbox[3] - a.bbox[2] * a.bbox[3])[0];
@@ -344,7 +347,7 @@ class ObjectFilter {
             const scoreOk = Number(d.score) >= this.minScore;
             return scoreOk && this._detectionMatchesCriteria(d, frameWidth, frameHeight);
         });
-        const picked = this._pickDetection(filtered, frameWidth);
+        const picked = this._pickDetection(filtered);
         if (!picked) {
             this.result = null;
             return;
@@ -352,20 +355,20 @@ class ObjectFilter {
         const [x, y, width, height] = picked.bbox;
         const centerX = x + width / 2;
         const centerY = y + height / 2;
-        const normalizedXRaw = (centerX / frameWidth) * 2 - 1;
-        const normalizedX = Number((this.invertX ? -normalizedXRaw : normalizedXRaw).toFixed(4));
-        const pixelOffsetRaw = centerX - frameWidth / 2;
+        const centerX01 = this.invertX ? 1 - centerX : centerX;
+        const pixelOffsetRaw = (centerX - 0.5) * frameWidth;
         const pixelOffsetX = Number((this.invertX ? -pixelOffsetRaw : pixelOffsetRaw).toFixed(2));
-        const outputX = this.outputRange === "pixels" ? pixelOffsetX : normalizedX;
+        const outputX = this.outputRange === "pixels" ? pixelOffsetX : Number(centerX01.toFixed(4));
         this.result = {
             label: picked.class,
             score: Number(picked.score.toFixed(3)),
             bbox: { x, y, width, height },
             center: { x: centerX, y: centerY },
-            normalized: { x: normalizedX },
+            normalized: { x: centerX01 },
             pixels: { x: pixelOffsetX },
             output: { x: outputX, range: this.outputRange },
-            invertX: this.invertX
+            invertX: this.invertX,
+            bboxUnit: picked.bboxUnit || "normalized01"
         };
     }
 
@@ -396,7 +399,7 @@ class ObjectFilter {
             if (this._statusEl) {
                 this._statusEl.className = "muted";
                 this._statusEl.textContent = this.result
-                    ? `Tracking ${this.result.label} (x=${Number(this.result.output.x).toFixed(3)} ${this.result.output.range === "pixels" ? "px" : ""})`
+                    ? `Tracking ${this.result.label} (x=${Number(this.result.output.x).toFixed(3)} ${this.result.output.range === "pixels" ? "px" : "0–1"})`
                     : "No matching object found.";
             }
             this._renderOutput();
@@ -509,7 +512,7 @@ class ObjectFilter {
         outputRangeLabel.textContent = "Output range";
         const outputRangeSelect = document.createElement("select");
         [
-            { value: "minusOneToOne", label: "-1 to 1 (normalized)" },
+            { value: "zeroToOne", label: "0 to 1 (0.5 = screen center)" },
             { value: "pixels", label: "Pixels from center" }
         ].forEach((optCfg) => {
             const option = document.createElement("option");
