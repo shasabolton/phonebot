@@ -14,7 +14,7 @@ class RobotStrategies {
         this.robot = robot;
         const c = config && typeof config === "object" && !Array.isArray(config) ? config : {};
         this.frequencyHz = Number.isFinite(c.frequencyHz) && c.frequencyHz > 0 ? c.frequencyHz : 10;
-        this.searchPanYaw = Number.isFinite(c.searchPanYaw) ? c.searchPanYaw : 0.2;
+        this.searchPanYaw = Number.isFinite(c.searchPanYaw) ? c.searchPanYaw : 0.05;
         const frameG = c.frameSearchGraceMs ?? c.searchGraceMs;
         this.frameSearchGraceMs = Number.isFinite(frameG) ? frameG : 2000;
         const panG = c.panSearchGraceMs ?? c.searchPanWindowMs;

@@ -106,7 +106,7 @@ window.ROBOTS_DATA = {
             strategies: {
                 frequencyHz: 10,
                 defaultStrategy: "trackWithoutSearch",
-                searchPanYaw: 0.2,
+                searchPanYaw: 0.05,
                 frameSearchGraceMs: 2000,
                 panSearchGraceMs: 10000,
                 changeFilterGraceMs: 10000
