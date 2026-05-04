@@ -723,6 +723,10 @@ class AgentInterface {
         }
 
         const { fn, receiver } = this._resolveActionFunction(match.functionPath);
+        const pathLower = String(match.functionPath || "").toLowerCase();
+        if (Array.isArray(actionArgs) && pathLower.endsWith("setfilters")) {
+            return await fn.call(receiver, actionArgs);
+        }
         if (Array.isArray(actionArgs)) {
             return await fn.apply(receiver, actionArgs);
         }
@@ -936,6 +940,105 @@ class AgentInterface {
         this._promptInput.value = next;
         await this._onSend();
         return true;
+    }
+
+    /**
+     * Same request shape as voice prompts: prior user/assistant history plus one user message that starts with state machine JSON.
+     * For proactive robot notices (e.g. strategies) so the model sees current state and conversation context.
+     * @param {string} text Short text shown in the history bubble.
+     * @param {{ contextLabel?: string, speechTranscriber?: string }} [options] contextLabel prefixes the payload block (default "Robot notice"). speechTranscriber labels status/TTS hints.
+     * @returns {Promise<boolean>} false if agent off, empty text, send already in progress, or missing API key / agent
+     */
+    async submitPromptWithRobotState(text, options = {}) {
+        const transcript = String(text || "").trim();
+        if (!transcript) return false;
+        if (!this._agentEnabled) return false;
+        if (this._sendInProgress) {
+            console.warn("AgentInterface: send already in progress; skipped submitPromptWithRobotState.");
+            return false;
+        }
+
+        this._apiKey = this._keyInput?.value?.trim() || "";
+        const agent = this.getSelectedAgent();
+        if (this._rememberInput) this._rememberKey = !!this._rememberInput.checked;
+        if (agent) this._persistKeyForAgent(agent.name, this._apiKey);
+
+        const speechTranscriber = String(options.speechTranscriber || "robot state").trim();
+        const label = String(options.contextLabel || "Robot notice").trim() || "Robot notice";
+
+        if (!agent) {
+            if (this._statusEl) {
+                this._statusEl.textContent = "No agent selected.";
+                this._statusEl.className = "warn";
+            }
+            return false;
+        }
+        if (!this._apiKey) {
+            if (this._statusEl) {
+                this._statusEl.textContent = "Enter an API key to receive robot notifications.";
+                this._statusEl.className = "warn";
+            }
+            return false;
+        }
+
+        this._sendInProgress = true;
+        this._syncSendButtonState();
+        if (this._statusEl) {
+            this._statusEl.textContent = "Sending…";
+            this._statusEl.className = "muted";
+        }
+        try {
+            const stateBlock = this._buildCurrentStateForIntroductionPrompt();
+            const fullUserContent = `Current state (json):\n${stateBlock || "[]"}\n\n${label}:\n${transcript}`;
+            const prior = this.messageHistory
+                .filter((m) => m && (m.role === "user" || m.role === "assistant"))
+                .map((m) => ({
+                    role: m.role,
+                    content: String(m.text || "")
+                }));
+            const conversationMessages = [...prior, { role: "user", content: fullUserContent }];
+            this.messageHistory.push({
+                role: "user",
+                text: transcript,
+                fullPrompt: fullUserContent,
+                at: new Date().toISOString()
+            });
+            this._renderHistory();
+            const reply = await this.sendPrompt("", { messages: conversationMessages });
+            this.messageHistory.push({
+                role: "assistant",
+                text: reply.contentText || "",
+                at: new Date().toISOString()
+            });
+            await this._maybeRunActionFromResponse(reply.contentText, reply.rawText);
+            this._renderHistory();
+            if (this._voiceOn) {
+                const spoken = this._extractSpokenText(reply.contentText, reply.rawText);
+                if (this._statusEl && speechTranscriber) {
+                    this._statusEl.textContent = `Speaking… (${speechTranscriber})`;
+                    this._statusEl.className = "muted";
+                }
+                this._speak(spoken);
+            }
+            if (this._statusEl) {
+                this._statusEl.textContent = speechTranscriber ? `Done. (${speechTranscriber})` : "Done.";
+                this._statusEl.className = "ok";
+            }
+            return true;
+        } catch (err) {
+            console.error("AgentInterface submitPromptWithRobotState error:", err);
+            if (this._statusEl) {
+                this._statusEl.textContent = err?.message || "Request failed";
+                this._statusEl.className = "error";
+            }
+            if (this.messageHistory.length && this.messageHistory[this.messageHistory.length - 1]?.role === "user") {
+                this.messageHistory.pop();
+            }
+            return false;
+        } finally {
+            this._sendInProgress = false;
+            this._syncSendButtonState();
+        }
     }
 
     _renderHistory() {

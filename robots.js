@@ -107,24 +107,25 @@ window.ROBOTS_DATA = {
                 frequencyHz: 10,
                 defaultStrategy: "trackWithoutSearch",
                 searchPanYaw: 0.2,
-                searchGraceMs: 2000,
-                searchPanWindowMs: 10000
+                frameSearchGraceMs: 2000,
+                panSearchGraceMs: 10000,
+                changeFilterGraceMs: 10000
             },
             stateMachine: [
                  {name: "objects seen", path: "processing.computervision.results", description:"the current objects detected in your camera feed"},
                 ],
             actions: [
-                {actionName: "filter", functionPath: "objectFilters.mainObjectFilter.setFiltersFromString", actionArgsHint: "cup, door, human, lastCenter etc", usage: "Only set filters for objects already in your vision, except for lastCenter." },
-                {actionName: "x", functionPath: "pidControllers.yaw object tracker PID.setGoal", actionArgsHint: "0, 1, -1", type: "float", min: -1, max: 1, increment:0.1, usage: "set goal to 0 to center an object. Set it between -1 and 1 to move it to the side. Moving an object from one side of the screen to the other can be used as a way to pan your view to explore."}
+                {actionName: "filter", functionPath: "objectFilters.mainObjectFilter.setFilters", actionArgsHint: '["cup"], ["door","doorway"], ["human","person","face","head"]', usage: "Set filters for objects already in your vision to track them, else set objects to pan and search for. Value may be a comma-separated string, a JSON array of label strings, or objects (e.g. type label/bbox)." },
+                {actionName: "x", functionPath: "pidControllers.yaw object tracker PID.setGoal", actionArgsHint: "0, 1, -1, -0.5, 0.5", type: "float", min: -1, max: 1, increment:0.1, usage: "set goal to 0 to center an object. Set it between -1 and 1 to move it to the side. Moving an object from one side of the screen to the other can be used as a way to pan your view to explore."}
             ],
             actionExamples: [
                 {
-                    actions: [{ filter: "person"}, {x: 0 }],
+                    actions: [{ filter: ["person", "human", "face", "head"]}, {x: 0 }],
                     message: "I have just been turned on so I will face a person."
                 },
                 {
-                    actions: [{ filter: "lastCenter"}, {x: -1 }],
-                    message: "I don't see a person so I will turn left to look for one."
+                    actions: [{ filter: ["door", "doorway"]}, {x: 0 }],
+                    message: "I don't see a person so I will look for a door to go through."
                 }
             ],
             agentInterface: {

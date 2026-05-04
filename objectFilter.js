@@ -4,7 +4,9 @@ class ObjectFilter {
         this.name = name || config.name || "object filter";
         this.config = config;
         this.dataFeed = config.dataFeed || "coco";
-        this.filters = Array.isArray(config.filters) ? [...config.filters] : [];
+        /** @type {(string|object)[]} strings = class labels (OR semantics); objects = structured rules (label, bbox, …). */
+        this.filterCriteria = [];
+        this.filters = [];
         this.minScore = Number.isFinite(config.minScore) ? config.minScore : 0.45;
         this.strategy = config.strategy || "largest";
         this.outputRange = config.outputRange === "pixels" ? "pixels" : "minusOneToOne";
@@ -24,17 +26,172 @@ class ObjectFilter {
         this._strategySelect = null;
         this._outputRangeSelect = null;
         this._invertXInput = null;
+        /** ms epoch when filters were last set. Strategies may use this to re-arm search timing after a filter change. */
+        this.timeSet = Date.now();
+
+        if (Array.isArray(config.filters) && config.filters.length) {
+            this._applyFilterCriteria(this._normalizeFilterSpecList(config.filters), false);
+        } else {
+            this._syncLabelFiltersFromCriteria();
+        }
+        this.timeSet = Date.now();
+    }
+
+    /**
+     * Normalize one entry from JSON into either a lowercase label string or a plain object rule.
+     * @param {unknown} item
+     * @returns {string|object|null}
+     */
+    _normalizeOneFilterSpec(item) {
+        if (item == null) return null;
+        if (typeof item === "string") {
+            const s = item.trim().toLowerCase();
+            return s.length ? s : null;
+        }
+        if (typeof item === "number" && Number.isFinite(item)) {
+            return String(item).trim().toLowerCase() || null;
+        }
+        if (typeof item === "object" && !Array.isArray(item)) {
+            return { ...item };
+        }
+        return null;
+    }
+
+    _normalizeFilterSpecList(list) {
+        if (!Array.isArray(list)) return [];
+        const out = [];
+        for (const item of list) {
+            const n = this._normalizeOneFilterSpec(item);
+            if (n != null) out.push(n);
+        }
+        return out;
+    }
+
+    /** `this.filters` = label strings only (backward compat, GUI, addFilter). */
+    _syncLabelFiltersFromCriteria() {
+        const labels = [];
+        for (const c of this.filterCriteria) {
+            if (typeof c === "string") {
+                labels.push(c);
+                continue;
+            }
+            if (c && typeof c === "object") {
+                const t = String(c.type || c.kind || "").toLowerCase();
+                if (c.label != null) labels.push(String(c.label).trim().toLowerCase());
+                else if (c.class != null) labels.push(String(c.class).trim().toLowerCase());
+                else if (t === "label" && c.value != null) labels.push(String(c.value).trim().toLowerCase());
+            }
+        }
+        this.filters = [...new Set(labels.filter(Boolean))];
+    }
+
+    _applyFilterCriteria(criteria, bumpTime = true) {
+        this.filterCriteria = criteria;
+        this._syncLabelFiltersFromCriteria();
+        if (this._criteriaWantsLastCenter()) {
+            const model = this._getFeedModel();
+            if (model && typeof model.makeCenterObject === "function") {
+                model.makeCenterObject();
+            } else {
+                const fallback =
+                    this.robot?.getAiModelByType?.("computervision") ||
+                    this.robot?.getAiModelByName?.("computervision");
+                if (fallback && typeof fallback.makeCenterObject === "function") {
+                    fallback.makeCenterObject();
+                }
+            }
+        }
+        if (this._filterInput) {
+            this._filterInput.value = this._formatFiltersForTextInput();
+        }
+        if (bumpTime) this.timeSet = Date.now();
+    }
+
+    _criteriaWantsLastCenter() {
+        return this.filterCriteria.some(
+            (c) =>
+                (typeof c === "string" && c === "lastcenter") ||
+                (c &&
+                    typeof c === "object" &&
+                    String(c.type || c.kind || "").toLowerCase() === "lastcenter")
+        );
+    }
+
+    _formatFiltersForTextInput() {
+        if (!this.filterCriteria.length) return "";
+        const allStrings = this.filterCriteria.every((x) => typeof x === "string");
+        if (allStrings) return this.filterCriteria.join(", ");
+        return JSON.stringify(this.filterCriteria);
+    }
+
+    /**
+     * Set filter criteria in one argument: comma-separated string, array of strings, array of mixed strings/objects, or one object.
+     * @param {string|string[]|object|null|undefined} spec
+     */
+    setFilters(spec) {
+        if (spec == null) {
+            this._applyFilterCriteria([]);
+            return;
+        }
+        if (typeof spec === "string") {
+            const parts = String(spec)
+                .split(",")
+                .map((v) => v.trim().toLowerCase())
+                .filter((v) => v.length > 0);
+            this._applyFilterCriteria(parts);
+            return;
+        }
+        if (Array.isArray(spec)) {
+            this._applyFilterCriteria(this._normalizeFilterSpecList(spec));
+            return;
+        }
+        if (typeof spec === "object") {
+            const one = this._normalizeOneFilterSpec(spec);
+            this._applyFilterCriteria(one ? [one] : []);
+            return;
+        }
+        this._applyFilterCriteria([]);
+    }
+
+    setFiltersFromString(text) {
+        this.setFilters(text);
     }
 
     addFilter(filter) {
-        const next = String(filter || "").trim().toLowerCase();
-        if (!next || this.filters.includes(next)) return;
-        this.filters.push(next);
+        const next = this._normalizeOneFilterSpec(filter);
+        if (!next) return;
+        if (typeof next === "string" && this.filterCriteria.includes(next)) return;
+        this.filterCriteria.push(next);
+        this._syncLabelFiltersFromCriteria();
+        if (this._criteriaWantsLastCenter()) {
+            const model = this._getFeedModel();
+            if (model && typeof model.makeCenterObject === "function") model.makeCenterObject();
+        }
+        if (this._filterInput) this._filterInput.value = this._formatFiltersForTextInput();
+        this.timeSet = Date.now();
     }
 
     removeFilter(filter) {
-        const next = String(filter || "").trim().toLowerCase();
-        this.filters = this.filters.filter((f) => f !== next);
+        const key = String(filter || "").trim().toLowerCase();
+        if (!key) return;
+        this.filterCriteria = this.filterCriteria.filter((c) => {
+            if (typeof c === "string") return c !== key;
+            if (c && typeof c === "object") {
+                const lab =
+                    c.label != null
+                        ? String(c.label).trim().toLowerCase()
+                        : c.class != null
+                          ? String(c.class).trim().toLowerCase()
+                          : c.value != null && String(c.type || "").toLowerCase() === "label"
+                            ? String(c.value).trim().toLowerCase()
+                            : null;
+                return lab !== key;
+            }
+            return true;
+        });
+        this._syncLabelFiltersFromCriteria();
+        if (this._filterInput) this._filterInput.value = this._formatFiltersForTextInput();
+        this.timeSet = Date.now();
     }
 
     getResult() {
@@ -53,29 +210,6 @@ class ObjectFilter {
             if (Number.isFinite(feedHz) && feedHz > 0) return feedHz;
         }
         return 1;
-    }
-
-    setFiltersFromString(text) {
-        this.filters = String(text || "")
-            .split(",")
-            .map((v) => v.trim().toLowerCase())
-            .filter((v) => v.length > 0);
-        if (this.filters.includes("lastcenter")) {
-            const model = this._getFeedModel();
-            if (model && typeof model.makeCenterObject === "function") {
-                model.makeCenterObject();
-            } else {
-                const fallback =
-                    this.robot?.getAiModelByType?.("computervision") ||
-                    this.robot?.getAiModelByName?.("computervision");
-                if (fallback && typeof fallback.makeCenterObject === "function") {
-                    fallback.makeCenterObject();
-                }
-            }
-        }
-        if (this._filterInput) {
-            this._filterInput.value = this.filters.join(", ");
-        }
     }
 
     setMinScore(value) {
@@ -130,7 +264,70 @@ class ObjectFilter {
                 return Math.abs(aCx - centerX) - Math.abs(bCx - centerX);
             })[0];
         }
-        return detections.slice().sort((a, b) => (b.bbox[2] * b.bbox[3]) - (a.bbox[2] * a.bbox[3]))[0];
+        return detections.slice().sort((a, b) => b.bbox[2] * b.bbox[3] - a.bbox[2] * a.bbox[3])[0];
+    }
+
+    /**
+     * Axis-aligned rectangles [x,y,w,h] intersect (pixel space).
+     */
+    _bboxIntersects(a, b) {
+        const [ax, ay, aw, ah] = a;
+        const [bx, by, bw, bh] = b;
+        return !(ax + aw < bx || ax > bx + bw || ay + ah < by || ay > by + bh);
+    }
+
+    _objectCriterionMatches(detection, c, frameWidth, frameHeight) {
+        if (!c || typeof c !== "object") return false;
+        const cls = String(detection.class || "").toLowerCase();
+        const t = String(c.type || c.kind || "").toLowerCase();
+
+        if (t === "lastcenter") return false;
+
+        if (t === "label" && c.value != null) {
+            return cls === String(c.value).trim().toLowerCase();
+        }
+        if (c.label != null) {
+            return cls === String(c.label).trim().toLowerCase();
+        }
+        if (c.class != null) {
+            return cls === String(c.class).trim().toLowerCase();
+        }
+
+        if (t === "bbox") {
+            const [dx, dy, dw, dh] = detection.bbox;
+            const x = Number(c.x);
+            const y = Number(c.y);
+            const w = Number(c.width ?? c.w);
+            const h = Number(c.height ?? c.h);
+            if (![x, y, w, h].every(Number.isFinite)) return false;
+            return this._bboxIntersects([dx, dy, dw, dh], [x, y, w, h]);
+        }
+
+        if (t === "color" || t === "colour") {
+            return false;
+        }
+
+        if (Array.isArray(c.values) && c.values.length) {
+            const set = new Set(c.values.map((v) => String(v || "").trim().toLowerCase()).filter(Boolean));
+            return set.has(cls);
+        }
+
+        return false;
+    }
+
+    _detectionMatchesCriteria(d, frameWidth, frameHeight) {
+        if (!this.filterCriteria.length) return true;
+        const cls = String(d.class || "").toLowerCase();
+        for (const c of this.filterCriteria) {
+            if (typeof c === "string") {
+                if (cls === c) return true;
+                continue;
+            }
+            if (typeof c === "object" && c && this._objectCriterionMatches(d, c, frameWidth, frameHeight)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     filter() {
@@ -140,13 +337,13 @@ class ObjectFilter {
             return;
         }
         const detections = feedModel.getLatestDetections();
-        const filtered = detections.filter((d) => {
-            const scoreOk = Number(d.score) >= this.minScore;
-            const filterOk = !this.filters.length || this.filters.includes(String(d.class || "").toLowerCase());
-            return scoreOk && filterOk;
-        });
         const frameSize = typeof feedModel.getFrameSize === "function" ? feedModel.getFrameSize() : null;
         const frameWidth = Number(frameSize?.width) || 640;
+        const frameHeight = Number(frameSize?.height) || 480;
+        const filtered = detections.filter((d) => {
+            const scoreOk = Number(d.score) >= this.minScore;
+            return scoreOk && this._detectionMatchesCriteria(d, frameWidth, frameHeight);
+        });
         const picked = this._pickDetection(filtered, frameWidth);
         if (!picked) {
             this.result = null;
@@ -155,9 +352,9 @@ class ObjectFilter {
         const [x, y, width, height] = picked.bbox;
         const centerX = x + width / 2;
         const centerY = y + height / 2;
-        const normalizedXRaw = (((centerX / frameWidth) * 2) - 1);
+        const normalizedXRaw = (centerX / frameWidth) * 2 - 1;
         const normalizedX = Number((this.invertX ? -normalizedXRaw : normalizedXRaw).toFixed(4));
-        const pixelOffsetRaw = centerX - (frameWidth / 2);
+        const pixelOffsetRaw = centerX - frameWidth / 2;
         const pixelOffsetX = Number((this.invertX ? -pixelOffsetRaw : pixelOffsetRaw).toFixed(2));
         const outputX = this.outputRange === "pixels" ? pixelOffsetX : normalizedX;
         this.result = {
@@ -174,16 +371,21 @@ class ObjectFilter {
 
     _renderOutput() {
         if (!this._outputEl) return;
-        this._outputEl.textContent = JSON.stringify({
-            objectFilter: this.name,
-            feed: this.dataFeed,
-            filters: this.filters,
-            minScore: this.minScore,
-            strategy: this.strategy,
-            outputRange: this.outputRange,
-            invertX: this.invertX,
-            result: this.result
-        }, null, 2);
+        this._outputEl.textContent = JSON.stringify(
+            {
+                objectFilter: this.name,
+                feed: this.dataFeed,
+                filters: this.filters,
+                filterCriteria: this.filterCriteria,
+                minScore: this.minScore,
+                strategy: this.strategy,
+                outputRange: this.outputRange,
+                invertX: this.invertX,
+                result: this.result
+            },
+            null,
+            2
+        );
     }
 
     _tick() {
@@ -254,12 +456,28 @@ class ObjectFilter {
         toggleBtn.addEventListener("click", () => this.setEnabled(!this.enabled));
 
         const filtersLabel = document.createElement("label");
-        filtersLabel.textContent = "Filters (comma separated labels)";
+        filtersLabel.textContent = "Filters (comma-separated labels, or JSON array)";
         const filtersInput = document.createElement("input");
         filtersInput.type = "text";
-        filtersInput.value = this.filters.join(", ");
-        filtersInput.placeholder = "cup, bottle";
-        filtersInput.addEventListener("change", () => this.setFiltersFromString(filtersInput.value));
+        filtersInput.value = this._formatFiltersForTextInput();
+        filtersInput.placeholder = "cup, bottle or [\"cup\",\"bottle\"]";
+        filtersInput.addEventListener("change", () => {
+            const raw = String(filtersInput.value || "").trim();
+            if (!raw) {
+                this.setFilters([]);
+                return;
+            }
+            if (raw.startsWith("[")) {
+                try {
+                    const parsed = JSON.parse(raw);
+                    this.setFilters(parsed);
+                } catch {
+                    this.setFiltersFromString(raw);
+                }
+            } else {
+                this.setFiltersFromString(raw);
+            }
+        });
 
         const scoreLabel = document.createElement("label");
         scoreLabel.textContent = "Minimum score (0-1)";
