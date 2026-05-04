@@ -6,7 +6,8 @@ class RobotStrategies {
     static strategyList() {
         return [
             { id: "trackWithoutSearch", label: "Track only (PID on)" },
-            { id: "search360AndTrack", label: "Search 360° then track" }
+            { id: "search360AndTrack", label: "Search 360° then track" },
+            { id: "manual", label: "Manual (PID off, joystick)" }
         ];
     }
 
@@ -28,6 +29,7 @@ class RobotStrategies {
         this._timer = null;
         this._busy = false;
         this._strategySelect = null;
+        this._searchPanYawInput = null;
         this._statusEl = null;
         this._exceededSearchNotificationSent = false;
         /** ms epoch when the exceeded-search agent message was sent; null if not sent this cycle. */
@@ -104,6 +106,16 @@ class RobotStrategies {
         this._setStage(
             "Tracking only",
             "Yaw PID stays on. No pan / long-search cycle in this mode."
+        );
+    }
+
+    /** Yaw PID off every tick so joystick / inputs are not overwritten by automation. */
+    manual() {
+        const yawPid = this._getYawPid();
+        if (yawPid) yawPid.setEnabled(false);
+        this._setStage(
+            "Manual control",
+            "Yaw PID is off. Use the joystick — this strategy does not set yaw or re-enable PID."
         );
     }
 
@@ -296,6 +308,38 @@ class RobotStrategies {
         select.value = this.selectedStrategy;
         select.addEventListener("change", () => this.setStrategy(select.value));
 
+        const panWrap = document.createElement("div");
+        panWrap.style.marginTop = "10px";
+        const panLabel = document.createElement("label");
+        panLabel.style.display = "block";
+        panLabel.textContent = "Search pan yaw (360° search phase)";
+        const panInput = document.createElement("input");
+        panInput.type = "number";
+        panInput.step = "0.005";
+        panInput.min = "-1";
+        panInput.max = "1";
+        panInput.value = String(this.searchPanYaw);
+        panInput.style.marginTop = "4px";
+        panInput.style.width = "100%";
+        panInput.style.boxSizing = "border-box";
+        const panHint = document.createElement("p");
+        panHint.className = "muted";
+        panHint.style.margin = "4px 0 0 0";
+        panHint.textContent =
+            "Constant yaw speed while searching (no target). Ignored in track-only and manual modes.";
+        const applyPanYaw = () => {
+            const v = Number(panInput.value);
+            if (Number.isFinite(v)) {
+                this.searchPanYaw = Math.max(-1, Math.min(1, v));
+                panInput.value = String(this.searchPanYaw);
+            }
+        };
+        panInput.addEventListener("change", applyPanYaw);
+        panInput.addEventListener("blur", applyPanYaw);
+        panWrap.appendChild(panLabel);
+        panWrap.appendChild(panInput);
+        panWrap.appendChild(panHint);
+
         const status = document.createElement("p");
         status.className = "muted";
         status.textContent = `Strategy: ${this.selectedStrategy} @ ${this.frequencyHz} Hz`;
@@ -326,6 +370,7 @@ class RobotStrategies {
         wrap.appendChild(freqNote);
         wrap.appendChild(label);
         wrap.appendChild(select);
+        wrap.appendChild(panWrap);
         wrap.appendChild(status);
         wrap.appendChild(stageHeading);
         wrap.appendChild(stageTitle);
@@ -335,6 +380,7 @@ class RobotStrategies {
         container.appendChild(wrap);
 
         this._strategySelect = select;
+        this._searchPanYawInput = panInput;
         this._statusEl = status;
         this._exceededNotifyUiEl = noticeEl;
         this._stageTitleEl = stageTitle;
