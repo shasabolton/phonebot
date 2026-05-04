@@ -10,8 +10,10 @@ class SpeechToTextAiModel {
         this.silenceMs = this._extractSilenceMs(config.terminator, config.silenceMs);
         this.maxRecordMs = Number.isFinite(config.maxRecordMs) ? Math.max(3000, Math.round(config.maxRecordMs)) : 25000;
         this.sttEngine = "browser-webspeech";
-        /** When true, capture mic to blob; if browser transcript is empty, call agent API transcription (no chat context), then run normal speech→agent pipeline. */
-        this.agentTranscribeFallback = !!config.agentTranscribeFallback;
+        /** When true, capture mic to blob; if browser transcript is empty, call agent API transcription (no chat context), then run normal speech→agent pipeline. Default on unless config sets false. */
+        this.agentTranscribeFallback = Object.prototype.hasOwnProperty.call(config, "agentTranscribeFallback")
+            ? !!config.agentTranscribeFallback
+            : true;
         /** Ignore wake for this long after TTS stops; laptops often still echo / deliver late transcripts. */
         this.postTtsWakeGuardMs = Number.isFinite(config.postTtsWakeGuardMs)
             ? Math.max(0, Math.round(config.postTtsWakeGuardMs))

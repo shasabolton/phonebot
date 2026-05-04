@@ -47,8 +47,7 @@ The "message" field is limited to at most 100 words.
 
 Here is your current state
 {state}
-
-Your first task is to find a human. 
+ 
 Respond now with your actions. In this first message, introduce yourself and explain your understanding of how use your actions to either track or search for an unseen object.
 
 

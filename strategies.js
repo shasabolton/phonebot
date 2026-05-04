@@ -22,6 +22,8 @@ class RobotStrategies {
         this.panSearchGraceMs = Number.isFinite(panG) ? panG : 20000;
         /** After panSearchGraceMs from last find, hold yaw at 0 this long (and send filter hint once) before re-arming _lastFindTime. */
         this.changeFilterGraceMs = Number.isFinite(c.changeFilterGraceMs) ? c.changeFilterGraceMs : 20000;
+        /** If true, search360AndTrack may call the agent when the filter target is missing too long; default off. */
+        this.letAgentChangeFilter = !!c.letAgentChangeFilter;
         const validIds = new Set(RobotStrategies.strategyList().map((s) => s.id));
         const want = String(c.defaultStrategy || "trackWithoutSearch").trim();
         this.selectedStrategy = validIds.has(want) ? want : "trackWithoutSearch";
@@ -30,6 +32,7 @@ class RobotStrategies {
         this._busy = false;
         this._strategySelect = null;
         this._searchPanYawInput = null;
+        this._letAgentChangeFilterInput = null;
         this._statusEl = null;
         this._exceededSearchNotificationSent = false;
         /** ms epoch when the exceeded-search agent message was sent; null if not sent this cycle. */
@@ -188,40 +191,47 @@ class RobotStrategies {
             yawPid.setEnabled(true);//PID will prevent panning while you message the agent.
             if (yawInput) yawInput.setValue(0);
             if (!this._exceededSearchNotificationSent && !this._exceededSearchNotifyPending) {
-                const ai = this.robot.agentInterface;
-                const msg = this._exceededSearchNotifyMessage();
-                if (ai && typeof ai.submitPromptWithRobotState === "function") {
-                    this._exceededSearchNotifyPending = true;
-                    void ai
-                        .submitPromptWithRobotState(msg, {
-                            contextLabel: "Search strategy (360° track)",
-                            speechTranscriber: "strategy"
-                        })
-                        .then((ok) => {
-                            this._exceededSearchNotifyPending = false;
-                            if (ok) {
-                                this._exceededSearchNotificationSent = true;
-                                this._exceededSearchMessageSentAt = Date.now();
-                                this._renderExceededSearchNotice();
-                            }
-                        })
-                        .catch((err) => {
-                            this._exceededSearchNotifyPending = false;
-                            console.error("Strategy → agent notify failed:", err);
-                        });
-                } else {
+                if (!this.letAgentChangeFilter) {
                     this._exceededSearchNotificationSent = true;
                     this._exceededSearchMessageSentAt = Date.now();
-                    this._renderExceededSearchNotice();
+                } else {
+                    const ai = this.robot.agentInterface;
+                    const msg = this._exceededSearchNotifyMessage();
+                    if (ai && typeof ai.submitPromptWithRobotState === "function") {
+                        this._exceededSearchNotifyPending = true;
+                        void ai
+                            .submitPromptWithRobotState(msg, {
+                                contextLabel: "Search strategy (360° track)",
+                                speechTranscriber: "strategy"
+                            })
+                            .then((ok) => {
+                                this._exceededSearchNotifyPending = false;
+                                if (ok) {
+                                    this._exceededSearchNotificationSent = true;
+                                    this._exceededSearchMessageSentAt = Date.now();
+                                    this._renderExceededSearchNotice();
+                                }
+                            })
+                            .catch((err) => {
+                                this._exceededSearchNotifyPending = false;
+                                console.error("Strategy → agent notify failed:", err);
+                            });
+                    } else {
+                        this._exceededSearchNotificationSent = true;
+                        this._exceededSearchMessageSentAt = Date.now();
+                        this._renderExceededSearchNotice();
+                    }
                 }
             }
             const left = notifyHoldEnd - since;
-            const extra =
-                this._exceededSearchNotifyPending
-                    ? "Sending notice to agent… "
-                    : this._exceededSearchNotificationSent
-                      ? "Notice sent — pick a new filter or wait for timeout. "
-                      : "";
+            let extra = "";
+            if (!this.letAgentChangeFilter && this._exceededSearchNotificationSent) {
+                extra = "Agent filter hint disabled — ";
+            } else if (this._exceededSearchNotifyPending) {
+                extra = "Sending notice to agent… ";
+            } else if (this._exceededSearchNotificationSent) {
+                extra = "Notice sent — pick a new filter or wait for timeout. ";
+            }
             this._setStage(
                 "Waiting for new filter",
                 `${extra}${this._formatRemaining(left)} left in this phase (then cycle re-arms).`
@@ -340,6 +350,27 @@ class RobotStrategies {
         panWrap.appendChild(panInput);
         panWrap.appendChild(panHint);
 
+        const agentFilterWrap = document.createElement("label");
+        agentFilterWrap.style.display = "flex";
+        agentFilterWrap.style.alignItems = "center";
+        agentFilterWrap.style.gap = "8px";
+        agentFilterWrap.style.marginTop = "10px";
+        const agentFilterCb = document.createElement("input");
+        agentFilterCb.type = "checkbox";
+        agentFilterCb.checked = this.letAgentChangeFilter;
+        agentFilterCb.addEventListener("change", () => {
+            this.letAgentChangeFilter = !!agentFilterCb.checked;
+        });
+        agentFilterWrap.appendChild(agentFilterCb);
+        agentFilterWrap.appendChild(
+            document.createTextNode("Let agent change filter (360° search — notify chat when target missing too long)")
+        );
+        const agentFilterHint = document.createElement("p");
+        agentFilterHint.className = "muted";
+        agentFilterHint.style.margin = "4px 0 0 0";
+        agentFilterHint.textContent =
+            "When off, no agent message is sent during the long-search phase; the hold timer still runs before the cycle resets.";
+
         const status = document.createElement("p");
         status.className = "muted";
         status.textContent = `Strategy: ${this.selectedStrategy} @ ${this.frequencyHz} Hz`;
@@ -371,6 +402,8 @@ class RobotStrategies {
         wrap.appendChild(label);
         wrap.appendChild(select);
         wrap.appendChild(panWrap);
+        wrap.appendChild(agentFilterWrap);
+        wrap.appendChild(agentFilterHint);
         wrap.appendChild(status);
         wrap.appendChild(stageHeading);
         wrap.appendChild(stageTitle);
@@ -381,6 +414,7 @@ class RobotStrategies {
 
         this._strategySelect = select;
         this._searchPanYawInput = panInput;
+        this._letAgentChangeFilterInput = agentFilterCb;
         this._statusEl = status;
         this._exceededNotifyUiEl = noticeEl;
         this._stageTitleEl = stageTitle;

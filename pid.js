@@ -71,6 +71,19 @@ class PID {
         this._renderOutput(this._resolveFeedbackValue());
     }
 
+    /** Apply goal from the UI field when it is a finite number; otherwise restore the field from `this.goal`. */
+    _applyGoalFromInput() {
+        if (!this._goalInput) return;
+        const parsed = Number(this._goalInput.value);
+        if (Number.isFinite(parsed)) {
+            this.goal = parsed;
+            this._goalInput.value = String(this.goal);
+            this._renderOutput(this._resolveFeedbackValue());
+        } else {
+            this._goalInput.value = String(this.goal);
+        }
+    }
+
     _renderOutput(feedbackValue = null) {
         if (!this._outputEl) return;
         this._outputEl.textContent = JSON.stringify({
@@ -188,14 +201,32 @@ class PID {
         toggleBtn.textContent = "Off";
         toggleBtn.addEventListener("click", () => this.setEnabled(!this.enabled));
 
-        const goalLabel = document.createElement("label");
-        goalLabel.textContent = "Goal";
+        const goalField = document.createElement("label");
+        goalField.style.display = "block";
+        goalField.style.marginTop = "4px";
+        const goalCaption = document.createElement("span");
+        goalCaption.textContent = "Goal (setpoint, same units as feedback)";
+        goalCaption.style.display = "block";
+        goalCaption.style.fontSize = "0.9em";
+        goalCaption.style.color = "#555";
+        goalCaption.style.marginBottom = "4px";
         const goalInput = document.createElement("input");
         goalInput.type = "number";
         goalInput.step = "any";
+        goalInput.style.width = "100%";
+        goalInput.style.boxSizing = "border-box";
         goalInput.value = String(this.goal);
-        goalInput.addEventListener("change", () => this.setGoal(goalInput.value));
-        goalInput.addEventListener("blur", () => this.setGoal(goalInput.value));
+        goalInput.addEventListener("input", () => {
+            const parsed = Number(goalInput.value);
+            if (Number.isFinite(parsed)) {
+                this.goal = parsed;
+                this._renderOutput(this._resolveFeedbackValue());
+            }
+        });
+        goalInput.addEventListener("change", () => this._applyGoalFromInput());
+        goalInput.addEventListener("blur", () => this._applyGoalFromInput());
+        goalField.appendChild(goalCaption);
+        goalField.appendChild(goalInput);
 
         const kpLabel = document.createElement("label");
         kpLabel.textContent = "Kp";
@@ -231,8 +262,7 @@ class PID {
 
         wrap.appendChild(title);
         wrap.appendChild(toggleBtn);
-        wrap.appendChild(goalLabel);
-        wrap.appendChild(goalInput);
+        wrap.appendChild(goalField);
         wrap.appendChild(kpLabel);
         wrap.appendChild(kpInput);
         wrap.appendChild(kiLabel);

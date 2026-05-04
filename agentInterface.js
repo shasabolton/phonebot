@@ -39,7 +39,6 @@ class AgentInterface {
         this._historyEl = null;
         this._showFullSpeechPrompt = false;
         this._fullSpeechPromptInput = null;
-        this._openingPromptAutoScheduled = false;
         this._agentEnabled = true;
         this._sendInProgress = false;
         this._agentPowerBtn = null;
@@ -332,151 +331,6 @@ class AgentInterface {
             .replace(/\{\{ACTIONS-EXAMPLES\}\}/g, this._buildActionExamplesFromRobotConfig());
     }
 
-    /**
-     * Wait until a camera video element has non-zero dimensions (user may need to allow permission / tap Start).
-     * @param {number} maxMs
-     * @returns {Promise<boolean>}
-     */
-    async _waitForCameraVideoReady(maxMs) {
-        const cam = this.robot?.sensors?.find((s) => typeof s.getVideoElement === "function");
-        if (!cam) return true;
-        const videoEl = () => cam.getVideoElement?.();
-        const ok = () => {
-            const v = videoEl();
-            return !!(v && v.videoWidth > 0 && v.videoHeight > 0);
-        };
-        if (ok()) return true;
-        return new Promise((resolve) => {
-            const deadline = Date.now() + maxMs;
-            const v = videoEl();
-            const tick = () => {
-                if (!this._containerEl) {
-                    cleanup();
-                    resolve(false);
-                    return;
-                }
-                if (ok()) {
-                    cleanup();
-                    resolve(true);
-                    return;
-                }
-                if (Date.now() >= deadline) {
-                    cleanup();
-                    resolve(false);
-                }
-            };
-            const onVid = () => tick();
-            const cleanup = () => {
-                clearInterval(iv);
-                if (v) {
-                    v.removeEventListener("loadeddata", onVid);
-                    v.removeEventListener("playing", onVid);
-                }
-            };
-            if (v) {
-                v.addEventListener("loadeddata", onVid);
-                v.addEventListener("playing", onVid);
-            }
-            const iv = setInterval(tick, 200);
-        });
-    }
-
-    async _runOpeningPromptAuto() {
-        if (!this._agentEnabled) return;
-        if (!this._promptInput || !this._sendBtn) return;
-        const agent = this.getSelectedAgent();
-        if (!agent) return;
-        this._apiKey = this._keyInput?.value?.trim() || "";
-        if (!this._apiKey) {
-            if (this._statusEl) {
-                this._statusEl.textContent = "Enter an API key to send the opening prompt automatically.";
-                this._statusEl.className = "warn";
-            }
-            return;
-        }
-        const spec = this._getIntroductionTemplateSpec();
-        const path = spec && String(spec.path || "").trim();
-        if (!path) return;
-        let templateText = "";
-        try {
-            const res = await fetch(path, { cache: "no-store" });
-            if (!res.ok) return;
-            templateText = await res.text();
-        } catch (_) {
-            return;
-        }
-        const content = this.buildInstructionPromptFromTemplate(templateText);
-        this._promptInput.value = content;
-        if (this._rememberInput) this._rememberKey = !!this._rememberInput.checked;
-        if (agent) this._persistKeyForAgent(agent.name, this._apiKey);
-
-        this._sendInProgress = true;
-        this._syncSendButtonState();
-        if (this._statusEl) {
-            this._statusEl.textContent = "Sending opening prompt…";
-            this._statusEl.className = "muted";
-        }
-        this.messageHistory.push({ role: "user", text: content, at: new Date().toISOString() });
-        this._renderHistory();
-        try {
-            const reply = await this.sendPrompt(content);
-            this.messageHistory.push({
-                role: "assistant",
-                text: reply.contentText || "",
-                at: new Date().toISOString()
-            });
-            await this._maybeRunActionFromResponse(reply.contentText, reply.rawText);
-            this._renderHistory();
-            if (this._voiceOn) {
-                this._speak(this._extractSpokenText(reply.contentText, reply.rawText));
-            }
-            if (this._statusEl) {
-                this._statusEl.textContent = "Opening prompt sent.";
-                this._statusEl.className = "ok";
-            }
-        } catch (err) {
-            console.error("Opening prompt auto-send error:", err);
-            if (this.messageHistory.length && this.messageHistory[this.messageHistory.length - 1]?.role === "user") {
-                this.messageHistory.pop();
-            }
-            this._renderHistory();
-            if (this._statusEl) {
-                this._statusEl.textContent = err?.message || "Opening prompt failed.";
-                this._statusEl.className = "error";
-            }
-        } finally {
-            this._sendInProgress = false;
-            this._syncSendButtonState();
-        }
-    }
-
-    async _scheduleOpeningPromptAfterInit() {
-        if (this._openingPromptAutoScheduled) return;
-        this._openingPromptAutoScheduled = true;
-        try {
-            const hasCam = this.robot?.sensors?.some((s) => typeof s.getVideoElement === "function");
-            if (hasCam) {
-                const ready = await this._waitForCameraVideoReady(120000);
-                if (!ready) {
-                    if (this._statusEl) {
-                        this._statusEl.textContent =
-                            "Start the camera to send the opening prompt automatically (or press Send after the camera is on).";
-                        this._statusEl.className = "warn";
-                    }
-                    return;
-                }
-            } else {
-                await new Promise((r) => setTimeout(r, 800));
-            }
-            await new Promise((r) => setTimeout(r, 400));
-            if (this._agentEnabled) {
-                await this._runOpeningPromptAuto();
-            }
-        } catch (err) {
-            console.error("Opening prompt schedule error:", err);
-        }
-    }
-
     _getIntroductionTemplateSpec() {
         const list = Array.isArray(this.promptTemplates) ? this.promptTemplates : [];
         return (
@@ -485,6 +339,21 @@ class AgentInterface {
             list.find((t) => String(t?.path || "").trim()) ||
             null
         );
+    }
+
+    /** Loads the introduction template for the first voice turn (no startup send). */
+    async _fetchIntroductionPromptContent() {
+        const spec = this._getIntroductionTemplateSpec();
+        const path = spec && String(spec.path || "").trim();
+        if (!path) return "";
+        try {
+            const res = await fetch(path, { cache: "no-store" });
+            if (!res.ok) return "";
+            const templateText = await res.text();
+            return this.buildInstructionPromptFromTemplate(templateText);
+        } catch (_) {
+            return "";
+        }
     }
 
     async _hydrateDefaultPromptFromIntroductionTemplate() {
@@ -828,7 +697,12 @@ class AgentInterface {
                     role: m.role,
                     content: String(m.text || "")
                 }));
-            const conversationMessages = [...prior, { role: "user", content: fullUserContent }];
+            const introPrefix = [];
+            if (!prior.length) {
+                const intro = await this._fetchIntroductionPromptContent();
+                if (intro) introPrefix.push({ role: "user", content: intro });
+            }
+            const conversationMessages = [...introPrefix, ...prior, { role: "user", content: fullUserContent }];
             this.messageHistory.push({
                 role: "user",
                 text,
@@ -923,7 +797,7 @@ class AgentInterface {
     /**
      * Used by external modules (e.g. SpeechToText model) to submit a prompt.
      * @param {string} text
-     * @param {{ fromSpeech?: boolean, speechTranscriber?: string }} [options] If fromSpeech, sends full user/assistant history plus current state and this transcript (introduction is not re-fetched). speechTranscriber labels the STT path for status/TTS hints.
+     * @param {{ fromSpeech?: boolean, speechTranscriber?: string }} [options] If fromSpeech, sends full user/assistant history plus current state and this transcript (introduction template is prepended on the first voice turn only). speechTranscriber labels the STT path for status/TTS hints.
      * @returns {Promise<boolean>}
      */
     async submitPrompt(text, options = {}) {
@@ -1270,7 +1144,6 @@ class AgentInterface {
         this._syncKeyFromSelection();
         this._syncSendButtonState();
         void this._hydrateDefaultPromptFromIntroductionTemplate();
-        void this._scheduleOpeningPromptAfterInit();
     }
 
     destroy() {

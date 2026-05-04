@@ -72,8 +72,7 @@ window.ROBOTS_DATA = {
                     trigger: "hey robot",
                     confirmation: "listening",
                     terminator: "not talking 2000ms",
-                    stt: "browser-webspeech",
-                    agentTranscribeFallback: false
+                    stt: "browser-webspeech"
                 }
             ],
             targets: [],
@@ -82,7 +81,7 @@ window.ROBOTS_DATA = {
                     name: "mainObjectFilter",
                     on: true,
                     dataFeed: "computervision",
-                    filters: ["cup"],
+                    filters: ["person", "human", "face", "head"],
                     minScore: 0.1,
                     strategy: "largest",
                     outputRange: "minusOneToOne",
@@ -101,14 +100,25 @@ window.ROBOTS_DATA = {
                     ki: 0.0,
                     kd: -0.01,
                     frequencyHz: "feedback"
+                },
+                {
+                    name: "size object tracker PID",
+                    on: true,
+                    feedback: "mainObjectFilter.result.bbox.width",
+                    controlInput: "speed",
+                    goal: 0.8,
+                    kp: -0.05,
+                    ki: 0.0,
+                    kd: -0.01,
+                    frequencyHz: "feedback"
                 }
             ],
             strategies: {
                 frequencyHz: 10,
                 defaultStrategy: "trackWithoutSearch",
                 searchPanYaw: 0.05,
-                frameSearchGraceMs: 5000,
-                panSearchGraceMs: 10000,
+                frameSearchGraceMs: 10000,
+                panSearchGraceMs: 30000,
                 changeFilterGraceMs: 10000
             },
             stateMachine: [
