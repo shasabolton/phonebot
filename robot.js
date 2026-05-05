@@ -451,6 +451,46 @@ class Robot {
         return parts.join(",");
     }
 
+    /**
+     * For Run Controls stop: briefly disable PIDs, drive control inputs + mixing to neutral/home,
+     * then caller should transmit `message` and call `restorePids()`.
+     * @returns {{ message: string, restorePids: () => void }}
+     */
+    syncActuatorsToHomeForTransmit() {
+        const pidSnapshots = Array.isArray(this.pidControllers)
+            ? this.pidControllers.map((p) => !!(p && p.enabled))
+            : [];
+        for (const p of this.pidControllers || []) {
+            if (p && typeof p.setEnabled === "function") p.setEnabled(false);
+        }
+        for (const j of this.joysticks || []) {
+            if (j && typeof j.home === "function") j.home();
+        }
+        for (const input of Object.values(this.controlInputs || {})) {
+            if (input && typeof input.setValue === "function") input.setValue(input.home);
+        }
+        if (this.actuatorMixes && this.actuatorMixes.length) {
+            this.applyMixing();
+        } else {
+            for (const a of this.actuators || []) {
+                if (a?.type === "servo" && typeof a.setMicroseconds === "function" && typeof a.getHomeMicroseconds === "function") {
+                    a.setMicroseconds(a.getHomeMicroseconds());
+                }
+            }
+        }
+        const message = this.buildActionsMessage();
+        const restorePids = () => {
+            const list = this.pidControllers || [];
+            for (let i = 0; i < list.length; i++) {
+                const p = list[i];
+                if (pidSnapshots[i] && p && typeof p.setEnabled === "function") {
+                    p.setEnabled(true);
+                }
+            }
+        };
+        return { message, restorePids };
+    }
+
     _toTitleCase(input) {
         return String(input || "")
             .replace(/[_-]+/g, " ")

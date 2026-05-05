@@ -83,10 +83,45 @@ class App {
         if (this.stopBtn) this.stopBtn.disabled = !this.loopIntervalId;
     }
 
-    onStop() {
+    async onStop() {
         this.stopLoop();
         if (this.startBtn) this.startBtn.textContent = 'Start';
-        this.setControlStatus('Stopped. You can switch device/transmitter.', 'muted');
+
+        let restorePids = null;
+        if (this.robot && typeof this.robot.syncActuatorsToHomeForTransmit === 'function') {
+            this.setControlStatus('Sending actuators home…', 'muted');
+            const { message, restorePids: restore } = this.robot.syncActuatorsToHomeForTransmit();
+            restorePids = restore;
+            try {
+                if (
+                    message &&
+                    this.transmitterInstance &&
+                    typeof this.transmitterInstance.transmitAction === 'function'
+                ) {
+                    const res = await this.transmitterInstance.transmitAction(message);
+                    if (!res.ok) {
+                        this.setControlStatus(
+                            `Stopped; home pulse failed (${res.status || 'network'}): ${res.body || ''}`,
+                            'warn'
+                        );
+                    } else {
+                        this.setControlStatus('Stopped after home. You can switch device/transmitter.', 'muted');
+                    }
+                } else if (message) {
+                    this.setControlStatus('Stopped (no transmitter); actuators set to home in UI only.', 'muted');
+                } else {
+                    this.setControlStatus('Stopped.', 'muted');
+                }
+            } catch (err) {
+                console.error('onStop home transmit', err);
+                this.setControlStatus(`Stopped; home send error: ${err?.message || err}`, 'warn');
+            } finally {
+                if (typeof restorePids === 'function') restorePids();
+            }
+        } else {
+            this.setControlStatus('Stopped. You can switch device/transmitter.', 'muted');
+        }
+
         this.updateStartButtonState();
     }
 
@@ -214,7 +249,9 @@ class App {
         stopBtn.type = 'button';
         stopBtn.textContent = 'Stop';
         stopBtn.disabled = true;
-        stopBtn.addEventListener('click', () => this.onStop());
+        stopBtn.addEventListener('click', () => {
+            void this.onStop();
+        });
         this.stopBtn = stopBtn;
 
         const controlStatus = document.createElement('p');

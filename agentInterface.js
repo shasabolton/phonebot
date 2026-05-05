@@ -5,6 +5,8 @@
 class AgentInterface {
     static STORAGE_KEY_PREFIX = "phonebot.agent.";
     static STORAGE_REMEMBER = "phonebot.agent.remember";
+    /** Sentinel `<select>` value: insert live state JSON (not a file path). */
+    static TEMPLATE_VALUE_STATE = "__robot_state_json__";
 
     /**
      * @param {Robot} robot
@@ -374,6 +376,10 @@ class AgentInterface {
     async _buildPromptFromSelectedTemplate() {
         const selected = this._templateSelect?.value || "";
         if (!selected) throw new Error("Select a prompt template.");
+        if (selected === AgentInterface.TEMPLATE_VALUE_STATE) {
+            const block = this._buildCurrentStateForIntroductionPrompt();
+            return `Current state (json):\n${block || "[]"}`;
+        }
         const res = await fetch(selected, { cache: "no-store" });
         if (!res.ok) throw new Error(`Failed to load template: ${selected}`);
         const templateText = await res.text();
@@ -1070,6 +1076,11 @@ class AgentInterface {
                 templateSelect.appendChild(opt);
             });
         }
+        const stateOpt = document.createElement("option");
+        stateOpt.value = AgentInterface.TEMPLATE_VALUE_STATE;
+        stateOpt.textContent = "Current state (JSON)";
+        templateSelect.appendChild(stateOpt);
+
         const insertTemplateBtn = document.createElement("button");
         insertTemplateBtn.type = "button";
         insertTemplateBtn.textContent = "Insert template";
