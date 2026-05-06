@@ -3,6 +3,7 @@
  * - Internal high-frequency COCO detections for geometry.
  * - Lower-frequency Groq updates for stronger labels.
  * - Optical-flow between informer updates to reduce flicker.
+ * - Optional tap-to-track ORB cluster (fixed fingerprint, homography updates).
  */
 class ComputerVisionAiModel {
     static _cvLoadPromise = null;
@@ -90,6 +91,18 @@ class ComputerVisionAiModel {
             hsvSatMin: Number.isFinite(config.hsvSatMin) ? config.hsvSatMin : 40,
             hsvValMin: Number.isFinite(config.hsvValMin) ? config.hsvValMin : 40
         };
+        this.orbTapBoxFrac = Number.isFinite(config.orbTapBoxFrac) ? config.orbTapBoxFrac : 0.25;
+        this.orbTapBoxFrac = Math.max(0.05, Math.min(0.8, this.orbTapBoxFrac));
+        this.orbMinMatches = Number.isFinite(config.orbMinMatches) ? Math.round(config.orbMinMatches) : 12;
+        this.orbMinMatches = Math.max(4, Math.min(200, this.orbMinMatches));
+        this.orbRatioTest = Number.isFinite(config.orbRatioTest) ? config.orbRatioTest : 0.78;
+        this.orbRatioTest = Math.max(0.4, Math.min(0.95, this.orbRatioTest));
+        this.orbRansacThresholdPx = Number.isFinite(config.orbRansacThresholdPx) ? config.orbRansacThresholdPx : 4;
+        this.orbRansacThresholdPx = Math.max(1, Math.min(20, this.orbRansacThresholdPx));
+        this.orbMinInlierRatio = Number.isFinite(config.orbMinInlierRatio) ? config.orbMinInlierRatio : 0.45;
+        this.orbMinInlierRatio = Math.max(0.1, Math.min(1, this.orbMinInlierRatio));
+        this.orbFeatureCount = Number.isFinite(config.orbFeatureCount) ? Math.round(config.orbFeatureCount) : 500;
+        this.orbFeatureCount = Math.max(100, Math.min(2000, this.orbFeatureCount));
 
         this._timer = null;
         this._busy = false;
@@ -116,6 +129,8 @@ class ComputerVisionAiModel {
         this._makeCenterBtn = null;
         this._statusEl = null;
         this._outputEl = null;
+        this._framePointerTarget = null;
+        this._onFramePointerDown = (ev) => this._handleFramePointerDown(ev);
     }
 
     static _loadScript(src) {
@@ -501,10 +516,29 @@ class ComputerVisionAiModel {
             } catch (_) {}
             track.prevPts = null;
         }
+        if (track?.orbTemplateDesc) {
+            try {
+                track.orbTemplateDesc.delete();
+            } catch (_) {}
+            track.orbTemplateDesc = null;
+        }
     }
 
-    _releaseAllTrackPts() {
-        for (const t of this._tracks) this._releaseTrackMats(t);
+    _releaseAllTrackPts(releaseOrbTemplate = false) {
+        for (const t of this._tracks) {
+            if (t?.prevPts) {
+                try {
+                    t.prevPts.delete();
+                } catch (_) {}
+                t.prevPts = null;
+            }
+            if (releaseOrbTemplate && t?.orbTemplateDesc) {
+                try {
+                    t.orbTemplateDesc.delete();
+                } catch (_) {}
+                t.orbTemplateDesc = null;
+            }
+        }
     }
 
     _initTrackPoints(track, gray) {
@@ -539,6 +573,9 @@ class ComputerVisionAiModel {
         const criteria = new cv.TermCriteria(cv.TERM_CRITERIA_EPS | cv.TERM_CRITERIA_COUNT, 24, 0.03);
 
         for (const track of this._tracks) {
+            if (track?.trackerType === "orb") {
+                continue;
+            }
             const tickCount = Number.isFinite(track.flowTicks) ? track.flowTicks : 0;
             if (this.flowReinitIntervalFrames > 0 && tickCount > 0 && tickCount % this.flowReinitIntervalFrames === 0) {
                 track.needsReinit = true;
@@ -650,6 +687,281 @@ class ComputerVisionAiModel {
                 track.needsReinit = true;
                 track.noPointStreak = (track.noPointStreak || 0) + 1;
             }
+        }
+    }
+
+    _createOrbDetector() {
+        const cv = window.cv;
+        return new cv.ORB(
+            this.orbFeatureCount,
+            1.2,
+            8,
+            31,
+            0,
+            2,
+            cv.ORB_HARRIS_SCORE,
+            31,
+            20
+        );
+    }
+
+    _attachFramePointerHandler() {
+        const camera = this._getCameraSensor();
+        const frameEl = camera?.getFrameElement?.();
+        if (!frameEl) return;
+        if (this._framePointerTarget === frameEl) return;
+        this._detachFramePointerHandler();
+        frameEl.addEventListener("pointerdown", this._onFramePointerDown);
+        this._framePointerTarget = frameEl;
+    }
+
+    _detachFramePointerHandler() {
+        if (!this._framePointerTarget) return;
+        this._framePointerTarget.removeEventListener("pointerdown", this._onFramePointerDown);
+        this._framePointerTarget = null;
+    }
+
+    async _handleFramePointerDown(ev) {
+        if (!this.enabled || this._busy) return;
+        const camera = this._getCameraSensor();
+        const videoEl = camera?.getVideoElement?.();
+        if (!videoEl || !videoEl.videoWidth || !videoEl.videoHeight) return;
+        const rect = videoEl.getBoundingClientRect();
+        if (!rect.width || !rect.height) return;
+        const px = Number(ev.clientX);
+        const py = Number(ev.clientY);
+        if (!Number.isFinite(px) || !Number.isFinite(py)) return;
+        if (px < rect.left || py < rect.top || px > rect.right || py > rect.bottom) return;
+        const sx = videoEl.videoWidth / rect.width;
+        const sy = videoEl.videoHeight / rect.height;
+        const vx = (px - rect.left) * sx;
+        const vy = (py - rect.top) * sy;
+        await this.createOrbObjectAt(vx, vy);
+    }
+
+    async createOrbObjectAt(frameX, frameY) {
+        const camera = this._getCameraSensor();
+        const videoEl = camera?.getVideoElement?.();
+        if (!videoEl || !videoEl.videoWidth || !videoEl.videoHeight) {
+            if (this._statusEl) {
+                this._statusEl.textContent = "Cannot create ORB object: camera frame unavailable.";
+                this._statusEl.className = "error";
+            }
+            return false;
+        }
+        try {
+            await ComputerVisionAiModel._loadOpenCv();
+            const cv = window.cv;
+            let rgba = null;
+            let gray = null;
+            let roi = null;
+            let mask = null;
+            let orb = null;
+            let keypoints = null;
+            let desc = null;
+            try {
+                rgba = this._getFrameMat(videoEl);
+                if (!rgba || rgba.empty()) throw new Error("Frame capture failed.");
+                gray = new cv.Mat();
+                cv.cvtColor(rgba, gray, cv.COLOR_RGBA2GRAY);
+                const fw = gray.cols;
+                const fh = gray.rows;
+                const boxSize = Math.max(16, fw * this.orbTapBoxFrac);
+                const bbox = this._clampBbox([frameX - boxSize * 0.5, frameY - boxSize * 0.5, boxSize, boxSize], fw, fh);
+                const rx = Math.max(0, Math.floor(bbox[0]));
+                const ry = Math.max(0, Math.floor(bbox[1]));
+                const rw = Math.max(8, Math.min(fw - rx, Math.floor(bbox[2])));
+                const rh = Math.max(8, Math.min(fh - ry, Math.floor(bbox[3])));
+                const rect = new cv.Rect(rx, ry, rw, rh);
+                roi = gray.roi(rect);
+                mask = new cv.Mat();
+                orb = this._createOrbDetector();
+                keypoints = new cv.KeyPointVector();
+                desc = new cv.Mat();
+                orb.detectAndCompute(roi, mask, keypoints, desc, false);
+                if (desc.empty() || keypoints.size() < this.orbMinMatches) {
+                    throw new Error(`Not enough ORB features in touch box (${keypoints.size()}).`);
+                }
+                const templatePts = [];
+                for (let i = 0; i < keypoints.size(); i++) {
+                    const kp = keypoints.get(i);
+                    templatePts.push([kp.pt.x, kp.pt.y]);
+                }
+
+                const kept = [];
+                for (const t of this._tracks) {
+                    if (t?.manualId === "orbTouch") {
+                        this._releaseTrackMats(t);
+                        continue;
+                    }
+                    kept.push(t);
+                }
+                this._tracks = kept;
+                this._tracks.push({
+                    id: this._nextId++,
+                    manualId: "orbTouch",
+                    class: "orb",
+                    labelSource: "manual",
+                    score: 1,
+                    bbox: [rx, ry, rw, rh],
+                    anchorArea: this._bboxArea([rx, ry, rw, rh]),
+                    anchorW: Math.max(1, rw),
+                    anchorH: Math.max(1, rh),
+                    lockFromFeeds: true,
+                    trackerType: "orb",
+                    _forgetShrinkStreak: 0,
+                    flowTicks: 0,
+                    noPointStreak: 0,
+                    lastAnchorUpdateMs: Date.now(),
+                    filterParams: { ...this.filterParams },
+                    needsReinit: false,
+                    prevPts: null,
+                    orbTemplateSize: { width: rw, height: rh },
+                    orbTemplatePts: templatePts,
+                    orbTemplateDesc: desc.clone()
+                });
+                this._syncDetectionsFromTracks();
+                this._drawDetections(videoEl, this._detections);
+                this._renderResponseOutput();
+                if (this._statusEl) {
+                    this._statusEl.textContent = `Created ORB object at touch (${templatePts.length} keypoints).`;
+                    this._statusEl.className = "muted";
+                }
+                return true;
+            } finally {
+                if (keypoints) keypoints.delete();
+                if (desc) desc.delete();
+                if (orb) orb.delete();
+                if (mask) mask.delete();
+                if (roi) roi.delete();
+                if (gray) gray.delete();
+                if (rgba) rgba.delete();
+            }
+        } catch (err) {
+            if (this._statusEl) {
+                this._statusEl.textContent = `ORB create failed: ${err?.message || "unknown error"}`;
+                this._statusEl.className = "error";
+            }
+            return false;
+        }
+    }
+
+    _updateOrbTracks(gray) {
+        const cv = window.cv;
+        const orbTracks = this._tracks.filter((t) => t?.trackerType === "orb" && t?.orbTemplateDesc && t?.orbTemplatePts);
+        if (!orbTracks.length) return;
+        const orb = this._createOrbDetector();
+        const sceneKps = new cv.KeyPointVector();
+        const sceneDesc = new cv.Mat();
+        const sceneMask = new cv.Mat();
+        try {
+            orb.detectAndCompute(gray, sceneMask, sceneKps, sceneDesc, false);
+            if (sceneDesc.empty() || sceneKps.size() < this.orbMinMatches) {
+                for (const track of orbTracks) track.noPointStreak = (track.noPointStreak || 0) + 1;
+                return;
+            }
+            const matcher = new cv.BFMatcher(cv.NORM_HAMMING, false);
+            try {
+                for (const track of orbTracks) {
+                    const templateDesc = track.orbTemplateDesc;
+                    const templatePts = track.orbTemplatePts;
+                    if (!templateDesc || templateDesc.empty() || !Array.isArray(templatePts) || !templatePts.length) {
+                        track.noPointStreak = (track.noPointStreak || 0) + 1;
+                        continue;
+                    }
+                    const knn = new cv.DMatchVectorVector();
+                    try {
+                        matcher.knnMatch(templateDesc, sceneDesc, knn, 2);
+                        const srcFlat = [];
+                        const dstFlat = [];
+                        let goodMatchCount = 0;
+                        for (let i = 0; i < knn.size(); i++) {
+                            const pair = knn.get(i);
+                            if (pair.size() < 2) {
+                                pair.delete();
+                                continue;
+                            }
+                            const m0 = pair.get(0);
+                            const m1 = pair.get(1);
+                            const ratioOk = m0.distance < this.orbRatioTest * m1.distance;
+                            if (ratioOk) {
+                                const qIdx = m0.queryIdx;
+                                const tIdx = m0.trainIdx;
+                                if (qIdx >= 0 && qIdx < templatePts.length && tIdx >= 0 && tIdx < sceneKps.size()) {
+                                    const spt = templatePts[qIdx];
+                                    const dkp = sceneKps.get(tIdx);
+                                    srcFlat.push(spt[0], spt[1]);
+                                    dstFlat.push(dkp.pt.x, dkp.pt.y);
+                                    goodMatchCount++;
+                                }
+                            }
+                            m0.delete();
+                            m1.delete();
+                            pair.delete();
+                        }
+                        if (goodMatchCount < this.orbMinMatches) {
+                            track.noPointStreak = (track.noPointStreak || 0) + 1;
+                            continue;
+                        }
+                        const srcMat = cv.matFromArray(goodMatchCount, 1, cv.CV_32FC2, srcFlat);
+                        const dstMat = cv.matFromArray(goodMatchCount, 1, cv.CV_32FC2, dstFlat);
+                        const inlierMask = new cv.Mat();
+                        let H = null;
+                        let corners = null;
+                        let proj = null;
+                        try {
+                            H = cv.findHomography(srcMat, dstMat, cv.RANSAC, this.orbRansacThresholdPx, inlierMask);
+                            if (!H || H.empty()) {
+                                track.noPointStreak = (track.noPointStreak || 0) + 1;
+                                continue;
+                            }
+                            const inliers = inlierMask.data ? inlierMask.data.reduce((acc, v) => acc + (v ? 1 : 0), 0) : 0;
+                            const inlierRatio = goodMatchCount > 0 ? inliers / goodMatchCount : 0;
+                            if (inliers < this.orbMinMatches || inlierRatio < this.orbMinInlierRatio) {
+                                track.noPointStreak = (track.noPointStreak || 0) + 1;
+                                continue;
+                            }
+                            const tw = Math.max(1, track.orbTemplateSize?.width || track.anchorW || 1);
+                            const th = Math.max(1, track.orbTemplateSize?.height || track.anchorH || 1);
+                            corners = cv.matFromArray(4, 1, cv.CV_32FC2, [0, 0, tw, 0, tw, th, 0, th]);
+                            proj = new cv.Mat();
+                            cv.perspectiveTransform(corners, proj, H);
+                            const pts = proj.data32F;
+                            if (!pts || pts.length < 8) {
+                                track.noPointStreak = (track.noPointStreak || 0) + 1;
+                                continue;
+                            }
+                            const xs = [pts[0], pts[2], pts[4], pts[6]];
+                            const ys = [pts[1], pts[3], pts[5], pts[7]];
+                            const minX = Math.min(...xs);
+                            const maxX = Math.max(...xs);
+                            const minY = Math.min(...ys);
+                            const maxY = Math.max(...ys);
+                            const nextBox = this._clampBbox([minX, minY, Math.max(8, maxX - minX), Math.max(8, maxY - minY)], gray.cols, gray.rows);
+                            track.bbox = nextBox;
+                            track.score = Math.max(0, Math.min(1, inlierRatio));
+                            track.noPointStreak = 0;
+                            track.lastAnchorUpdateMs = Date.now();
+                        } finally {
+                            if (proj) proj.delete();
+                            if (corners) corners.delete();
+                            if (H) H.delete();
+                            inlierMask.delete();
+                            srcMat.delete();
+                            dstMat.delete();
+                        }
+                    } finally {
+                        knn.delete();
+                    }
+                }
+            } finally {
+                matcher.delete();
+            }
+        } finally {
+            sceneMask.delete();
+            sceneDesc.delete();
+            sceneKps.delete();
+            orb.delete();
         }
     }
 
@@ -815,6 +1127,7 @@ class ComputerVisionAiModel {
             } else {
                 for (const t of this._tracks) t.needsReinit = true;
             }
+            this._updateOrbTracks(gray);
 
             this._pruneForgottenTracks(gray.cols, gray.rows, now);
 
@@ -888,6 +1201,7 @@ class ComputerVisionAiModel {
             try {
                 await ComputerVisionAiModel._loadOpenCv();
                 await ComputerVisionAiModel._loadCocoModel();
+                this._attachFramePointerHandler();
                 this._startLoop();
             } catch (err) {
                 this.enabled = false;
@@ -899,13 +1213,14 @@ class ComputerVisionAiModel {
             }
         } else {
             this._stopLoop();
+            this._detachFramePointerHandler();
             if (this._prevGray) {
                 try {
                     this._prevGray.delete();
                 } catch (_) {}
                 this._prevGray = null;
             }
-            this._releaseAllTrackPts();
+            this._releaseAllTrackPts(true);
             this._tracks = [];
             this._detections = [];
             this._clearOverlay();
@@ -1181,13 +1496,14 @@ class ComputerVisionAiModel {
 
     destroy() {
         this._stopLoop();
+        this._detachFramePointerHandler();
         if (this._prevGray) {
             try {
                 this._prevGray.delete();
             } catch (_) {}
             this._prevGray = null;
         }
-        this._releaseAllTrackPts();
+        this._releaseAllTrackPts(true);
         this._tracks = [];
         this._clearOverlay();
         if (this._overlayCanvas && this._overlayCanvas.parentNode) {
