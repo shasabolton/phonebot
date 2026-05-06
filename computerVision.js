@@ -130,8 +130,10 @@ class ComputerVisionAiModel {
         this._makeCenterOrbBtn = null;
         this._statusEl = null;
         this._outputEl = null;
+        this._statusHoldUntilMs = 0;
         this._framePointerTarget = null;
         this._onFramePointerDown = (ev) => this._handleFramePointerDown(ev);
+        this._lastTapMarker = null;
     }
 
     static _loadScript(src) {
@@ -542,6 +544,17 @@ class ComputerVisionAiModel {
         }
     }
 
+    _setStatus(text, className = "muted", holdMs = 0) {
+        if (!this._statusEl) return;
+        this._statusEl.textContent = String(text || "");
+        this._statusEl.className = className;
+        this._statusHoldUntilMs = holdMs > 0 ? Date.now() + holdMs : 0;
+    }
+
+    _canAutoUpdateStatus() {
+        return !this._statusHoldUntilMs || Date.now() >= this._statusHoldUntilMs;
+    }
+
     _initTrackPoints(track, gray) {
         const cv = window.cv;
         this._releaseTrackMats(track);
@@ -693,17 +706,49 @@ class ComputerVisionAiModel {
 
     _createOrbDetector() {
         const cv = window.cv;
-        return new cv.ORB(
-            this.orbFeatureCount,
-            1.2,
-            8,
-            31,
-            0,
-            2,
-            cv.ORB_HARRIS_SCORE,
-            31,
-            20
-        );
+        const scoreTypeHarris =
+            Number.isFinite(cv?.ORB_HARRIS_SCORE) ? cv.ORB_HARRIS_SCORE : 0;
+        if (cv?.ORB?.create && typeof cv.ORB.create === "function") {
+            try {
+                return cv.ORB.create(
+                    this.orbFeatureCount,
+                    1.2,
+                    8,
+                    31,
+                    0,
+                    2,
+                    scoreTypeHarris,
+                    31,
+                    20
+                );
+            } catch (_) {
+                // Some OpenCV.js builds fail when ScoreType bindings are unavailable.
+                return cv.ORB.create(this.orbFeatureCount);
+            }
+        }
+        try {
+            return new cv.ORB(
+                this.orbFeatureCount,
+                1.2,
+                8,
+                31,
+                0,
+                2,
+                scoreTypeHarris,
+                31,
+                20
+            );
+        } catch (_) {
+            return new cv.ORB(this.orbFeatureCount);
+        }
+    }
+
+    _createOrbMatcher() {
+        const cv = window.cv;
+        if (cv?.BFMatcher?.create && typeof cv.BFMatcher.create === "function") {
+            return cv.BFMatcher.create(cv.NORM_HAMMING, false);
+        }
+        return new cv.BFMatcher(cv.NORM_HAMMING, false);
     }
 
     _attachFramePointerHandler() {
@@ -737,6 +782,7 @@ class ComputerVisionAiModel {
         const sy = videoEl.videoHeight / rect.height;
         const vx = (px - rect.left) * sx;
         const vy = (py - rect.top) * sy;
+        this._lastTapMarker = { x: vx, y: vy, untilMs: Date.now() + 1000 };
         if (ev && typeof ev.preventDefault === "function") ev.preventDefault();
         await this.createOrbObjectAt(vx, vy);
     }
@@ -745,10 +791,7 @@ class ComputerVisionAiModel {
         const camera = this._getCameraSensor();
         const videoEl = camera?.getVideoElement?.();
         if (!videoEl || !videoEl.videoWidth || !videoEl.videoHeight) {
-            if (this._statusEl) {
-                this._statusEl.textContent = "Cannot create ORB object: camera frame unavailable.";
-                this._statusEl.className = "error";
-            }
+            this._setStatus("Cannot create ORB object: camera frame unavailable.", "error", 3500);
             return false;
         }
         try {
@@ -825,10 +868,7 @@ class ComputerVisionAiModel {
                 this._syncDetectionsFromTracks();
                 this._drawDetections(videoEl, this._detections);
                 this._renderResponseOutput();
-                if (this._statusEl) {
-                    this._statusEl.textContent = `Created ORB object at touch (${templatePts.length} keypoints).`;
-                    this._statusEl.className = "muted";
-                }
+                this._setStatus(`Created ORB object at touch (${templatePts.length} keypoints).`, "muted", 2200);
                 return true;
             } finally {
                 if (keypoints) keypoints.delete();
@@ -840,10 +880,8 @@ class ComputerVisionAiModel {
                 if (rgba) rgba.delete();
             }
         } catch (err) {
-            if (this._statusEl) {
-                this._statusEl.textContent = `ORB create failed: ${err?.message || "unknown error"}`;
-                this._statusEl.className = "error";
-            }
+            console.error("ORB create failed:", err);
+            this._setStatus(`ORB create failed: ${err?.message || "unknown error"}`, "error", 5000);
             return false;
         }
     }
@@ -862,7 +900,7 @@ class ComputerVisionAiModel {
                 for (const track of orbTracks) track.noPointStreak = (track.noPointStreak || 0) + 1;
                 return;
             }
-            const matcher = new cv.BFMatcher(cv.NORM_HAMMING, false);
+            const matcher = this._createOrbMatcher();
             try {
                 for (const track of orbTracks) {
                     const templateDesc = track.orbTemplateDesc;
@@ -880,7 +918,7 @@ class ComputerVisionAiModel {
                         for (let i = 0; i < knn.size(); i++) {
                             const pair = knn.get(i);
                             if (pair.size() < 2) {
-                                pair.delete();
+                                if (pair && typeof pair.delete === "function") pair.delete();
                                 continue;
                             }
                             const m0 = pair.get(0);
@@ -897,9 +935,9 @@ class ComputerVisionAiModel {
                                     goodMatchCount++;
                                 }
                             }
-                            m0.delete();
-                            m1.delete();
-                            pair.delete();
+                            if (m0 && typeof m0.delete === "function") m0.delete();
+                            if (m1 && typeof m1.delete === "function") m1.delete();
+                            if (pair && typeof pair.delete === "function") pair.delete();
                         }
                         if (goodMatchCount < this.orbMinMatches) {
                             track.noPointStreak = (track.noPointStreak || 0) + 1;
@@ -1015,6 +1053,22 @@ class ComputerVisionAiModel {
             ctx.fillStyle = "#ff3333";
             ctx.fillText(label, bx + 4, Math.max(0, by - labelH + 2));
         });
+
+        const marker = this._lastTapMarker;
+        if (marker && marker.untilMs > Date.now()) {
+            const mx = marker.x * widthScale;
+            const my = marker.y * heightScale;
+            ctx.strokeStyle = "#33ccff";
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(mx - 10, my);
+            ctx.lineTo(mx + 10, my);
+            ctx.moveTo(mx, my - 10);
+            ctx.lineTo(mx, my + 10);
+            ctx.stroke();
+        } else if (marker) {
+            this._lastTapMarker = null;
+        }
     }
 
     _syncDetectionsFromTracks() {
@@ -1149,16 +1203,14 @@ class ComputerVisionAiModel {
             this._drawDetections(videoEl, this._detections);
             this._renderResponseOutput();
 
-            if (this._statusEl) {
+            if (this._statusEl && this._canAutoUpdateStatus()) {
                 const groqLabels = this._tracks.filter((t) => t.labelSource === "groq").length;
-                this._statusEl.textContent = `Tracking ${this._detections.length} object(s) at ${this.frequencyHz} Hz (COCO geometry + Groq labels: ${groqLabels})`;
-                this._statusEl.className = "muted";
+                this._setStatus(`Tracking ${this._detections.length} object(s) at ${this.frequencyHz} Hz (COCO geometry + Groq labels: ${groqLabels})`, "muted");
             }
         } catch (err) {
             console.error("ComputerVision error:", err);
             if (this._statusEl) {
-                this._statusEl.textContent = `ComputerVision error: ${err?.message || "unknown error"}`;
-                this._statusEl.className = "error";
+                this._setStatus(`ComputerVision error: ${err?.message || "unknown error"}`, "error", 4000);
             }
         } finally {
             if (gray) {
