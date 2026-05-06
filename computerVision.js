@@ -816,7 +816,57 @@ class ComputerVisionAiModel {
         const vy = (py - rect.top) * sy;
         this._lastTapMarker = { x: vx, y: vy, untilMs: Date.now() + 1000 };
         if (ev && typeof ev.preventDefault === "function") ev.preventDefault();
-        await this.createOrbObjectAt(vx, vy);
+        await this.createFlowObjectAt(vx, vy);
+    }
+
+    async createFlowObjectAt(frameX, frameY) {
+        const camera = this._getCameraSensor();
+        const videoEl = camera?.getVideoElement?.();
+        const fw = (videoEl?.videoWidth | 0) || (this._frameWidth | 0);
+        const fh = (videoEl?.videoHeight | 0) || (this._frameHeight | 0);
+        if (!fw || !fh) {
+            this._setStatus("Cannot create flow object: camera frame unavailable.", "error", 3500);
+            return false;
+        }
+
+        const boxSize = Math.max(16, fw * this.orbTapBoxFrac);
+        const bbox = this._clampBbox([frameX - boxSize * 0.5, frameY - boxSize * 0.5, boxSize, boxSize], fw, fh);
+
+        const kept = [];
+        for (const t of this._tracks) {
+            if (t?.manualId === "flowTouch") {
+                this._releaseTrackMats(t);
+                continue;
+            }
+            kept.push(t);
+        }
+        this._tracks = kept;
+
+        this._tracks.push({
+            id: this._nextId++,
+            manualId: "flowTouch",
+            class: "flow",
+            labelSource: "manual",
+            score: 1,
+            bbox,
+            anchorArea: this._bboxArea(bbox),
+            anchorW: Math.max(1, bbox[2]),
+            anchorH: Math.max(1, bbox[3]),
+            lockFromFeeds: true,
+            _forgetShrinkStreak: 0,
+            flowTicks: 0,
+            noPointStreak: 0,
+            lastAnchorUpdateMs: Date.now(),
+            filterParams: { ...this.filterParams },
+            needsReinit: true,
+            prevPts: null
+        });
+
+        this._syncDetectionsFromTracks();
+        if (videoEl) this._drawDetections(videoEl, this._detections);
+        this._renderResponseOutput();
+        this._setStatus("Created flow-tracked object at touch (label/id: flow).", "muted", 2200);
+        return true;
     }
 
     async createOrbObjectAt(frameX, frameY) {
@@ -1687,10 +1737,14 @@ class ComputerVisionAiModel {
 
         const makeCenterOrbBtn = document.createElement("button");
         makeCenterOrbBtn.type = "button";
-        makeCenterOrbBtn.textContent = "Make Center ORB";
+        makeCenterOrbBtn.textContent = "Make Center Flow";
         makeCenterOrbBtn.addEventListener("click", async () => {
             makeCenterOrbBtn.disabled = true;
-            await this.makeCenterOrbObject();
+            const camera = this._getCameraSensor();
+            const videoEl = camera?.getVideoElement?.();
+            const fw = (videoEl?.videoWidth | 0) || (this._frameWidth | 0);
+            const fh = (videoEl?.videoHeight | 0) || (this._frameHeight | 0);
+            if (fw && fh) await this.createFlowObjectAt(fw * 0.5, fh * 0.5);
             makeCenterOrbBtn.disabled = false;
         });
 
