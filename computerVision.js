@@ -127,6 +127,7 @@ class ComputerVisionAiModel {
         this._cocoRefreshInput = null;
         this._forgetStaleInput = null;
         this._makeCenterBtn = null;
+        this._makeCenterOrbBtn = null;
         this._statusEl = null;
         this._outputEl = null;
         this._framePointerTarget = null;
@@ -722,7 +723,7 @@ class ComputerVisionAiModel {
     }
 
     async _handleFramePointerDown(ev) {
-        if (!this.enabled || this._busy) return;
+        if (!this.enabled) return;
         const camera = this._getCameraSensor();
         const videoEl = camera?.getVideoElement?.();
         if (!videoEl || !videoEl.videoWidth || !videoEl.videoHeight) return;
@@ -736,6 +737,7 @@ class ComputerVisionAiModel {
         const sy = videoEl.videoHeight / rect.height;
         const vx = (px - rect.left) * sx;
         const vy = (py - rect.top) * sy;
+        if (ev && typeof ev.preventDefault === "function") ev.preventDefault();
         await this.createOrbObjectAt(vx, vy);
     }
 
@@ -1333,6 +1335,21 @@ class ComputerVisionAiModel {
         return true;
     }
 
+    async makeCenterOrbObject() {
+        const camera = this._getCameraSensor();
+        const videoEl = camera?.getVideoElement?.();
+        const fw = (videoEl?.videoWidth | 0) || (this._frameWidth | 0);
+        const fh = (videoEl?.videoHeight | 0) || (this._frameHeight | 0);
+        if (!fw || !fh) {
+            if (this._statusEl) {
+                this._statusEl.textContent = "Cannot create center ORB: camera frame unavailable.";
+                this._statusEl.className = "error";
+            }
+            return false;
+        }
+        return this.createOrbObjectAt(fw * 0.5, fh * 0.5);
+    }
+
     getFrequencyHz() {
         return this.frequencyHz;
     }
@@ -1452,6 +1469,15 @@ class ComputerVisionAiModel {
         makeCenterBtn.textContent = "Make Center Object";
         makeCenterBtn.addEventListener("click", () => this.makeCenterObject());
 
+        const makeCenterOrbBtn = document.createElement("button");
+        makeCenterOrbBtn.type = "button";
+        makeCenterOrbBtn.textContent = "Make Center ORB";
+        makeCenterOrbBtn.addEventListener("click", async () => {
+            makeCenterOrbBtn.disabled = true;
+            await this.makeCenterOrbObject();
+            makeCenterOrbBtn.disabled = false;
+        });
+
         const hint = document.createElement("p");
         hint.className = "muted";
         hint.textContent = `Uses internal COCO for bbox geometry (pixels) and "${this.groqFeedType}" for label updates; exported detections/results use bbox 0–1 (x,w vs width, y,h vs height). Groq can overwrite labels, COCO cannot overwrite Groq labels.`;
@@ -1476,6 +1502,7 @@ class ComputerVisionAiModel {
         controls.appendChild(forgetStaleLabel);
         controls.appendChild(forgetStaleInput);
         controls.appendChild(makeCenterBtn);
+        controls.appendChild(makeCenterOrbBtn);
         wrap.appendChild(title);
         wrap.appendChild(controls);
         wrap.appendChild(hint);
@@ -1490,6 +1517,7 @@ class ComputerVisionAiModel {
         this._cocoRefreshInput = cocoRefreshInput;
         this._forgetStaleInput = forgetStaleInput;
         this._makeCenterBtn = makeCenterBtn;
+        this._makeCenterOrbBtn = makeCenterOrbBtn;
         this._statusEl = status;
         this._outputEl = output;
     }
