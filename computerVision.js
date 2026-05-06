@@ -656,6 +656,7 @@ class ComputerVisionAiModel {
             const goodDx = [];
             const goodDy = [];
             const st = status.data || status.data8U;
+            const totalPts = Math.max(1, status.rows || 0);
             for (let i = 0; i < status.rows; i++) {
                 const ok = st ? st[i] : 0;
                 if (ok === 1) {
@@ -712,6 +713,41 @@ class ComputerVisionAiModel {
                 const medDy = this._median(goodDy);
                 const cx = prevCx + medDx;
                 const cy = prevCy + medDy;
+                if (track?.manualId === "flowTouch") {
+                    // Re-enable size dynamics for manual flow tracks, but only when LK confidence
+                    // is strong. Otherwise translate-only to avoid noisy shrink/grow.
+                    const goodPtRatio = goodX.length / totalPts;
+                    const minPtsForResize = Math.max(fp.minGoodPoints, 10);
+                    const minRatioForResize = 0.55;
+                    const allowResize =
+                        goodX.length >= minPtsForResize &&
+                        goodPtRatio >= minRatioForResize;
+                    if (allowResize) {
+                        const minW = prevW * (1 - this.flowMaxShrinkPerTick);
+                        const minH = prevH * (1 - this.flowMaxShrinkPerTick);
+                        const measuredW = Math.max(bw, minW);
+                        const measuredH = Math.max(bh, minH);
+                        const inertia = this.flowSizeInertia;
+                        const smoothW = prevW * inertia + measuredW * (1 - inertia);
+                        const smoothH = prevH * inertia + measuredH * (1 - inertia);
+                        const nextMinX = cx - smoothW * 0.5;
+                        const nextMinY = cy - smoothH * 0.5;
+                        track.bbox = this._capFlowBboxToAnchor(nextMinX, nextMinY, smoothW, smoothH, track, fw, fh);
+                    } else {
+                        const nextMinX = cx - prevW * 0.5;
+                        const nextMinY = cy - prevH * 0.5;
+                        track.bbox = this._clampBbox([nextMinX, nextMinY, prevW, prevH], fw, fh);
+                    }
+                    track.flowTicks = tickCount + 1;
+                    track.noPointStreak = 0;
+
+                    const flat = [];
+                    for (let i = 0; i < goodX.length; i++) {
+                        flat.push(goodX[i], goodY[i]);
+                    }
+                    track.prevPts = cv.matFromArray(flat.length / 2, 1, cv.CV_32FC2, flat);
+                    continue;
+                }
                 const minW = prevW * (1 - this.flowMaxShrinkPerTick);
                 const minH = prevH * (1 - this.flowMaxShrinkPerTick);
                 const measuredW = Math.max(bw, minW);
