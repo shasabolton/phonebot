@@ -148,6 +148,7 @@ class ComputerVisionAiModel {
         this._refreshInput = null;
         this._cocoRefreshInput = null;
         this._forgetStaleInput = null;
+        this._flowBboxPctLowInput = null;
         this._makeCenterBtn = null;
         this._makeCenterOrbBtn = null;
         this._statusEl = null;
@@ -1542,6 +1543,16 @@ class ComputerVisionAiModel {
         if (this._forgetStaleInput) this._forgetStaleInput.value = String(this.forgetStaleMs);
     }
 
+    setFlowBboxPctLow(nextValue) {
+        const parsed = Number(nextValue);
+        if (!Number.isFinite(parsed)) return;
+        this.flowBboxPctLow = Math.max(0, Math.min(0.45, parsed));
+        if (this.flowBboxPctHigh <= this.flowBboxPctLow) {
+            this.flowBboxPctHigh = Math.min(1, this.flowBboxPctLow + 0.5);
+        }
+        if (this._flowBboxPctLowInput) this._flowBboxPctLowInput.value = String(Number(this.flowBboxPctLow.toFixed(3)));
+    }
+
     makeCenterObject() {
         const camera = this._getCameraSensor();
         const videoEl = camera?.getVideoElement?.();
@@ -1730,6 +1741,17 @@ class ComputerVisionAiModel {
         forgetStaleInput.addEventListener("change", () => this.setForgetStaleMs(forgetStaleInput.value));
         forgetStaleInput.addEventListener("blur", () => this.setForgetStaleMs(forgetStaleInput.value));
 
+        const flowBboxPctLowLabel = document.createElement("label");
+        flowBboxPctLowLabel.textContent = "Flow bbox percentile low (shrink vs outliers; 0–0.45)";
+        const flowBboxPctLowInput = document.createElement("input");
+        flowBboxPctLowInput.type = "number";
+        flowBboxPctLowInput.min = "0";
+        flowBboxPctLowInput.max = "0.45";
+        flowBboxPctLowInput.step = "0.01";
+        flowBboxPctLowInput.value = String(Number(this.flowBboxPctLow.toFixed(3)));
+        flowBboxPctLowInput.addEventListener("change", () => this.setFlowBboxPctLow(flowBboxPctLowInput.value));
+        flowBboxPctLowInput.addEventListener("blur", () => this.setFlowBboxPctLow(flowBboxPctLowInput.value));
+
         const makeCenterBtn = document.createElement("button");
         makeCenterBtn.type = "button";
         makeCenterBtn.textContent = "Make Center Object";
@@ -1771,6 +1793,8 @@ class ComputerVisionAiModel {
         controls.appendChild(cocoRefreshInput);
         controls.appendChild(forgetStaleLabel);
         controls.appendChild(forgetStaleInput);
+        controls.appendChild(flowBboxPctLowLabel);
+        controls.appendChild(flowBboxPctLowInput);
         controls.appendChild(makeCenterBtn);
         controls.appendChild(makeCenterOrbBtn);
         wrap.appendChild(title);
@@ -1786,6 +1810,7 @@ class ComputerVisionAiModel {
         this._refreshInput = refreshInput;
         this._cocoRefreshInput = cocoRefreshInput;
         this._forgetStaleInput = forgetStaleInput;
+        this._flowBboxPctLowInput = flowBboxPctLowInput;
         this._makeCenterBtn = makeCenterBtn;
         this._makeCenterOrbBtn = makeCenterOrbBtn;
         this._statusEl = status;
