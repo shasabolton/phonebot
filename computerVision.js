@@ -103,6 +103,28 @@ class ComputerVisionAiModel {
         this.orbMinInlierRatio = Math.max(0.1, Math.min(1, this.orbMinInlierRatio));
         this.orbFeatureCount = Number.isFinite(config.orbFeatureCount) ? Math.round(config.orbFeatureCount) : 500;
         this.orbFeatureCount = Math.max(100, Math.min(2000, this.orbFeatureCount));
+        this.orbSearchMargin = Number.isFinite(config.orbSearchMargin) ? config.orbSearchMargin : 1.8;
+        this.orbSearchMargin = Math.max(1.05, Math.min(4, this.orbSearchMargin));
+        this.orbFullFrameAfterMisses = Number.isFinite(config.orbFullFrameAfterMisses)
+            ? Math.round(config.orbFullFrameAfterMisses)
+            : 10;
+        this.orbFullFrameAfterMisses = Math.max(0, Math.min(300, this.orbFullFrameAfterMisses));
+        this.orbMaxCenterJumpFrac = Number.isFinite(config.orbMaxCenterJumpFrac) ? config.orbMaxCenterJumpFrac : 0.25;
+        this.orbMaxCenterJumpFrac = Math.max(0.02, Math.min(0.9, this.orbMaxCenterJumpFrac));
+        this.orbAreaRatioMin = Number.isFinite(config.orbAreaRatioMin) ? config.orbAreaRatioMin : 0.4;
+        this.orbAreaRatioMin = Math.max(0.05, Math.min(1, this.orbAreaRatioMin));
+        this.orbAreaRatioMax = Number.isFinite(config.orbAreaRatioMax) ? config.orbAreaRatioMax : 2.8;
+        this.orbAreaRatioMax = Math.max(1, Math.min(20, this.orbAreaRatioMax));
+        this.orbAspectRatioJumpMax = Number.isFinite(config.orbAspectRatioJumpMax) ? config.orbAspectRatioJumpMax : 2.2;
+        this.orbAspectRatioJumpMax = Math.max(1.05, Math.min(10, this.orbAspectRatioJumpMax));
+        this.orbUpdateTemplateMinInlierRatio = Number.isFinite(config.orbUpdateTemplateMinInlierRatio)
+            ? config.orbUpdateTemplateMinInlierRatio
+            : 0.78;
+        this.orbUpdateTemplateMinInlierRatio = Math.max(0.2, Math.min(0.99, this.orbUpdateTemplateMinInlierRatio));
+        this.orbUpdateTemplateMinMatches = Number.isFinite(config.orbUpdateTemplateMinMatches)
+            ? Math.round(config.orbUpdateTemplateMinMatches)
+            : 28;
+        this.orbUpdateTemplateMinMatches = Math.max(6, Math.min(500, this.orbUpdateTemplateMinMatches));
 
         this._timer = null;
         this._busy = false;
@@ -340,6 +362,10 @@ class ComputerVisionAiModel {
         const absFloor = Math.max(900, frameArea * this.forgetMinFrameAreaFrac);
         const kept = [];
         for (const t of this._tracks) {
+            if (t?.trackerType === "orb") {
+                kept.push(t);
+                continue;
+            }
             const area = this._bboxArea(t.bbox);
             if (!t.anchorArea || t.anchorArea < 1) {
                 this._setTrackAnchorFromBbox(t, t.bbox);
@@ -524,6 +550,12 @@ class ComputerVisionAiModel {
                 track.orbTemplateDesc.delete();
             } catch (_) {}
             track.orbTemplateDesc = null;
+        }
+        if (track?.orbAdaptiveDesc) {
+            try {
+                track.orbAdaptiveDesc.delete();
+            } catch (_) {}
+            track.orbAdaptiveDesc = null;
         }
     }
 
@@ -891,116 +923,248 @@ class ComputerVisionAiModel {
         const orbTracks = this._tracks.filter((t) => t?.trackerType === "orb" && t?.orbTemplateDesc && t?.orbTemplatePts);
         if (!orbTracks.length) return;
         const orb = this._createOrbDetector();
-        const sceneKps = new cv.KeyPointVector();
-        const sceneDesc = new cv.Mat();
-        const sceneMask = new cv.Mat();
+        const matcher = this._createOrbMatcher();
         try {
-            orb.detectAndCompute(gray, sceneMask, sceneKps, sceneDesc, false);
-            if (sceneDesc.empty() || sceneKps.size() < this.orbMinMatches) {
-                for (const track of orbTracks) track.noPointStreak = (track.noPointStreak || 0) + 1;
-                return;
-            }
-            const matcher = this._createOrbMatcher();
-            try {
-                for (const track of orbTracks) {
-                    const templateDesc = track.orbTemplateDesc;
-                    const templatePts = track.orbTemplatePts;
-                    if (!templateDesc || templateDesc.empty() || !Array.isArray(templatePts) || !templatePts.length) {
+            for (const track of orbTracks) {
+                const prevBox = track.bbox;
+                const prevCx = prevBox[0] + prevBox[2] * 0.5;
+                const prevCy = prevBox[1] + prevBox[3] * 0.5;
+                const prevArea = Math.max(1, prevBox[2] * prevBox[3]);
+                const prevAspect = Math.max(1e-3, prevBox[2] / Math.max(1e-3, prevBox[3]));
+
+                const misses = Number.isFinite(track.orbMissStreak) ? track.orbMissStreak : 0;
+                const useFullFrame =
+                    this.orbFullFrameAfterMisses > 0 && misses >= this.orbFullFrameAfterMisses;
+                const margin = Math.max(1.05, this.orbSearchMargin);
+
+                const searchW = useFullFrame ? gray.cols : Math.max(32, prevBox[2] * margin);
+                const searchH = useFullFrame ? gray.rows : Math.max(32, prevBox[3] * margin);
+                const searchX = useFullFrame ? 0 : prevCx - searchW * 0.5;
+                const searchY = useFullFrame ? 0 : prevCy - searchH * 0.5;
+                const searchBox = this._clampBbox([searchX, searchY, searchW, searchH], gray.cols, gray.rows);
+
+                const rx = Math.max(0, Math.floor(searchBox[0]));
+                const ry = Math.max(0, Math.floor(searchBox[1]));
+                const rw = Math.max(8, Math.min(gray.cols - rx, Math.floor(searchBox[2])));
+                const rh = Math.max(8, Math.min(gray.rows - ry, Math.floor(searchBox[3])));
+
+                let roi = null;
+                let roiMask = null;
+                const sceneKps = new cv.KeyPointVector();
+                const sceneDesc = new cv.Mat();
+                try {
+                    roi = useFullFrame ? gray : gray.roi(new cv.Rect(rx, ry, rw, rh));
+                    roiMask = new cv.Mat();
+                    orb.detectAndCompute(roi, roiMask, sceneKps, sceneDesc, false);
+                    if (sceneDesc.empty() || sceneKps.size() < this.orbMinMatches) {
+                        track.orbMissStreak = misses + 1;
                         track.noPointStreak = (track.noPointStreak || 0) + 1;
                         continue;
                     }
-                    const knn = new cv.DMatchVectorVector();
-                    try {
-                        matcher.knnMatch(templateDesc, sceneDesc, knn, 2);
-                        const srcFlat = [];
-                        const dstFlat = [];
-                        let goodMatchCount = 0;
-                        for (let i = 0; i < knn.size(); i++) {
-                            const pair = knn.get(i);
-                            if (pair.size() < 2) {
-                                if (pair && typeof pair.delete === "function") pair.delete();
-                                continue;
-                            }
-                            const m0 = pair.get(0);
-                            const m1 = pair.get(1);
-                            const ratioOk = m0.distance < this.orbRatioTest * m1.distance;
-                            if (ratioOk) {
-                                const qIdx = m0.queryIdx;
-                                const tIdx = m0.trainIdx;
-                                if (qIdx >= 0 && qIdx < templatePts.length && tIdx >= 0 && tIdx < sceneKps.size()) {
-                                    const spt = templatePts[qIdx];
-                                    const dkp = sceneKps.get(tIdx);
-                                    srcFlat.push(spt[0], spt[1]);
-                                    dstFlat.push(dkp.pt.x, dkp.pt.y);
-                                    goodMatchCount++;
-                                }
-                            }
-                            if (m0 && typeof m0.delete === "function") m0.delete();
-                            if (m1 && typeof m1.delete === "function") m1.delete();
-                            if (pair && typeof pair.delete === "function") pair.delete();
-                        }
-                        if (goodMatchCount < this.orbMinMatches) {
-                            track.noPointStreak = (track.noPointStreak || 0) + 1;
-                            continue;
-                        }
-                        const srcMat = cv.matFromArray(goodMatchCount, 1, cv.CV_32FC2, srcFlat);
-                        const dstMat = cv.matFromArray(goodMatchCount, 1, cv.CV_32FC2, dstFlat);
-                        const inlierMask = new cv.Mat();
-                        let H = null;
-                        let corners = null;
-                        let proj = null;
+
+                    const templates = [];
+                    if (track.orbTemplateDesc && !track.orbTemplateDesc.empty() && Array.isArray(track.orbTemplatePts)) {
+                        templates.push({
+                            kind: "fixed",
+                            desc: track.orbTemplateDesc,
+                            pts: track.orbTemplatePts,
+                            size: track.orbTemplateSize || { width: prevBox[2], height: prevBox[3] }
+                        });
+                    }
+                    if (track.orbAdaptiveDesc && !track.orbAdaptiveDesc.empty() && Array.isArray(track.orbAdaptivePts)) {
+                        templates.push({
+                            kind: "adaptive",
+                            desc: track.orbAdaptiveDesc,
+                            pts: track.orbAdaptivePts,
+                            size: track.orbAdaptiveSize || track.orbTemplateSize || { width: prevBox[2], height: prevBox[3] }
+                        });
+                    }
+                    if (!templates.length) {
+                        track.orbMissStreak = misses + 1;
+                        track.noPointStreak = (track.noPointStreak || 0) + 1;
+                        continue;
+                    }
+
+                    let best = null;
+                    for (const tpl of templates) {
+                        const knn = new cv.DMatchVectorVector();
                         try {
-                            H = cv.findHomography(srcMat, dstMat, cv.RANSAC, this.orbRansacThresholdPx, inlierMask);
-                            if (!H || H.empty()) {
-                                track.noPointStreak = (track.noPointStreak || 0) + 1;
-                                continue;
+                            matcher.knnMatch(tpl.desc, sceneDesc, knn, 2);
+                            const srcFlat = [];
+                            const dstFlat = [];
+                            let goodMatchCount = 0;
+                            for (let i = 0; i < knn.size(); i++) {
+                                const pair = knn.get(i);
+                                if (pair.size() < 2) {
+                                    if (pair && typeof pair.delete === "function") pair.delete();
+                                    continue;
+                                }
+                                const m0 = pair.get(0);
+                                const m1 = pair.get(1);
+                                const ratioOk = m0.distance < this.orbRatioTest * m1.distance;
+                                if (ratioOk) {
+                                    const qIdx = m0.queryIdx;
+                                    const tIdx = m0.trainIdx;
+                                    if (qIdx >= 0 && qIdx < tpl.pts.length && tIdx >= 0 && tIdx < sceneKps.size()) {
+                                        const spt = tpl.pts[qIdx];
+                                        const dkp = sceneKps.get(tIdx);
+                                        const dx = dkp.pt.x + (useFullFrame ? 0 : rx);
+                                        const dy = dkp.pt.y + (useFullFrame ? 0 : ry);
+                                        srcFlat.push(spt[0], spt[1]);
+                                        dstFlat.push(dx, dy);
+                                        goodMatchCount++;
+                                    }
+                                }
+                                if (m0 && typeof m0.delete === "function") m0.delete();
+                                if (m1 && typeof m1.delete === "function") m1.delete();
+                                if (pair && typeof pair.delete === "function") pair.delete();
                             }
-                            const inliers = inlierMask.data ? inlierMask.data.reduce((acc, v) => acc + (v ? 1 : 0), 0) : 0;
-                            const inlierRatio = goodMatchCount > 0 ? inliers / goodMatchCount : 0;
-                            if (inliers < this.orbMinMatches || inlierRatio < this.orbMinInlierRatio) {
-                                track.noPointStreak = (track.noPointStreak || 0) + 1;
-                                continue;
+                            if (goodMatchCount < this.orbMinMatches) continue;
+
+                            const srcMat = cv.matFromArray(goodMatchCount, 1, cv.CV_32FC2, srcFlat);
+                            const dstMat = cv.matFromArray(goodMatchCount, 1, cv.CV_32FC2, dstFlat);
+                            const inlierMask = new cv.Mat();
+                            let H = null;
+                            let corners = null;
+                            let proj = null;
+                            try {
+                                H = cv.findHomography(srcMat, dstMat, cv.RANSAC, this.orbRansacThresholdPx, inlierMask);
+                                if (!H || H.empty()) continue;
+                                const inliers = inlierMask.data ? inlierMask.data.reduce((acc, v) => acc + (v ? 1 : 0), 0) : 0;
+                                const inlierRatio = goodMatchCount > 0 ? inliers / goodMatchCount : 0;
+                                if (inliers < this.orbMinMatches || inlierRatio < this.orbMinInlierRatio) continue;
+
+                                const tw = Math.max(1, tpl.size?.width || track.anchorW || 1);
+                                const th = Math.max(1, tpl.size?.height || track.anchorH || 1);
+                                corners = cv.matFromArray(4, 1, cv.CV_32FC2, [0, 0, tw, 0, tw, th, 0, th]);
+                                proj = new cv.Mat();
+                                cv.perspectiveTransform(corners, proj, H);
+                                const pts = proj.data32F;
+                                if (!pts || pts.length < 8) continue;
+                                const xs = [pts[0], pts[2], pts[4], pts[6]];
+                                const ys = [pts[1], pts[3], pts[5], pts[7]];
+                                const minX = Math.min(...xs);
+                                const maxX = Math.max(...xs);
+                                const minY = Math.min(...ys);
+                                const maxY = Math.max(...ys);
+                                const prop = this._clampBbox(
+                                    [minX, minY, Math.max(8, maxX - minX), Math.max(8, maxY - minY)],
+                                    gray.cols,
+                                    gray.rows
+                                );
+
+                                const propCx = prop[0] + prop[2] * 0.5;
+                                const propCy = prop[1] + prop[3] * 0.5;
+                                const ddx = propCx - prevCx;
+                                const ddy = propCy - prevCy;
+                                const maxJump = Math.max(gray.cols, gray.rows) * this.orbMaxCenterJumpFrac;
+                                const propArea = Math.max(1, prop[2] * prop[3]);
+                                const areaRatio = propArea / prevArea;
+                                const propAspect = Math.max(1e-3, prop[2] / Math.max(1e-3, prop[3]));
+                                const aspectJump = propAspect > prevAspect ? propAspect / prevAspect : prevAspect / propAspect;
+                                const saneJump = ddx * ddx + ddy * ddy <= maxJump * maxJump;
+                                const saneArea = areaRatio >= this.orbAreaRatioMin && areaRatio <= this.orbAreaRatioMax;
+                                const saneAspect = aspectJump <= this.orbAspectRatioJumpMax;
+                                if (!saneJump || !saneArea || !saneAspect) continue;
+
+                                const rank = inliers * inlierRatio;
+                                if (!best || rank > best.rank) {
+                                    best = {
+                                        kind: tpl.kind,
+                                        bbox: prop,
+                                        inliers,
+                                        goodMatchCount,
+                                        inlierRatio,
+                                        rank
+                                    };
+                                }
+                            } finally {
+                                if (proj) proj.delete();
+                                if (corners) corners.delete();
+                                if (H) H.delete();
+                                inlierMask.delete();
+                                srcMat.delete();
+                                dstMat.delete();
                             }
-                            const tw = Math.max(1, track.orbTemplateSize?.width || track.anchorW || 1);
-                            const th = Math.max(1, track.orbTemplateSize?.height || track.anchorH || 1);
-                            corners = cv.matFromArray(4, 1, cv.CV_32FC2, [0, 0, tw, 0, tw, th, 0, th]);
-                            proj = new cv.Mat();
-                            cv.perspectiveTransform(corners, proj, H);
-                            const pts = proj.data32F;
-                            if (!pts || pts.length < 8) {
-                                track.noPointStreak = (track.noPointStreak || 0) + 1;
-                                continue;
-                            }
-                            const xs = [pts[0], pts[2], pts[4], pts[6]];
-                            const ys = [pts[1], pts[3], pts[5], pts[7]];
-                            const minX = Math.min(...xs);
-                            const maxX = Math.max(...xs);
-                            const minY = Math.min(...ys);
-                            const maxY = Math.max(...ys);
-                            const nextBox = this._clampBbox([minX, minY, Math.max(8, maxX - minX), Math.max(8, maxY - minY)], gray.cols, gray.rows);
-                            track.bbox = nextBox;
-                            track.score = Math.max(0, Math.min(1, inlierRatio));
-                            track.noPointStreak = 0;
-                            track.lastAnchorUpdateMs = Date.now();
                         } finally {
-                            if (proj) proj.delete();
-                            if (corners) corners.delete();
-                            if (H) H.delete();
-                            inlierMask.delete();
-                            srcMat.delete();
-                            dstMat.delete();
+                            knn.delete();
                         }
-                    } finally {
-                        knn.delete();
+                    }
+
+                    if (!best) {
+                        track.orbMissStreak = misses + 1;
+                        track.noPointStreak = (track.noPointStreak || 0) + 1;
+                        continue;
+                    }
+
+                    // Smooth bbox update based on confidence.
+                    const conf = Math.max(0, Math.min(1, best.inlierRatio));
+                    const alpha = Math.max(
+                        0.15,
+                        Math.min(0.8, (conf - this.orbMinInlierRatio) / Math.max(1e-6, 1 - this.orbMinInlierRatio))
+                    );
+                    const pb = best.bbox;
+                    const nb = [
+                        prevBox[0] * (1 - alpha) + pb[0] * alpha,
+                        prevBox[1] * (1 - alpha) + pb[1] * alpha,
+                        prevBox[2] * (1 - alpha) + pb[2] * alpha,
+                        prevBox[3] * (1 - alpha) + pb[3] * alpha
+                    ];
+                    track.bbox = this._clampBbox(nb, gray.cols, gray.rows);
+                    track.score = Math.max(0, Math.min(1, conf));
+                    track.noPointStreak = 0;
+                    track.orbMissStreak = 0;
+                    track.lastAnchorUpdateMs = Date.now();
+
+                    // Adaptive template update (only under very strong matches).
+                    if (best.inlierRatio >= this.orbUpdateTemplateMinInlierRatio && best.goodMatchCount >= this.orbUpdateTemplateMinMatches) {
+                        const bx = Math.max(0, Math.floor(track.bbox[0]));
+                        const by = Math.max(0, Math.floor(track.bbox[1]));
+                        const bw = Math.max(8, Math.min(gray.cols - bx, Math.floor(track.bbox[2])));
+                        const bh = Math.max(8, Math.min(gray.rows - by, Math.floor(track.bbox[3])));
+                        let boxRoi = null;
+                        let boxMask = null;
+                        const boxKps = new cv.KeyPointVector();
+                        const boxDesc = new cv.Mat();
+                        try {
+                            boxRoi = gray.roi(new cv.Rect(bx, by, bw, bh));
+                            boxMask = new cv.Mat();
+                            orb.detectAndCompute(boxRoi, boxMask, boxKps, boxDesc, false);
+                            if (!boxDesc.empty() && boxKps.size() >= this.orbMinMatches) {
+                                const pts = [];
+                                for (let i = 0; i < boxKps.size(); i++) {
+                                    const kp = boxKps.get(i);
+                                    pts.push([kp.pt.x, kp.pt.y]);
+                                }
+                                if (track.orbAdaptiveDesc) {
+                                    try {
+                                        track.orbAdaptiveDesc.delete();
+                                    } catch (_) {}
+                                }
+                                track.orbAdaptiveDesc = boxDesc.clone();
+                                track.orbAdaptivePts = pts;
+                                track.orbAdaptiveSize = { width: bw, height: bh };
+                            }
+                        } finally {
+                            if (boxMask) boxMask.delete();
+                            if (boxRoi) boxRoi.delete();
+                            boxKps.delete();
+                            boxDesc.delete();
+                        }
+                    }
+                } finally {
+                    sceneKps.delete();
+                    sceneDesc.delete();
+                    if (roiMask) roiMask.delete();
+                    if (!useFullFrame && roi) {
+                        try {
+                            roi.delete();
+                        } catch (_) {}
                     }
                 }
-            } finally {
-                matcher.delete();
             }
         } finally {
-            sceneMask.delete();
-            sceneDesc.delete();
-            sceneKps.delete();
+            matcher.delete();
             orb.delete();
         }
     }
