@@ -81,7 +81,7 @@ window.ROBOTS_DATA = {
                     name: "mainObjectFilter",
                     on: true,
                     dataFeed: "computervision",
-                    filters: ["person", "human", "face", "head"],
+                    filters: ["flow"],
                     minScore: 0.1,
                     strategy: "largest",
                     outputRange: "zeroToOne",
@@ -102,11 +102,11 @@ window.ROBOTS_DATA = {
                     frequencyHz: "feedback"
                 },
                 {
-                    name: "size object tracker PID",
+                    name: "y object tracker PID",
                     on: true,
-                    feedback: "mainObjectFilter.result.bbox.width",
+                    feedback: "mainObjectFilter.result.bbox.y",
                     controlInput: "speed",
-                    goal: 0.5,
+                    goal: 0.9,
                     kp: -0.2,
                     ki: 0.0,
                     kd: -0.01,

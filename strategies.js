@@ -45,6 +45,154 @@ class RobotStrategies {
         this._stageDetailEl = null;
         this._stageTitle = "Ready";
         this._stageDetail = "";
+        this._strategyArrowCanvas = null;
+        this._strategyArrowCtx = null;
+    }
+
+    _getCameraSensor() {
+        return this.robot.sensors.find((sensor) => sensor && sensor.type === "camera");
+    }
+
+    _getYPid() {
+        return (
+            this.robot.pidControllers?.find(
+                (p) => String(p?.name || "").trim().toLowerCase() === "y object tracker pid"
+            ) || null
+        );
+    }
+
+    /**
+     * Same resolution as PID._resolveFeedbackValue: path like mainObjectFilter.result.output.x
+     */
+    _readPidFeedbackValue(pid) {
+        if (!pid) return null;
+        const path = String(pid.feedback || "");
+        const parts = path.split(".").map((s) => s.trim()).filter(Boolean);
+        if (parts.length < 2) return null;
+        const objectFilter = this.robot.getObjectFilterByName(parts[0]);
+        if (!objectFilter) return null;
+        let cursor = { result: objectFilter.getResult() };
+        for (let i = 1; i < parts.length; i++) {
+            const key = parts[i];
+            cursor = cursor?.[key];
+            if (cursor === undefined || cursor === null) return null;
+        }
+        const value = Number(cursor);
+        return Number.isFinite(value) ? value : null;
+    }
+
+    _ensureStrategyArrowOverlay() {
+        const camera = this._getCameraSensor();
+        const frameEl = camera?.getFrameElement?.();
+        if (!frameEl) return false;
+        if (!this._strategyArrowCanvas) {
+            const canvas = document.createElement("canvas");
+            canvas.className = "strategy-pid-arrow-overlay";
+            frameEl.appendChild(canvas);
+            this._strategyArrowCanvas = canvas;
+            this._strategyArrowCtx = canvas.getContext("2d");
+        }
+        return !!this._strategyArrowCtx;
+    }
+
+    _resizeStrategyArrowOverlay(videoEl) {
+        if (!this._strategyArrowCanvas || !videoEl) return;
+        const w = videoEl.clientWidth || videoEl.videoWidth || 0;
+        const h = videoEl.clientHeight || videoEl.videoHeight || 0;
+        if (!w || !h) return;
+        if (this._strategyArrowCanvas.width !== w) this._strategyArrowCanvas.width = w;
+        if (this._strategyArrowCanvas.height !== h) this._strategyArrowCanvas.height = h;
+    }
+
+    _clearStrategyArrowOverlay() {
+        if (!this._strategyArrowCtx || !this._strategyArrowCanvas) return;
+        this._strategyArrowCtx.clearRect(0, 0, this._strategyArrowCanvas.width, this._strategyArrowCanvas.height);
+    }
+
+    _removeStrategyArrowOverlay() {
+        if (this._strategyArrowCanvas?.parentNode) {
+            this._strategyArrowCanvas.parentNode.removeChild(this._strategyArrowCanvas);
+        }
+        this._strategyArrowCanvas = null;
+        this._strategyArrowCtx = null;
+    }
+
+    /**
+     * Normalized coords: x = fraction of frame width, y = fraction of frame height (0,0 top-left).
+     */
+    _normToOverlayPx(videoEl, nx, ny) {
+        const vw = videoEl.videoWidth || 1;
+        const vh = videoEl.videoHeight || 1;
+        const sx = (videoEl.clientWidth || vw) / vw;
+        const sy = (videoEl.clientHeight || vh) / vh;
+        return { x: nx * vw * sx, y: ny * vh * sy };
+    }
+
+    _drawArrowLine(ctx, x0, y0, x1, y1) {
+        const dx = x1 - x0;
+        const dy = y1 - y0;
+        const len = Math.hypot(dx, dy);
+        if (len < 0.5) return;
+        ctx.beginPath();
+        ctx.moveTo(x0, y0);
+        ctx.lineTo(x1, y1);
+        ctx.stroke();
+        const ah = Math.min(14, len * 0.35);
+        const ang = Math.atan2(dy, dx);
+        ctx.beginPath();
+        ctx.moveTo(x1, y1);
+        ctx.lineTo(x1 - ah * Math.cos(ang - Math.PI / 7), y1 - ah * Math.sin(ang - Math.PI / 7));
+        ctx.lineTo(x1 - ah * Math.cos(ang + Math.PI / 7), y1 - ah * Math.sin(ang + Math.PI / 7));
+        ctx.closePath();
+        ctx.fill();
+    }
+
+    /** Draw arrow from (feedback x, feedback y) to (goal x, goal y) in normalized image space. */
+    _drawTrackOnlyPidGoalArrow() {
+        const yawPid = this._getYawPid();
+        const yPid = this._getYPid();
+        const camera = this._getCameraSensor();
+        const videoEl = camera?.getVideoElement?.();
+        if (!yawPid || !yPid || !videoEl || !videoEl.videoWidth || !videoEl.videoHeight) {
+            this._clearStrategyArrowOverlay();
+            return;
+        }
+        if (!this._ensureStrategyArrowOverlay()) return;
+        this._resizeStrategyArrowOverlay(videoEl);
+        const ctx = this._strategyArrowCtx;
+        const cvs = this._strategyArrowCanvas;
+        if (!ctx || !cvs?.width) return;
+
+        const fbX = this._readPidFeedbackValue(yawPid);
+        const fbY = this._readPidFeedbackValue(yPid);
+        const goalX = Number(yawPid.goal);
+        const goalY = Number(yPid.goal);
+        if (![fbX, fbY, goalX, goalY].every(Number.isFinite)) {
+            ctx.clearRect(0, 0, cvs.width, cvs.height);
+            return;
+        }
+
+        const p0 = this._normToOverlayPx(videoEl, fbX, fbY);
+        const p1 = this._normToOverlayPx(videoEl, goalX, goalY);
+
+        ctx.clearRect(0, 0, cvs.width, cvs.height);
+        ctx.save();
+        ctx.strokeStyle = "#00e676";
+        ctx.fillStyle = "#00e676";
+        ctx.lineWidth = 3;
+        ctx.lineCap = "round";
+        ctx.setLineDash([6, 4]);
+        this._drawArrowLine(ctx, p0.x, p0.y, p1.x, p1.y);
+        ctx.setLineDash([]);
+        ctx.fillStyle = "#80ffd0";
+        ctx.beginPath();
+        ctx.arc(p0.x, p0.y, 5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = "#ffffff";
+        ctx.beginPath();
+        ctx.arc(p1.x, p1.y, 5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
     }
 
     _setStage(title, detail) {
@@ -110,6 +258,7 @@ class RobotStrategies {
             "Tracking only",
             "Yaw PID stays on. No pan / long-search cycle in this mode."
         );
+        this._drawTrackOnlyPidGoalArrow();
     }
 
     /** Yaw PID off every tick so joystick / inputs are not overwritten by automation. */
@@ -258,6 +407,9 @@ class RobotStrategies {
             console.error("Strategy tick failed:", err);
             this._setStage("Error", err?.message || "Strategy tick failed");
         } finally {
+            if (this.selectedStrategy !== "trackWithoutSearch") {
+                this._clearStrategyArrowOverlay();
+            }
             this._busy = false;
             this._flushStageUi();
         }
@@ -295,6 +447,7 @@ class RobotStrategies {
             clearInterval(this._timer);
             this._timer = null;
         }
+        this._removeStrategyArrowOverlay();
     }
 
     buildGUI(container) {
