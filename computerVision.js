@@ -712,8 +712,8 @@ class ComputerVisionAiModel {
                 const medDy = this._median(goodDy);
                 const cx = prevCx + medDx;
                 const cy = prevCy + medDy;
-                if (track?.manualId === "flowDice4") {
-                    // Fixed-size cells: translate with median LK motion only (boxes can drift apart).
+                if (track?.manualId === "flowTouch" || track?.manualId === "flowDice4") {
+                    // Fixed-size manual box(es): translate with median LK motion only.
                     const nextMinX = cx - prevW * 0.5;
                     const nextMinY = cy - prevH * 0.5;
                     track.bbox = this._clampBbox([nextMinX, nextMinY, prevW, prevH], fw, fh);
@@ -846,14 +846,7 @@ class ComputerVisionAiModel {
         }
 
         const cell = Math.max(8, fw * 0.1);
-        const gap = Math.max(0, fw * 0.1);
-        const half = (cell + gap) * 0.5;
-        const centerOffsets = [
-            [-half, -half],
-            [half, -half],
-            [-half, half],
-            [half, half]
-        ];
+        const bbox = this._clampBbox([frameX - cell * 0.5, frameY - cell * 0.5, cell, cell], fw, fh);
 
         const kept = [];
         for (const t of this._tracks) {
@@ -865,37 +858,30 @@ class ComputerVisionAiModel {
         }
         this._tracks = kept;
 
-        for (let i = 0; i < 4; i++) {
-            const [ox, oy] = centerOffsets[i];
-            const cx = frameX + ox;
-            const cy = frameY + oy;
-            const bbox = this._clampBbox([cx - cell * 0.5, cy - cell * 0.5, cell, cell], fw, fh);
-            this._tracks.push({
-                id: this._nextId++,
-                manualId: "flowDice4",
-                flowDieIndex: i,
-                class: `flow${i + 1}`,
-                labelSource: "manual",
-                score: 1,
-                bbox,
-                anchorArea: this._bboxArea(bbox),
-                anchorW: Math.max(1, bbox[2]),
-                anchorH: Math.max(1, bbox[3]),
-                lockFromFeeds: true,
-                _forgetShrinkStreak: 0,
-                flowTicks: 0,
-                noPointStreak: 0,
-                lastAnchorUpdateMs: Date.now(),
-                filterParams: { ...this.filterParams },
-                needsReinit: true,
-                prevPts: null
-            });
-        }
+        this._tracks.push({
+            id: this._nextId++,
+            manualId: "flowTouch",
+            class: "flow",
+            labelSource: "manual",
+            score: 1,
+            bbox,
+            anchorArea: this._bboxArea(bbox),
+            anchorW: Math.max(1, bbox[2]),
+            anchorH: Math.max(1, bbox[3]),
+            lockFromFeeds: true,
+            _forgetShrinkStreak: 0,
+            flowTicks: 0,
+            noPointStreak: 0,
+            lastAnchorUpdateMs: Date.now(),
+            filterParams: { ...this.filterParams },
+            needsReinit: true,
+            prevPts: null
+        });
 
         this._syncDetectionsFromTracks();
         if (videoEl) this._drawDetections(videoEl, this._detections);
         this._renderResponseOutput();
-        this._setStatus("Created 4 fixed flow cells (dice-4) at touch: flow1–flow4.", "muted", 2200);
+        this._setStatus("Created fixed flow box (10% frame width) at touch.", "muted", 2200);
         return true;
     }
 
