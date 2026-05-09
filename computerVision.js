@@ -656,7 +656,6 @@ class ComputerVisionAiModel {
             const goodDx = [];
             const goodDy = [];
             const st = status.data || status.data8U;
-            const totalPts = Math.max(1, status.rows || 0);
             for (let i = 0; i < status.rows; i++) {
                 const ok = st ? st[i] : 0;
                 if (ok === 1) {
@@ -713,36 +712,11 @@ class ComputerVisionAiModel {
                 const medDy = this._median(goodDy);
                 const cx = prevCx + medDx;
                 const cy = prevCy + medDy;
-                if (track?.manualId === "flowTouch") {
-                    // Re-enable size dynamics for manual flow tracks, but only when LK confidence
-                    // is strong. Otherwise translate-only to avoid noisy shrink/grow.
-                    const goodPtRatio = goodX.length / totalPts;
-                    const minPtsForResize = Math.max(fp.minGoodPoints, 10);
-                    const minRatioForResize = 0.55;
-                    const allowResize =
-                        goodX.length >= minPtsForResize &&
-                        goodPtRatio >= minRatioForResize;
-                    if (allowResize) {
-                        const minW = prevW * (1 - this.flowMaxShrinkPerTick);
-                        const minH = prevH * (1 - this.flowMaxShrinkPerTick);
-                        // For manual flow tracks, avoid anchor-based max-size capping (which can
-                        // freeze growth near the initial box size). Instead, use per-tick growth limits.
-                        const maxGrowPerTick = 0.16;
-                        const maxW = prevW * (1 + maxGrowPerTick);
-                        const maxH = prevH * (1 + maxGrowPerTick);
-                        const measuredW = Math.min(maxW, Math.max(bw, minW));
-                        const measuredH = Math.min(maxH, Math.max(bh, minH));
-                        const inertia = this.flowSizeInertia;
-                        const smoothW = prevW * inertia + measuredW * (1 - inertia);
-                        const smoothH = prevH * inertia + measuredH * (1 - inertia);
-                        const nextMinX = cx - smoothW * 0.5;
-                        const nextMinY = cy - smoothH * 0.5;
-                        track.bbox = this._clampBbox([nextMinX, nextMinY, smoothW, smoothH], fw, fh);
-                    } else {
-                        const nextMinX = cx - prevW * 0.5;
-                        const nextMinY = cy - prevH * 0.5;
-                        track.bbox = this._clampBbox([nextMinX, nextMinY, prevW, prevH], fw, fh);
-                    }
+                if (track?.manualId === "flowDice4") {
+                    // Fixed-size cells: translate with median LK motion only (boxes can drift apart).
+                    const nextMinX = cx - prevW * 0.5;
+                    const nextMinY = cy - prevH * 0.5;
+                    track.bbox = this._clampBbox([nextMinX, nextMinY, prevW, prevH], fw, fh);
                     track.flowTicks = tickCount + 1;
                     track.noPointStreak = 0;
 
@@ -871,12 +845,19 @@ class ComputerVisionAiModel {
             return false;
         }
 
-        const boxSize = Math.max(16, fw * this.orbTapBoxFrac);
-        const bbox = this._clampBbox([frameX - boxSize * 0.5, frameY - boxSize * 0.5, boxSize, boxSize], fw, fh);
+        const cell = Math.max(8, fw * 0.1);
+        const gap = Math.max(0, fw * 0.1);
+        const half = (cell + gap) * 0.5;
+        const centerOffsets = [
+            [-half, -half],
+            [half, -half],
+            [-half, half],
+            [half, half]
+        ];
 
         const kept = [];
         for (const t of this._tracks) {
-            if (t?.manualId === "flowTouch") {
+            if (t?.manualId === "flowTouch" || t?.manualId === "flowDice4") {
                 this._releaseTrackMats(t);
                 continue;
             }
@@ -884,30 +865,37 @@ class ComputerVisionAiModel {
         }
         this._tracks = kept;
 
-        this._tracks.push({
-            id: this._nextId++,
-            manualId: "flowTouch",
-            class: "flow",
-            labelSource: "manual",
-            score: 1,
-            bbox,
-            anchorArea: this._bboxArea(bbox),
-            anchorW: Math.max(1, bbox[2]),
-            anchorH: Math.max(1, bbox[3]),
-            lockFromFeeds: true,
-            _forgetShrinkStreak: 0,
-            flowTicks: 0,
-            noPointStreak: 0,
-            lastAnchorUpdateMs: Date.now(),
-            filterParams: { ...this.filterParams },
-            needsReinit: true,
-            prevPts: null
-        });
+        for (let i = 0; i < 4; i++) {
+            const [ox, oy] = centerOffsets[i];
+            const cx = frameX + ox;
+            const cy = frameY + oy;
+            const bbox = this._clampBbox([cx - cell * 0.5, cy - cell * 0.5, cell, cell], fw, fh);
+            this._tracks.push({
+                id: this._nextId++,
+                manualId: "flowDice4",
+                flowDieIndex: i,
+                class: `flow${i + 1}`,
+                labelSource: "manual",
+                score: 1,
+                bbox,
+                anchorArea: this._bboxArea(bbox),
+                anchorW: Math.max(1, bbox[2]),
+                anchorH: Math.max(1, bbox[3]),
+                lockFromFeeds: true,
+                _forgetShrinkStreak: 0,
+                flowTicks: 0,
+                noPointStreak: 0,
+                lastAnchorUpdateMs: Date.now(),
+                filterParams: { ...this.filterParams },
+                needsReinit: true,
+                prevPts: null
+            });
+        }
 
         this._syncDetectionsFromTracks();
         if (videoEl) this._drawDetections(videoEl, this._detections);
         this._renderResponseOutput();
-        this._setStatus("Created flow-tracked object at touch (label/id: flow).", "muted", 2200);
+        this._setStatus("Created 4 fixed flow cells (dice-4) at touch: flow1–flow4.", "muted", 2200);
         return true;
     }
 
