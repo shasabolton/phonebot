@@ -239,6 +239,48 @@ class RobotStrategies {
         );
     }
 
+    /**
+     * Agent "shift" action: same flow box as tapping the camera frame at (fromX, fromY) in normalized 0–1,
+     * then set yaw PID goal to toX and y/speed PID goal to toY (same units as tracker goals, typically 0–1).
+     * @param {{ fromX?: number, fromY?: number, toX?: number, toY?: number }} spec
+     */
+    async shiftCameraFeature(spec) {
+        const o = typeof spec === "object" && spec ? spec : {};
+        const fromX = Number(o.fromX);
+        const fromY = Number(o.fromY);
+        const toX = Number(o.toX);
+        const toY = Number(o.toY);
+        if (!Number.isFinite(fromX) || !Number.isFinite(fromY)) {
+            console.warn("shiftCameraFeature: need numeric fromX, fromY", spec);
+            return false;
+        }
+        const nx = Math.min(1, Math.max(0, fromX));
+        const ny = Math.min(1, Math.max(0, fromY));
+
+        const cv =
+            (this.robot.getAiModelByType && this.robot.getAiModelByType("computervision")) ||
+            this.robot.aiModels?.find((m) => String(m?.type || "").toLowerCase() === "computervision") ||
+            null;
+        const camera = this._getCameraSensor();
+        const videoEl = camera?.getVideoElement?.();
+        const fw = videoEl?.videoWidth | 0;
+        const fh = videoEl?.videoHeight | 0;
+        if (!cv || typeof cv.createFlowObjectAt !== "function" || !fw || !fh) {
+            console.warn("shiftCameraFeature: computer vision or camera frame unavailable");
+            return false;
+        }
+
+        const px = nx * fw;
+        const py = ny * fh;
+        await cv.createFlowObjectAt(px, py);
+
+        const yawPid = this._getYawPid();
+        const yPid = this._getYPid();
+        if (yawPid && Number.isFinite(toX)) yawPid.setGoal(toX);
+        if (yPid && Number.isFinite(toY)) yPid.setGoal(toY);
+        return true;
+    }
+
     _getMainObjectFilter() {
         return this.robot.getObjectFilterByName("mainObjectFilter") || this.robot.objectFilters?.[0] || null;
     }

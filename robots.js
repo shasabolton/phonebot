@@ -122,11 +122,27 @@ window.ROBOTS_DATA = {
                 changeFilterGraceMs: 10000
             },
             stateMachine: [
-                 {name: "objects seen", path: "processing.computervision.results", description: "Tracks in the camera feed. Each bbox is normalized: x and width are 0–1 fractions of frame width, y and height are 0–1 fractions of frame height. Field bboxUnit is \"normalized01\"."},
-                ],
+                {
+                    name: "cameraView",
+                    path: "agentInterface.currentCameraImageUrl",
+                    description:
+                        "Latest camera frame as a data URL (full value omitted in prompt text; the same frame is attached as an image on the current chat turn only)."
+                }
+                //{name: "objects seen", path: "processing.computervision.results", description: "Tracks in the camera feed. Each bbox is normalized: x and width are 0–1 fractions of frame width, y and height are 0–1 fractions of frame height. Field bboxUnit is \"normalized01\"."},
+            ],
             actions: [
-                {actionName: "filter", functionPath: "objectFilters.mainObjectFilter.setFilters", actionArgsHint: '["cup"], ["door","doorway"], ["human","person","face","head"]', usage: "Set filters for objects already in your vision to track them, else set objects to pan and search for. Value may be a comma-separated string, a JSON array of label strings, or objects (e.g. type label/bbox)." },
-                {actionName: "x", functionPath: "pidControllers.yaw object tracker PID.setGoal", actionArgsHint: "0, 0.25, 0.5, 0.75, 1", type: "float", min: 0, max: 1, increment: 0.05, usage: "Horizontal aim for the tracked object: 0.5 centers it in the view; 0 and 1 are the left and right extremes (values are 0–1, same units as filter output x)." }
+                {
+                    actionName: "shift",
+                    functionPath: "strategies.shiftCameraFeature",
+                    actionArgsHint: '{"fromX":0.8,"fromY":0.5,"toX":0.5,"toY":0.9}',
+                    type: "float",
+                    min: 0,
+                    max: 1,
+                    increment: 0.01,
+                    usage: "Pick a feature at normalized fromX/fromY (0–1), then set yaw PID goal to toX and forward/speed PID goal to toY."
+                },
+                //{actionName: "filter", functionPath: "objectFilters.mainObjectFilter.setFilters", actionArgsHint: '["cup"], ["door","doorway"], ["human","person","face","head"]', usage: "Set filters for objects already in your vision to track them, else set objects to pan and search for. Value may be a comma-separated string, a JSON array of label strings, or objects (e.g. type label/bbox)." },
+                //{actionName: "x", functionPath: "pidControllers.yaw object tracker PID.setGoal", actionArgsHint: "0, 0.25, 0.5, 0.75, 1", type: "float", min: 0, max: 1, increment: 0.05, usage: "Horizontal aim for the tracked object: 0.5 centers it in the view; 0 and 1 are the left and right extremes (values are 0–1, same units as filter output x)." }
             ],
             actionExamples: [
                 {
@@ -144,8 +160,10 @@ window.ROBOTS_DATA = {
                 shortTermMemory: "",
                 defaultBaseUrl: "https://api.groq.com/openai/v1",
                 transcriptionModel: "whisper-large-v3",
+                cameraCaptureMaxEdge: 960,
+                cameraCaptureJpegQuality: 0.85,
                 promptTemplates: [
-                    { name: "Introduction prompt", path: "promptTemplates/introductionPrompt.txt" }
+                    { name: "Image + shift prompt", path: "promptTemplates/introImagePrompt.txt" }
                 ],
                 agents: [
                     {

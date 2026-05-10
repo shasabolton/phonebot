@@ -24,6 +24,16 @@ class AgentInterface {
         const stm = this.config.shortTermMemory;
         this.shortTermMemory = stm != null && typeof stm === "string" ? stm : "";
         this.messageHistory = [];
+        /** Latest JPEG data URL for stateMachine path `agentInterface.currentCameraImageUrl` and vision chat. */
+        this.currentCameraImageUrl = "";
+        const capEdge = this.config.cameraCaptureMaxEdge;
+        this.cameraCaptureMaxEdge = Number.isFinite(capEdge) ? Math.round(capEdge) : 960;
+        this.cameraCaptureMaxEdge = Math.max(320, Math.min(1600, this.cameraCaptureMaxEdge));
+        const jq = this.config.cameraCaptureJpegQuality;
+        this.cameraCaptureJpegQuality = Number.isFinite(jq) ? jq : 0.85;
+        this.cameraCaptureJpegQuality = Math.max(0.4, Math.min(0.98, this.cameraCaptureJpegQuality));
+        this._captureCanvas = null;
+        this._captureCtx = null;
         this._apiKey = "";
         this._rememberKey = false;
         this._voiceOn = false;
@@ -234,7 +244,11 @@ class AgentInterface {
     _extractSpokenText(contentText, rawText) {
         const content = String(contentText || "").trim();
         if (!content) return "";
-        const payload = this._tryParseJson(content) || this._tryParseJson(rawText);
+        const payload =
+            this._tryParseJson(content) ||
+            this._extractJsonObjectFromModelText(content) ||
+            this._tryParseJson(rawText) ||
+            this._extractJsonObjectFromModelText(rawText);
         if (!payload || typeof payload !== "object") {
             return content;
         }
@@ -312,12 +326,88 @@ class AgentInterface {
             .join("\n\n");
     }
 
+    _getCameraSensor() {
+        return this.robot?.sensors?.find((sensor) => sensor && sensor.type === "camera") || null;
+    }
+
+    _captureFrameDataUrl(videoEl) {
+        const sourceW = videoEl.videoWidth | 0;
+        const sourceH = videoEl.videoHeight | 0;
+        if (!sourceW || !sourceH) return null;
+        const maxEdge = this.cameraCaptureMaxEdge;
+        const scale = Math.min(1, maxEdge / Math.max(sourceW, sourceH));
+        const targetW = Math.max(1, Math.round(sourceW * scale));
+        const targetH = Math.max(1, Math.round(sourceH * scale));
+        if (!this._captureCanvas) this._captureCanvas = document.createElement("canvas");
+        if (!this._captureCtx) this._captureCtx = this._captureCanvas.getContext("2d", { willReadFrequently: true });
+        if (!this._captureCtx) return null;
+        this._captureCanvas.width = targetW;
+        this._captureCanvas.height = targetH;
+        this._captureCtx.drawImage(videoEl, 0, 0, targetW, targetH);
+        return {
+            dataUrl: this._captureCanvas.toDataURL("image/jpeg", this.cameraCaptureJpegQuality),
+            width: targetW,
+            height: targetH
+        };
+    }
+
+    _refreshCurrentCameraImageUrl() {
+        const camera = this._getCameraSensor();
+        const videoEl = camera?.getVideoElement?.();
+        if (!videoEl || videoEl.readyState < 2) {
+            this.currentCameraImageUrl = "";
+            return;
+        }
+        const frame = this._captureFrameDataUrl(videoEl);
+        this.currentCameraImageUrl = frame?.dataUrl || "";
+    }
+
+    _sanitizeStateJsonForPrompt(jsonStr) {
+        const raw = String(jsonStr || "").trim();
+        if (!raw) return raw;
+        try {
+            const rows = JSON.parse(raw);
+            if (!Array.isArray(rows)) return raw;
+            for (const row of rows) {
+                if (!row || typeof row !== "object") continue;
+                const v = row.value;
+                if (typeof v === "string" && v.startsWith("data:image")) {
+                    row.value = "[see image attachment on this user message]";
+                }
+            }
+            return JSON.stringify(rows, null, 2);
+        } catch (_) {
+            return raw;
+        }
+    }
+
     _buildCurrentStateForIntroductionPrompt() {
+        this._refreshCurrentCameraImageUrl();
         const sm = this.robot?.stateMachine;
         if (sm && typeof sm.getStateAsJson === "function") {
-            return sm.getStateAsJson();
+            return this._sanitizeStateJsonForPrompt(sm.getStateAsJson());
         }
         return "";
+    }
+
+    /**
+     * Appends the current camera frame to the last user message only (full text history, single vision image).
+     * @param {Array<{role:string, content: unknown}>} messages
+     */
+    _attachCurrentCameraToLastUserMessage(messages) {
+        const url = String(this.currentCameraImageUrl || "").trim();
+        if (!url.startsWith("data:image")) return;
+        for (let i = messages.length - 1; i >= 0; i--) {
+            if (messages[i].role !== "user") continue;
+            const c = messages[i].content;
+            if (Array.isArray(c)) return;
+            const textPart = typeof c === "string" ? c : String(c ?? "");
+            messages[i].content = [
+                { type: "text", text: textPart },
+                { type: "image_url", image_url: { url } }
+            ];
+            return;
+        }
     }
 
     buildInstructionPromptFromTemplate(templateText) {
@@ -336,6 +426,7 @@ class AgentInterface {
     _getIntroductionTemplateSpec() {
         const list = Array.isArray(this.promptTemplates) ? this.promptTemplates : [];
         return (
+            list.find((t) => /introImagePrompt\.txt$/i.test(String(t?.path || "").trim())) ||
             list.find((t) => /introductionPrompt\.txt$/i.test(String(t?.path || "").trim())) ||
             list.find((t) => /introduction/i.test(String(t?.name || ""))) ||
             list.find((t) => String(t?.path || "").trim()) ||
@@ -409,8 +500,9 @@ class AgentInterface {
 
     /**
      * @param {string} userText
-     * @param {{ singleTurn?: boolean, messages?: Array<{role:string,content:string}> }} [options]
-     * If `messages` is provided, it is sent as-is. If singleTurn, only `userText` is sent as one user message.
+     * @param {{ singleTurn?: boolean, messages?: Array<{role:string,content:string|unknown}> }} [options]
+     * If `messages` is provided, it is sent as-is (then the last user message gets the current camera image if available).
+     * If singleTurn, only `userText` is sent as one user message.
      */
     async sendPrompt(userText, options = {}) {
         const agent = this.getSelectedAgent();
@@ -437,7 +529,10 @@ class AgentInterface {
         const overrideMessages = Array.isArray(options.messages) ? options.messages : null;
         let conversationMessages;
         if (overrideMessages && overrideMessages.length) {
-            conversationMessages = overrideMessages;
+            conversationMessages = overrideMessages.map((m) => ({
+                role: m.role,
+                content: m.content
+            }));
         } else if (singleTurn) {
             if (!prompt) {
                 throw new Error("Enter a prompt.");
@@ -451,12 +546,19 @@ class AgentInterface {
                 .filter((m) => m && (m.role === "user" || m.role === "assistant"))
                 .map((m) => ({
                     role: m.role,
-                    content: String(m.text || "")
+                    content:
+                        m.role === "user" && typeof m.fullPrompt === "string" && m.fullPrompt.trim()
+                            ? m.fullPrompt
+                            : String(m.text || "")
                 }));
 
             if (!conversationMessages.length) {
                 conversationMessages.push({ role: "user", content: prompt });
             }
+        }
+
+        if (!options.skipVisionAttachment) {
+            this._attachCurrentCameraToLastUserMessage(conversationMessages);
         }
 
         const body = {
@@ -516,6 +618,28 @@ class AgentInterface {
         }
     }
 
+    /** Best-effort parse when the model wraps JSON in prose or markdown fences. */
+    _extractJsonObjectFromModelText(text) {
+        const raw = String(text || "").trim();
+        if (!raw) return null;
+        try {
+            return JSON.parse(raw);
+        } catch (_) {
+            const fenceMatch = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+            const candidate = fenceMatch ? fenceMatch[1] : raw;
+            const start = candidate.indexOf("{");
+            const end = candidate.lastIndexOf("}");
+            if (start >= 0 && end > start) {
+                try {
+                    return JSON.parse(candidate.slice(start, end + 1));
+                } catch (_) {
+                    return null;
+                }
+            }
+            return null;
+        }
+    }
+
     _findNamedItem(list, name) {
         if (!Array.isArray(list)) return null;
         const key = String(name || "").trim().toLowerCase();
@@ -540,6 +664,13 @@ class AgentInterface {
                     this._findNamedItem(this.robot?.objectFilters, nextSegment);
                 if (!filterItem) throw new Error(`Object filter not found: ${nextSegment}`);
                 current = filterItem;
+                i += 1;
+                continue;
+            }
+            if (segment === "strategies") {
+                const strat = this.robot?.strategies;
+                if (!strat) throw new Error("Strategies not available on this robot.");
+                current = strat;
                 i += 1;
                 continue;
             }
@@ -647,8 +778,8 @@ class AgentInterface {
     }
 
     async _maybeRunActionFromResponse(contentText, rawText) {
-        const fromContent = this._tryParseJson(contentText);
-        const fromRaw = this._tryParseJson(rawText);
+        const fromContent = this._tryParseJson(contentText) || this._extractJsonObjectFromModelText(contentText);
+        const fromRaw = this._tryParseJson(rawText) || this._extractJsonObjectFromModelText(rawText);
         const payload = fromContent || fromRaw;
         if (!payload || typeof payload !== "object") return;
 
@@ -770,9 +901,35 @@ class AgentInterface {
             this._statusEl.className = "muted";
         }
         try {
-            this.messageHistory.push({ role: "user", text, at: new Date().toISOString() });
+            if (!text) {
+                if (this._statusEl) {
+                    this._statusEl.textContent = "Enter a prompt.";
+                    this._statusEl.className = "warn";
+                }
+                return;
+            }
+            const stateBlock = this._buildCurrentStateForIntroductionPrompt();
+            const fullUserContent = `Current state (json):\n${stateBlock || "[]"}\n\nUser:\n${text}`;
+            const prior = this.messageHistory
+                .filter((m) => m && (m.role === "user" || m.role === "assistant"))
+                .map((m) => ({
+                    role: m.role,
+                    content: String(m.text || "")
+                }));
+            const introPrefix = [];
+            if (!prior.length) {
+                const intro = await this._fetchIntroductionPromptContent();
+                if (intro) introPrefix.push({ role: "user", content: intro });
+            }
+            this.messageHistory.push({
+                role: "user",
+                text,
+                fullPrompt: fullUserContent,
+                at: new Date().toISOString()
+            });
             this._renderHistory();
-            const reply = await this.sendPrompt(text);
+            const conversationMessages = [...introPrefix, ...prior, { role: "user", content: fullUserContent }];
+            const reply = await this.sendPrompt("", { messages: conversationMessages });
             this.messageHistory.push({
                 role: "assistant",
                 text: reply.contentText || "",
