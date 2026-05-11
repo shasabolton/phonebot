@@ -561,12 +561,27 @@ class AgentInterface {
             this._attachCurrentCameraToLastUserMessage(conversationMessages);
         }
 
+        const temperature = Number.isFinite(agent.temperature)
+            ? agent.temperature
+            : Number.isFinite(this.config.defaultChatTemperature)
+              ? this.config.defaultChatTemperature
+              : 0.35;
+        const responseFormat =
+            agent.responseFormat && typeof agent.responseFormat === "object"
+                ? agent.responseFormat
+                : this.config.chatResponseFormat && typeof this.config.chatResponseFormat === "object"
+                  ? this.config.chatResponseFormat
+                  : null;
+
         const body = {
             model,
             messages: conversationMessages,
-            temperature: Number.isFinite(agent.temperature) ? agent.temperature : 0.7,
+            temperature,
             max_tokens: Number.isFinite(agent.maxTokens) ? Math.round(agent.maxTokens) : 1024
         };
+        if (responseFormat) {
+            body.response_format = responseFormat;
+        }
 
         const headers = {
             "Content-Type": "application/json",

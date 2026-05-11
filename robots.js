@@ -171,14 +171,18 @@ window.ROBOTS_DATA = {
                         baseUrl: "https://api.groq.com/openai/v1",
                         chatPath: "/chat/completions",
                         model: "meta-llama/llama-4-scout-17b-16e-instruct",
-                        transcriptionModel: "whisper-large-v3"
+                        transcriptionModel: "whisper-large-v3",
+                        temperature: 0.2,
+                        maxTokens: 768,
+                        responseFormat: { type: "json_object" }
                     },
                     {
                         name: "OpenAI-compatible (example)",
                         baseUrl: "https://api.openai.com/v1",
                         chatPath: "/chat/completions",
                         model: "gpt-4o-mini",
-                        transcriptionModel: "whisper-1"
+                        transcriptionModel: "whisper-1",
+                        temperature: 0.7
                     }
                 ]
             },
