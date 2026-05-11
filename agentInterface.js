@@ -54,6 +54,13 @@ class AgentInterface {
         this._agentEnabled = true;
         this._sendInProgress = false;
         this._agentPowerBtn = null;
+        /**
+         * Shift confirm loop state:
+         * - pending: last proposed shift (snapped to 0.1)
+         * - fixCount: number of times model changed the arrow during the confirm loop
+         * - running: guard to prevent re-entrancy
+         */
+        this._shiftConfirm = { pending: null, fixCount: 0, running: false };
         this._loadSavedKeyPreference();
         this._voiceOn = this._resolveVoiceDefault(null);
     }
@@ -683,6 +690,230 @@ class AgentInterface {
         }
     }
 
+    _snap01ToTenth(value) {
+        const n = Number(value);
+        if (!Number.isFinite(n)) return null;
+        const clamped = Math.max(0, Math.min(1, n));
+        // 0.1 increments only
+        return Math.round(clamped * 10) / 10;
+    }
+
+    _normalizeShiftSpec(actionArgs) {
+        const o = actionArgs && typeof actionArgs === "object" ? actionArgs : {};
+        const fromX = this._snap01ToTenth(o.fromX);
+        const fromY = this._snap01ToTenth(o.fromY);
+        const toX = this._snap01ToTenth(o.toX);
+        const toY = this._snap01ToTenth(o.toY);
+        if (fromX == null || fromY == null || toX == null || toY == null) return null;
+        return { fromX, fromY, toX, toY };
+    }
+
+    _shiftSpecEqual(a, b) {
+        if (!a || !b) return false;
+        return a.fromX === b.fromX && a.fromY === b.fromY && a.toX === b.toX && a.toY === b.toY;
+    }
+
+    _drawShiftArrowOverlay(ctx, w, h, spec) {
+        if (!ctx || !spec || !(w > 0) || !(h > 0)) return;
+        const fx = spec.fromX * w;
+        const fy = spec.fromY * h;
+        const tx = spec.toX * w;
+        const ty = spec.toY * h;
+        const dx = tx - fx;
+        const dy = ty - fy;
+        const len = Math.hypot(dx, dy) || 1;
+        const ux = dx / len;
+        const uy = dy / len;
+        const head = Math.max(10, Math.min(24, Math.round(Math.min(w, h) * 0.03)));
+
+        ctx.save();
+        ctx.lineWidth = Math.max(2, Math.round(Math.min(w, h) * 0.004));
+        ctx.strokeStyle = "rgba(0, 255, 255, 0.95)";
+        ctx.fillStyle = "rgba(0, 255, 255, 0.95)";
+        ctx.shadowColor = "rgba(0,0,0,0.9)";
+        ctx.shadowBlur = 6;
+
+        // main line
+        ctx.beginPath();
+        ctx.moveTo(fx, fy);
+        ctx.lineTo(tx, ty);
+        ctx.stroke();
+
+        // arrow head
+        const hx = tx - ux * head;
+        const hy = ty - uy * head;
+        const px = -uy;
+        const py = ux;
+        ctx.beginPath();
+        ctx.moveTo(tx, ty);
+        ctx.lineTo(hx + px * (head * 0.55), hy + py * (head * 0.55));
+        ctx.lineTo(hx - px * (head * 0.55), hy - py * (head * 0.55));
+        ctx.closePath();
+        ctx.fill();
+
+        // from marker
+        ctx.fillStyle = "rgba(255, 255, 0, 0.95)";
+        ctx.strokeStyle = "rgba(255, 255, 0, 0.95)";
+        ctx.beginPath();
+        ctx.arc(fx, fy, Math.max(4, head * 0.35), 0, Math.PI * 2);
+        ctx.fill();
+
+        // labels
+        ctx.shadowBlur = 4;
+        ctx.font = `${Math.max(11, Math.min(15, Math.round(Math.min(w, h) * 0.028)))}px Arial, sans-serif`;
+        ctx.textBaseline = "top";
+        ctx.fillStyle = "rgba(255,255,255,0.98)";
+        const label = `from=(${spec.fromX.toFixed(1)},${spec.fromY.toFixed(1)})  to=(${spec.toX.toFixed(
+            1
+        )},${spec.toY.toFixed(1)})`;
+        ctx.fillText(label, 8, 8);
+
+        ctx.restore();
+    }
+
+    _captureFrameDataUrlWithShiftOverlay(videoEl, spec) {
+        const base = this._captureFrameDataUrl(videoEl);
+        if (!base) return null;
+        // Re-draw onto the same canvas so the dataUrl includes the arrow.
+        // _captureFrameDataUrl already drew the video + grid; we only add the arrow here.
+        if (this._captureCtx && this._captureCanvas) {
+            this._drawShiftArrowOverlay(this._captureCtx, this._captureCanvas.width, this._captureCanvas.height, spec);
+            base.dataUrl = this._captureCanvas.toDataURL("image/jpeg", this.cameraCaptureJpegQuality);
+        }
+        return base;
+    }
+
+    async _runShiftConfirmationLoop(initialSpec) {
+        if (this._shiftConfirm.running) return;
+        this._shiftConfirm.running = true;
+        try {
+            let pending = this._normalizeShiftSpec(initialSpec);
+            if (!pending) return;
+            this._shiftConfirm.pending = pending;
+            this._shiftConfirm.fixCount = 0;
+
+            for (;;) {
+                const camera = this._getCameraSensor();
+                const videoEl = camera?.getVideoElement?.();
+                if (!videoEl || videoEl.readyState < 2) {
+                    this.messageHistory.push({
+                        role: "system",
+                        text: "Shift confirm: camera frame unavailable; skipped.",
+                        at: new Date().toISOString()
+                    });
+                    this._shiftConfirm.pending = null;
+                    return;
+                }
+
+                const frame = this._captureFrameDataUrlWithShiftOverlay(videoEl, pending);
+                if (!frame?.dataUrl) {
+                    this.messageHistory.push({
+                        role: "system",
+                        text: "Shift confirm: failed to capture annotated frame; skipped.",
+                        at: new Date().toISOString()
+                    });
+                    this._shiftConfirm.pending = null;
+                    return;
+                }
+
+                const confirmPrompt =
+                    `Confirm the arrow placement by grid cell (0.1 increments). ` +
+                    `If the from/to endpoints are in the intended 0.1×0.1 cells, confirm by replying with the EXACT same JSON as last time. ` +
+                    `If not, fix the coordinates (still using 0.1 increments only). ` +
+                    `Do not be pedantic about pixels—only the correct cell matters.\n\n` +
+                    `Last proposal:\n${JSON.stringify({ message: "confirm shift", actions: [{ shift: pending }] }, null, 2)}`;
+
+                const prior = this.messageHistory
+                    .filter((m) => m && (m.role === "user" || m.role === "assistant"))
+                    .map((m) => ({
+                        role: m.role,
+                        content: this._historyTurnToChatContent(m)
+                    }));
+
+                const userMsg = {
+                    role: "user",
+                    content: [
+                        { type: "text", text: confirmPrompt },
+                        { type: "image_url", image_url: { url: frame.dataUrl } }
+                    ]
+                };
+
+                // Store the auto-check prompt in history so you can see the loop.
+                this.messageHistory.push({
+                    role: "user",
+                    text: `Auto-check shift: ${pending.fromX.toFixed(1)},${pending.fromY.toFixed(1)} → ${pending.toX.toFixed(
+                        1
+                    )},${pending.toY.toFixed(1)}`,
+                    fullPrompt: confirmPrompt,
+                    at: new Date().toISOString()
+                });
+                this._renderHistory();
+
+                const reply = await this.sendPrompt("", {
+                    messages: [...prior, userMsg],
+                    skipVisionAttachment: true
+                });
+
+                this.messageHistory.push({
+                    role: "assistant",
+                    text: reply.contentText || "",
+                    at: new Date().toISOString()
+                });
+                this._renderHistory();
+
+                const payload =
+                    this._tryParseJson(reply.contentText) ||
+                    this._extractJsonObjectFromModelText(reply.contentText) ||
+                    this._tryParseJson(reply.rawText) ||
+                    this._extractJsonObjectFromModelText(reply.rawText);
+                const specs = payload && typeof payload === "object" ? this._collectActionsFromPayload(payload) : [];
+                const shiftItem = specs.find((s) => String(s?.actionName || "").trim().toLowerCase() === "shift");
+                const next = this._normalizeShiftSpec(shiftItem?.actionArgs);
+                if (!next) {
+                    this.messageHistory.push({
+                        role: "system",
+                        text: "Shift confirm: model did not return a shift; stopped.",
+                        at: new Date().toISOString()
+                    });
+                    this._shiftConfirm.pending = null;
+                    return;
+                }
+
+                if (this._shiftSpecEqual(next, pending)) {
+                    await this.act("shift", pending);
+                    this.messageHistory.push({
+                        role: "system",
+                        text: `Shift confirmed and executed: ${JSON.stringify(pending)} ✓`,
+                        at: new Date().toISOString()
+                    });
+                    this._shiftConfirm.pending = null;
+                    this._shiftConfirm.fixCount = 0;
+                    this._renderHistory();
+                    return;
+                }
+
+                // Model corrected the arrow.
+                this._shiftConfirm.fixCount += 1;
+                pending = next;
+                this._shiftConfirm.pending = pending;
+                if (this._shiftConfirm.fixCount >= 3) {
+                    this.messageHistory.push({
+                        role: "system",
+                        text: `Shift confirm: model adjusted arrow 3 times without confirming; stopping auto-check. Last proposal: ${JSON.stringify(
+                            pending
+                        )}`,
+                        at: new Date().toISOString()
+                    });
+                    this._shiftConfirm.pending = null;
+                    this._renderHistory();
+                    return;
+                }
+            }
+        } finally {
+            this._shiftConfirm.running = false;
+        }
+    }
+
     _findNamedItem(list, name) {
         if (!Array.isArray(list)) return null;
         const key = String(name || "").trim().toLowerCase();
@@ -828,6 +1059,16 @@ class AgentInterface {
 
         const specs = this._collectActionsFromPayload(payload);
         if (!specs.length) return;
+
+        // Special case: shift confirmation loop (do not execute immediately).
+        const shiftSpec = specs.find((s) => String(s?.actionName || "").trim().toLowerCase() === "shift");
+        if (shiftSpec) {
+            const initial = this._normalizeShiftSpec(shiftSpec.actionArgs);
+            if (initial) {
+                await this._runShiftConfirmationLoop(initial);
+                return;
+            }
+        }
 
         const summaries = [];
         for (const { actionName, actionArgs } of specs) {
