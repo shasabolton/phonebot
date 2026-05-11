@@ -1128,7 +1128,8 @@ class AgentInterface {
     _renderHistory() {
         if (!this._historyEl) return;
         this._historyEl.replaceChildren();
-        for (const m of this.messageHistory.slice(-20)) {
+        /** Full thread (API sends full history too — only provider token limits may trim). */
+        for (const m of this.messageHistory) {
             const bubble = document.createElement("div");
             const roleClass = m.role === "user" ? "agent-history-user" : m.role === "system" ? "agent-history-system" : "agent-history-agent";
             bubble.className = "agent-history-bubble " + roleClass;
