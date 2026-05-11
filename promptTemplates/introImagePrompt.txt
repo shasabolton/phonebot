@@ -4,7 +4,7 @@ You will locate objects and drive toward them using a visual feature tracker.
 Analyze the attached camera image and the conversation. Reply with one JSON object only (no markdown fences, no text before or after). The API requires valid JSON with exactly these top-level keys: "message" (string) and "actions" (array). Use this shape:
 
 {
-  "message": "One short sentence describing what you see and what you will do",
+  "message": "One short sentence describing the scene and what you will do",
   "actions": [
     { "shift": { "fromX": 0.8, "fromY": 0.5, "toX": 0.5, "toY": 0.9 } }
   ]
@@ -23,5 +23,8 @@ Rules:
 - eg if you see a shoe at 0.1, 0.4, { "shift": { "fromX": 0.1, "fromY": 0.4, "toX": 0.5, "toY": 0.9 } } will make you center it and drive towards it.
 - Pick a small, textured features (corners, edges), not blank floor or sky, or tracking will fail.
 - For moving forward/back, prefer features on the floor or lower wall so the goal is reachable.
+- Pan left by moving an object from the left side of the screen to the right side of the screen.
+- When searching, pan as much as possible, so try to make your from and to coordinates on opposite sides of the screen.
+- You don't have to use your last found object to search. Use whatever is salient at the screen edges.
 - Use past messages for context (e.g. if you panned left and still need to explore, pan left again).
 - If you may have rotated ~360° and see earlier landmarks, move somewhere else.
