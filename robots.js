@@ -126,7 +126,7 @@ window.ROBOTS_DATA = {
                     name: "cameraView",
                     path: "agentInterface.currentCameraImageUrl",
                     description:
-                        "Latest camera frame as a data URL (full value omitted in prompt text; the same frame is attached as an image on the current chat turn only)."
+                        "Latest camera frame"
                 }
                 //{name: "objects seen", path: "processing.computervision.results", description: "Tracks in the camera feed. Each bbox is normalized: x and width are 0–1 fractions of frame width, y and height are 0–1 fractions of frame height. Field bboxUnit is \"normalized01\"."},
             ],
