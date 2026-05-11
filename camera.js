@@ -173,7 +173,7 @@ class Camera extends Sensor {
 
         const flowRow = document.createElement("div");
         flowRow.className = "sensor-camera-flow-actions";
-        flowRow.style.marginTop = "6px";
+        flowRow.style.marginTop = "8px";
         const deleteFlowBtn = document.createElement("button");
         deleteFlowBtn.type = "button";
         deleteFlowBtn.textContent = "Delete flow box";
@@ -189,7 +189,6 @@ class Camera extends Sensor {
             }
         });
         flowRow.appendChild(deleteFlowBtn);
-        frame.appendChild(flowRow);
 
         const status = document.createElement("p");
         status.className = "muted sensor-camera-status";
@@ -210,6 +209,7 @@ class Camera extends Sensor {
         wrap.appendChild(title);
         wrap.appendChild(faceRow);
         wrap.appendChild(frame);
+        wrap.appendChild(flowRow);
         wrap.appendChild(status);
         wrap.appendChild(startBtn);
         container.appendChild(wrap);
