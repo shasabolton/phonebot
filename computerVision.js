@@ -1279,6 +1279,11 @@ class ComputerVisionAiModel {
         this._resizeOverlayToVideo(videoEl);
         this._clearOverlay();
         const ctx = this._overlayCtx;
+        const ow = this._overlayCanvas.width | 0;
+        const oh = this._overlayCanvas.height | 0;
+        if (typeof PhonebotNormalizationGrid !== "undefined" && PhonebotNormalizationGrid.draw) {
+            PhonebotNormalizationGrid.draw(ctx, ow, oh);
+        }
         const widthScale = (videoEl.clientWidth || videoEl.videoWidth) / videoEl.videoWidth;
         const heightScale = (videoEl.clientHeight || videoEl.videoHeight) / videoEl.videoHeight;
         ctx.lineWidth = 2;

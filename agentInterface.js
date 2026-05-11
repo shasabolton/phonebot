@@ -344,6 +344,9 @@ class AgentInterface {
         this._captureCanvas.width = targetW;
         this._captureCanvas.height = targetH;
         this._captureCtx.drawImage(videoEl, 0, 0, targetW, targetH);
+        if (typeof PhonebotNormalizationGrid !== "undefined" && PhonebotNormalizationGrid.draw) {
+            PhonebotNormalizationGrid.draw(this._captureCtx, targetW, targetH);
+        }
         return {
             dataUrl: this._captureCanvas.toDataURL("image/jpeg", this.cameraCaptureJpegQuality),
             width: targetW,

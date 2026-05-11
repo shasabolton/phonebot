@@ -13,6 +13,7 @@ Analyze the attached camera image and the conversation. Reply with one JSON obje
 If you need no motion change, use "actions": []. Never omit "message" or "actions".
 
 Rules:
+- The image has a white guide grid: lines at 0.1, 0.2, … 0.9 of width and height; labels on the top and left show those fractions. Use the same 0–1 system for fromX, fromY, toX, toY (they refer to the full image including the grid).
 - Coordinates are normalized 0..1. Origin (0,0) is top-left. (1,1) is the bottom right.
 - x is fraction of image width, y is fraction of image height. So (0.5, 1) would be the center bottom. 
 - Use the shift action only.

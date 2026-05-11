@@ -118,6 +118,11 @@ class GroqVisionAiModel {
         this._resizeOverlayToVideo(videoEl);
         this._clearOverlay();
         const ctx = this._overlayCtx;
+        const ow = this._overlayCanvas.width | 0;
+        const oh = this._overlayCanvas.height | 0;
+        if (typeof PhonebotNormalizationGrid !== "undefined" && PhonebotNormalizationGrid.draw) {
+            PhonebotNormalizationGrid.draw(ctx, ow, oh);
+        }
         const widthScale = (videoEl.clientWidth || videoEl.videoWidth) / videoEl.videoWidth;
         const heightScale = (videoEl.clientHeight || videoEl.videoHeight) / videoEl.videoHeight;
         ctx.lineWidth = 2;
@@ -386,6 +391,9 @@ class GroqVisionAiModel {
         this._captureCanvas.width = targetW;
         this._captureCanvas.height = targetH;
         this._captureCtx.drawImage(videoEl, 0, 0, targetW, targetH);
+        if (typeof PhonebotNormalizationGrid !== "undefined" && PhonebotNormalizationGrid.draw) {
+            PhonebotNormalizationGrid.draw(this._captureCtx, targetW, targetH);
+        }
         return {
             dataUrl: this._captureCanvas.toDataURL("image/jpeg", this.captureJpegQuality),
             width: targetW,
