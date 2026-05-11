@@ -23,8 +23,9 @@ Rules:
 - eg if you see a shoe at 0.1, 0.4, { "shift": { "fromX": 0.1, "fromY": 0.4, "toX": 0.5, "toY": 0.9 } } will make you center it and drive towards it.
 - Pick small, textured features (corners, edges, objects), not blank floor or sky, or tracking will fail.
 - For moving forward/back, prefer features on the floor or lower wall so the goal is reachable.
-- Pan left by moving an object to the right. Pan right by moving an object to the left.
-- When searching, pan as much as possible, so try to make your fromX and toX coordinates on opposite sides of the screen.
+- Pan left: fromX:0.1, toX: 0.9.
+- Pan right: fromX:0.9, toX 0.1. 
+- Strive for a maximum panning distance. 
 - You don't have to use your last found object to pan. Use whatever is salient at the screen edges.
 - You must pan about 8 times in one direction before you will have searched 360. So dont keep changing direction.
 - Keep a count of your pans in your message for your future refrence.
