@@ -817,10 +817,14 @@ class AgentInterface {
                 }
 
                 const confirmPrompt =
-                    `Confirm the arrow placement by grid cell (0.1 increments). ` +
-                    `If the from/to endpoints are in the intended 0.1×0.1 cells, confirm by replying with the EXACT same JSON as last time. ` +
+                    `Confirm the arrow placement (0.1 increments only). ` +
+                    `The blunt/yellow START dot of the arrow is the FROM point. ` +
+                    `Question 1: Is the FROM dot directly on top of the intended object (e.g. the cup), not one grid cell away? ` +
+                    `If NO, move fromX/fromY to the correct cell so the dot is on the object. ` +
+                    `Question 2: Is the arrow direction correct for the intended motion (toX/toY)? ` +
+                    `If YES to both, confirm by replying with the EXACT same JSON as last time. ` +
                     `If not, fix the coordinates (still using 0.1 increments only). ` +
-                    `Do not be pedantic about pixels—only the correct cell matters.\n\n` +
+                    `Do not be pedantic about sub-cell pixels, but DO require the dot to be in the correct cell on the object.\n\n` +
                     `Last proposal:\n${JSON.stringify({ message: "confirm shift", actions: [{ shift: pending }] }, null, 2)}`;
 
                 const prior = this.messageHistory
