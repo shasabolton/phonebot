@@ -713,10 +713,20 @@ class AgentInterface {
         return a.fromX === b.fromX && a.fromY === b.fromY && a.toX === b.toX && a.toY === b.toY;
     }
 
-    _drawShiftArrowOverlay(ctx, w, h, spec) {
+    _drawShiftArrowOverlay(ctx, w, h, spec, sourceW, sourceH) {
         if (!ctx || !spec || !(w > 0) || !(h > 0)) return;
-        const fx = spec.fromX * w;
-        const fy = spec.fromY * h;
+        let fx = spec.fromX * w;
+        let fy = spec.fromY * h;
+        const fw = sourceW | 0;
+        const fh = sourceH | 0;
+        const Vision = typeof window !== "undefined" ? window.ComputerVisionAiModel : null;
+        if (fw > 0 && fh > 0 && Vision && typeof Vision.flowTouchCenterPxForAgentNorm === "function") {
+            const c = Vision.flowTouchCenterPxForAgentNorm(spec.fromX, spec.fromY, fw, fh);
+            if (c && Number.isFinite(c.cx) && Number.isFinite(c.cy)) {
+                fx = (c.cx / fw) * w;
+                fy = (c.cy / fh) * h;
+            }
+        }
         const tx = spec.toX * w;
         const ty = spec.toY * h;
         const dx = tx - fx;
@@ -777,7 +787,16 @@ class AgentInterface {
         // Re-draw onto the same canvas so the dataUrl includes the arrow.
         // _captureFrameDataUrl already drew the video + grid; we only add the arrow here.
         if (this._captureCtx && this._captureCanvas) {
-            this._drawShiftArrowOverlay(this._captureCtx, this._captureCanvas.width, this._captureCanvas.height, spec);
+            const sw = videoEl.videoWidth | 0;
+            const sh = videoEl.videoHeight | 0;
+            this._drawShiftArrowOverlay(
+                this._captureCtx,
+                this._captureCanvas.width,
+                this._captureCanvas.height,
+                spec,
+                sw,
+                sh
+            );
             base.dataUrl = this._captureCanvas.toDataURL("image/jpeg", this.cameraCaptureJpegQuality);
         }
         return base;

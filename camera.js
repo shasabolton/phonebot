@@ -13,6 +13,37 @@ class Camera extends Sensor {
         this._startBtn = null;
         this._frontBtn = null;
         this._backBtn = null;
+        /** @type {(() => void) | null} */
+        this._onVideoLayout = null;
+        /** @type {ResizeObserver | null} */
+        this._frameResizeObs = null;
+    }
+
+    /**
+     * Size the frame to the camera stream aspect so the video element is not letterboxed inside the box:
+     * the painted picture fills the frame (same framing as canvas drawImage / model JPEG). Fits within the
+     * sensor column width and 70vh.
+     */
+    _layoutVideoFrameToStreamAspect() {
+        const v = this._videoEl;
+        const frame = this._frameEl;
+        if (!v || !frame) return;
+        const vw = v.videoWidth | 0;
+        const vh = v.videoHeight | 0;
+        if (!vw || !vh) {
+            frame.style.width = "";
+            frame.style.height = "";
+            return;
+        }
+        const wrap = this.gui;
+        const maxW = Math.max(1, (wrap?.clientWidth || frame.parentElement?.clientWidth || 400) | 0);
+        const vhCap = window.visualViewport?.height || window.innerHeight;
+        const maxH = Math.max(1, Math.floor(vhCap * 0.7));
+        const scale = Math.min(maxW / vw, maxH / vh);
+        const dispW = Math.max(1, Math.floor(vw * scale));
+        const dispH = Math.max(1, Math.floor(vh * scale));
+        frame.style.width = `${dispW}px`;
+        frame.style.height = `${dispH}px`;
     }
 
     _syncFaceButtons() {
@@ -72,6 +103,7 @@ class Camera extends Sensor {
             }
             this._videoEl.srcObject = this._stream;
             await this._videoEl.play().catch(() => {});
+            this._layoutVideoFrameToStreamAspect();
             if (this._statusEl) {
                 this._statusEl.textContent = "";
                 this._statusEl.className = "muted sensor-camera-status";
@@ -107,6 +139,10 @@ class Camera extends Sensor {
         }
         if (this._videoEl) {
             this._videoEl.srcObject = null;
+        }
+        if (this._frameEl) {
+            this._frameEl.style.width = "";
+            this._frameEl.style.height = "";
         }
         if (this._startBtn) this._startBtn.style.display = "";
     }
@@ -219,6 +255,14 @@ class Camera extends Sensor {
         this._statusEl = status;
         this._startBtn = startBtn;
 
+        this._onVideoLayout = () => this._layoutVideoFrameToStreamAspect();
+        video.addEventListener("loadedmetadata", this._onVideoLayout);
+        window.addEventListener("resize", this._onVideoLayout);
+        if (typeof ResizeObserver !== "undefined") {
+            this._frameResizeObs = new ResizeObserver(() => this._layoutVideoFrameToStreamAspect());
+            this._frameResizeObs.observe(wrap);
+        }
+
         this.start().then((ok) => {
             if (!ok && this._startBtn) {
                 if (this._statusEl && !this._statusEl.textContent) {
@@ -230,6 +274,17 @@ class Camera extends Sensor {
     }
 
     destroy() {
+        if (this._onVideoLayout) {
+            window.removeEventListener("resize", this._onVideoLayout);
+            if (this._videoEl) {
+                this._videoEl.removeEventListener("loadedmetadata", this._onVideoLayout);
+            }
+            this._onVideoLayout = null;
+        }
+        if (this._frameResizeObs) {
+            this._frameResizeObs.disconnect();
+            this._frameResizeObs = null;
+        }
         this.stop();
     }
 }

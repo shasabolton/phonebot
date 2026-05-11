@@ -123,6 +123,11 @@ class GroqVisionAiModel {
         if (typeof PhonebotNormalizationGrid !== "undefined" && PhonebotNormalizationGrid.draw) {
             PhonebotNormalizationGrid.draw(ctx, ow, oh);
         }
+        const Vision = typeof window !== "undefined" ? window.ComputerVisionAiModel : null;
+        const t =
+            Vision && typeof Vision.objectFitContainVideoTransform === "function"
+                ? Vision.objectFitContainVideoTransform(videoEl)
+                : null;
         const widthScale = (videoEl.clientWidth || videoEl.videoWidth) / videoEl.videoWidth;
         const heightScale = (videoEl.clientHeight || videoEl.videoHeight) / videoEl.videoHeight;
         ctx.lineWidth = 2;
@@ -137,10 +142,22 @@ class GroqVisionAiModel {
             const py = ny * fh;
             const pw = nw * fw;
             const ph = nh * fh;
-            const bx = px * widthScale;
-            const by = py * heightScale;
-            const bw = pw * widthScale;
-            const bh = ph * heightScale;
+            let bx;
+            let by;
+            let bw;
+            let bh;
+            if (t && Vision && typeof Vision.intrinsicBboxToVideoElementLocalRect === "function") {
+                const r = Vision.intrinsicBboxToVideoElementLocalRect([px, py, pw, ph], t);
+                bx = r.x;
+                by = r.y;
+                bw = r.w;
+                bh = r.h;
+            } else {
+                bx = px * widthScale;
+                by = py * heightScale;
+                bw = pw * widthScale;
+                bh = ph * heightScale;
+            }
             const label = `${item.class} ${(item.score * 100).toFixed(0)}%`;
 
             ctx.strokeStyle = "#ffcc00";

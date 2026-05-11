@@ -90,10 +90,11 @@
       box-shadow: inset 0 0 0 2px #333;
       font-weight: bold;
     }
-    /* Shrink-wrap to the actual video aspect (e.g. portrait phone in landscape laptop). */
+    /*
+      Frame size is set in JS from stream aspect so the video fills the box with no letterboxing:
+      same full-frame content the model sees (model JPEG may use a smaller max edge for bandwidth).
+    */
     .sensor-camera-frame {
-      width: fit-content;
-      max-width: 100%;
       margin: 0 auto;
       background: #000;
       border-radius: 6px;
@@ -103,10 +104,8 @@
     }
     .sensor-camera-video {
       display: block;
-      width: auto;
-      height: auto;
-      max-width: 100%;
-      max-height: 70vh;
+      width: 100%;
+      height: 100%;
       object-fit: contain;
     }
     .sensor-camera-status {

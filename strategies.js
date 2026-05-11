@@ -121,6 +121,16 @@ class RobotStrategies {
      * Normalized coords: x = fraction of frame width, y = fraction of frame height (0,0 top-left).
      */
     _normToOverlayPx(videoEl, nx, ny) {
+        const Vision = typeof window !== "undefined" ? window.ComputerVisionAiModel : null;
+        if (Vision && typeof Vision.objectFitContainVideoTransform === "function") {
+            const t = Vision.objectFitContainVideoTransform(videoEl);
+            if (t) {
+                return {
+                    x: t.offsetX + nx * t.vw * t.scale,
+                    y: t.offsetY + ny * t.vh * t.scale
+                };
+            }
+        }
         const vw = videoEl.videoWidth || 1;
         const vh = videoEl.videoHeight || 1;
         const sx = (videoEl.clientWidth || vw) / vw;

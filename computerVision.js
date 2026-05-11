@@ -276,13 +276,88 @@ class ComputerVisionAiModel {
         return ua > 0 ? inter / ua : 0;
     }
 
-    _clampBbox(bbox, fw, fh) {
+    /**
+     * How intrinsic video pixels map into the HTMLVideoElement layout box when the element
+     * uses object-fit: contain (uniform scale + letterboxing). Same mapping as drawImage(video,0,0,W,H)
+     * when W:H matches the frame aspect.
+     * @param {HTMLVideoElement} videoEl
+     * @returns {{ vw: number, vh: number, cw: number, ch: number, scale: number, offsetX: number, offsetY: number } | null}
+     */
+    static objectFitContainVideoTransform(videoEl) {
+        if (!videoEl) return null;
+        const vw = videoEl.videoWidth | 0;
+        const vh = videoEl.videoHeight | 0;
+        const cw = videoEl.clientWidth || vw || 0;
+        const ch = videoEl.clientHeight || vh || 0;
+        if (!vw || !vh || !cw || !ch) return null;
+        const scale = Math.min(cw / vw, ch / vh);
+        const offsetX = (cw - vw * scale) * 0.5;
+        const offsetY = (ch - vh * scale) * 0.5;
+        return { vw, vh, cw, ch, scale, offsetX, offsetY };
+    }
+
+    /** Intrinsic pixel bbox [x,y,w,h] → rectangle in video element local CSS pixels (overlay canvas space). */
+    static intrinsicBboxToVideoElementLocalRect(bbox, t) {
+        if (!t || !bbox) return { x: 0, y: 0, w: 0, h: 0 };
+        const [x, y, w, h] = bbox;
+        return {
+            x: t.offsetX + x * t.scale,
+            y: t.offsetY + y * t.scale,
+            w: w * t.scale,
+            h: h * t.scale
+        };
+    }
+
+    /**
+     * Pointer position in video element local pixels (0..clientWidth) → intrinsic frame pixels.
+     * @returns {{ vx: number, vy: number } | null} null if outside the painted video area (letterbox).
+     */
+    static videoElementLocalToIntrinsicPx(videoEl, localX, localY) {
+        const t = ComputerVisionAiModel.objectFitContainVideoTransform(videoEl);
+        if (!t) return null;
+        const u = localX - t.offsetX;
+        const v = localY - t.offsetY;
+        const dw = t.vw * t.scale;
+        const dh = t.vh * t.scale;
+        if (u < 0 || v < 0 || u > dw || v > dh) return null;
+        return { vx: u / t.scale, vy: v / t.scale };
+    }
+
+    static clampBbox(bbox, fw, fh) {
         let [x, y, w, h] = bbox;
         x = Math.max(0, Math.min(fw - 1, x));
         y = Math.max(0, Math.min(fh - 1, y));
         w = Math.max(1, Math.min(fw - x, w));
         h = Math.max(1, Math.min(fh - y, h));
         return [x, y, w, h];
+    }
+
+    _clampBbox(bbox, fw, fh) {
+        return ComputerVisionAiModel.clampBbox(bbox, fw, fh);
+    }
+
+    /**
+     * Pixel center of the fixed flow-touch cell that {@link #createFlowObjectAt} would create
+     * after edge clamping (same as the red overlay box center).
+     * @param {number} fromX
+     * @param {number} fromY
+     * @param {number} fw
+     * @param {number} fh
+     * @returns {{ cx: number, cy: number } | null}
+     */
+    static flowTouchCenterPxForAgentNorm(fromX, fromY, fw, fh) {
+        if (!fw || !fh) return null;
+        const nx = Math.min(1, Math.max(0, Number(fromX)));
+        const ny = Math.min(1, Math.max(0, Number(fromY)));
+        const frameX = nx * fw;
+        const frameY = ny * fh;
+        const cell = Math.max(8, fw * 0.1);
+        const [x, y, w, h] = ComputerVisionAiModel.clampBbox(
+            [frameX - cell * 0.5, frameY - cell * 0.5, cell, cell],
+            fw,
+            fh
+        );
+        return { cx: x + w * 0.5, cy: y + h * 0.5 };
     }
 
     /** Pixel bbox [x,y,w,h] → normalized [nx,ny,nw,nh] (x,w vs frame width; y,h vs frame height). */
@@ -826,10 +901,12 @@ class ComputerVisionAiModel {
         const py = Number(ev.clientY);
         if (!Number.isFinite(px) || !Number.isFinite(py)) return;
         if (px < rect.left || py < rect.top || px > rect.right || py > rect.bottom) return;
-        const sx = videoEl.videoWidth / rect.width;
-        const sy = videoEl.videoHeight / rect.height;
-        const vx = (px - rect.left) * sx;
-        const vy = (py - rect.top) * sy;
+        const localX = px - rect.left;
+        const localY = py - rect.top;
+        const mapped = ComputerVisionAiModel.videoElementLocalToIntrinsicPx(videoEl, localX, localY);
+        if (!mapped) return;
+        const vx = mapped.vx;
+        const vy = mapped.vy;
         this._lastTapMarker = { x: vx, y: vy, untilMs: Date.now() + 1000 };
         if (ev && typeof ev.preventDefault === "function") ev.preventDefault();
         await this.createFlowObjectAt(vx, vy);
@@ -1284,18 +1361,19 @@ class ComputerVisionAiModel {
         if (typeof PhonebotNormalizationGrid !== "undefined" && PhonebotNormalizationGrid.draw) {
             PhonebotNormalizationGrid.draw(ctx, ow, oh);
         }
-        const widthScale = (videoEl.clientWidth || videoEl.videoWidth) / videoEl.videoWidth;
-        const heightScale = (videoEl.clientHeight || videoEl.videoHeight) / videoEl.videoHeight;
+        const t = ComputerVisionAiModel.objectFitContainVideoTransform(videoEl);
+        if (!t) return;
         ctx.lineWidth = 2;
         ctx.font = "12px Arial";
         ctx.textBaseline = "top";
 
         list.forEach((item) => {
             const [x, y, w, h] = item.bbox;
-            const bx = x * widthScale;
-            const by = y * heightScale;
-            const bw = w * widthScale;
-            const bh = h * heightScale;
+            const r = ComputerVisionAiModel.intrinsicBboxToVideoElementLocalRect([x, y, w, h], t);
+            const bx = r.x;
+            const by = r.y;
+            const bw = r.w;
+            const bh = r.h;
             const label = `${item.class} ${(item.score * 100).toFixed(0)}%`;
 
             ctx.strokeStyle = "#ff3333";
@@ -1310,8 +1388,8 @@ class ComputerVisionAiModel {
 
         const marker = this._lastTapMarker;
         if (marker && marker.untilMs > Date.now()) {
-            const mx = marker.x * widthScale;
-            const my = marker.y * heightScale;
+            const mx = t.offsetX + marker.x * t.scale;
+            const my = t.offsetY + marker.y * t.scale;
             ctx.strokeStyle = "#33ccff";
             ctx.lineWidth = 2;
             ctx.beginPath();
