@@ -510,6 +510,40 @@ class SpeechToTextAiModel {
         return this._speechSessionState === "wake_listening" || this._speechSessionState === "capture";
     }
 
+    /**
+     * After recording finalizes, `onend` may have fired while session was `finalizing` and skipped `rec.start()`.
+     * Always ensure recognition is running again once we are back to wake_listening.
+     */
+    _resumeWakeRecognitionAfterFinalize() {
+        if (!this.enabled) return;
+        const rec = this._recognition;
+        const RecognitionClass = this._getSpeechRecognitionClass();
+        if (!RecognitionClass) return;
+        if (!rec) {
+            this._logEvent("Post-finalize: no recognition instance; rebuilding wake listener.");
+            this._startWakeRecognition();
+            return;
+        }
+        try {
+            rec.start();
+            this._setStatus(`Listening for "${this.wakePhrase}"`, "ok");
+            this._logEvent("Post-finalize: rec.start() (wake listening ensured).");
+        } catch (err) {
+            const msg = String(err?.message || err || "");
+            if (/InvalidStateError|already started|recognition has already started/i.test(msg)) {
+                this._setStatus(`Listening for "${this.wakePhrase}"`, "ok");
+                this._logEvent("Post-finalize: recognition already active.");
+                return;
+            }
+            this._logEvent(`Post-finalize: rec.start() failed (${msg}); rebuilding wake listener.`);
+            try {
+                rec.stop();
+            } catch (_) {}
+            this._recognition = null;
+            this._startWakeRecognition();
+        }
+    }
+
     async _onWakeTriggered() {
         if (this._isRecording) return;
         this._speechSessionState = "capture";
@@ -667,6 +701,9 @@ class SpeechToTextAiModel {
                 this._logEvent("Session → wake_listening (ready for next wake)");
             } else {
                 this._speechSessionState = "idle";
+            }
+            if (this.enabled) {
+                setTimeout(() => this._resumeWakeRecognitionAfterFinalize(), 0);
             }
         }
     }
