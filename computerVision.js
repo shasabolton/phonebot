@@ -1707,18 +1707,6 @@ class ComputerVisionAiModel {
         const title = document.createElement("h4");
         title.textContent = this.name;
 
-        const underFrameActions = document.createElement("div");
-        underFrameActions.className = "computervision-frame-actions";
-        underFrameActions.style.marginBottom = "8px";
-        const deleteFlowBtn = document.createElement("button");
-        deleteFlowBtn.type = "button";
-        deleteFlowBtn.textContent = "Delete flow box";
-        deleteFlowBtn.title = "Remove the tap- or agent-placed optical-flow tracking box";
-        deleteFlowBtn.addEventListener("click", () => {
-            this.clearManualFlowTracks();
-        });
-        underFrameActions.appendChild(deleteFlowBtn);
-
         const controls = document.createElement("div");
         controls.className = "ai-model-controls";
 
@@ -1844,7 +1832,6 @@ class ComputerVisionAiModel {
         controls.appendChild(makeCenterBtn);
         controls.appendChild(makeCenterOrbBtn);
         wrap.appendChild(title);
-        wrap.appendChild(underFrameActions);
         wrap.appendChild(controls);
         wrap.appendChild(hint);
         wrap.appendChild(status);
@@ -1860,7 +1847,6 @@ class ComputerVisionAiModel {
         this._flowBboxPctLowInput = flowBboxPctLowInput;
         this._makeCenterBtn = makeCenterBtn;
         this._makeCenterOrbBtn = makeCenterOrbBtn;
-        this._deleteFlowBtn = deleteFlowBtn;
         this._statusEl = status;
         this._outputEl = output;
     }

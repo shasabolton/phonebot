@@ -103,7 +103,7 @@ class Robot {
                     : { ...item, type: item.type || "sensor" };
             try {
                 if (cfg.type === "camera") {
-                    this.sensors.push(new Camera(cfg));
+                    this.sensors.push(new Camera({ ...cfg, robot: this }));
                 } else if (cfg.type === "microphone") {
                     const MicClass = window.Microphone;
                     if (typeof MicClass !== "function") {

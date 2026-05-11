@@ -1,6 +1,8 @@
 class Camera extends Sensor {
     constructor(config) {
         super({ type: "camera", ...config });
+        /** Parent robot; set at runtime by Robot.buildSensors for flow-box UI. */
+        this.robot = config?.robot || null;
         this.name = config?.name || "Camera";
         /** @type {"user" | "environment"} user = front, environment = back */
         this._facingMode = "user";
@@ -168,6 +170,26 @@ class Camera extends Sensor {
         video.playsInline = true;
         video.className = "sensor-camera-video";
         frame.appendChild(video);
+
+        const flowRow = document.createElement("div");
+        flowRow.className = "sensor-camera-flow-actions";
+        flowRow.style.marginTop = "6px";
+        const deleteFlowBtn = document.createElement("button");
+        deleteFlowBtn.type = "button";
+        deleteFlowBtn.textContent = "Delete flow box";
+        deleteFlowBtn.title = "Remove the tap- or agent-placed optical-flow tracking box";
+        deleteFlowBtn.addEventListener("click", () => {
+            const r = this.robot;
+            const cv =
+                (r && typeof r.getAiModelByType === "function" && r.getAiModelByType("computervision")) ||
+                (r && Array.isArray(r.aiModels) && r.aiModels.find((m) => String(m?.type || "").toLowerCase() === "computervision")) ||
+                null;
+            if (cv && typeof cv.clearManualFlowTracks === "function") {
+                cv.clearManualFlowTracks();
+            }
+        });
+        flowRow.appendChild(deleteFlowBtn);
+        frame.appendChild(flowRow);
 
         const status = document.createElement("p");
         status.className = "muted sensor-camera-status";

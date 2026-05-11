@@ -14,8 +14,12 @@ If you need no motion change, use "actions": []. Never omit "message" or "action
 
 Rules:
 - Coordinates are normalized 0..1. Origin (0,0) is top-left. (1,1) is the bottom right.
-- x is fraction of image width, y is fraction of image height. S (0.5, 1) would be the bottom center. 
-- "shift" places a flow-tracking box at (fromX, fromY) like a tap on the video, then sets the yaw tracker PID goal to toX and the forward tracker PID goal to toY.
+- x is fraction of image width, y is fraction of image height. So (0.5, 1) would be the center bottom. 
+- "shift" moves a patch from one location to another.
+- shift it across the screen to rotate without driving.
+- shift it to the center to aim at it.
+- shift it to the center and bottom to drive right up to it.
+- eg if you see a shoe at 0.1, 0.4, shift it to 0.5, 0.9 will make you center it and drive towards it until it is at that location.
 - Pick a small, textured feature (corners, edges), not blank floor or sky, or tracking will fail.
 - For moving forward/back, prefer features on the floor or lower wall so the goal is reachable.
 - Use past messages for context (e.g. if you panned left and still need to explore, pan left again).
