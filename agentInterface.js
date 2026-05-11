@@ -802,16 +802,26 @@ class AgentInterface {
         });
     }
 
+    /**
+     * @returns {Promise<boolean>} true if the chat request completed successfully
+     */
     async _submitSpeechPrompt(transcript, options = {}) {
         const text = String(transcript || "").trim();
-        if (!text) return;
+        if (!text) return false;
         const speechTranscriber = String(options.speechTranscriber || "").trim();
         if (!this._agentEnabled) {
             if (this._statusEl) {
                 this._statusEl.textContent = "Agent is off. Turn the agent on to send voice prompts.";
                 this._statusEl.className = "warn";
             }
-            return;
+            return false;
+        }
+        if (this._sendInProgress) {
+            if (this._statusEl) {
+                this._statusEl.textContent = "Already sending — wait for the current request to finish.";
+                this._statusEl.className = "warn";
+            }
+            return false;
         }
 
         this._apiKey = this._keyInput?.value?.trim() || "";
@@ -867,12 +877,14 @@ class AgentInterface {
                 this._statusEl.textContent = speechTranscriber ? `Done. (heard you via ${speechTranscriber})` : "Done.";
                 this._statusEl.className = "ok";
             }
+            return true;
         } catch (err) {
             console.error("AgentInterface speech send error:", err);
             if (this._statusEl) {
                 this._statusEl.textContent = err?.message || "Request failed";
                 this._statusEl.className = "error";
             }
+            return false;
         } finally {
             this._sendInProgress = false;
             this._syncSendButtonState();
@@ -964,14 +976,13 @@ class AgentInterface {
      * @returns {Promise<boolean>}
      */
     async submitPrompt(text, options = {}) {
-        if (!this._agentEnabled) {
-            return false;
-        }
         const next = String(text || "").trim();
         if (!next) return false;
         if (options.fromSpeech) {
-            await this._submitSpeechPrompt(next, options);
-            return true;
+            return await this._submitSpeechPrompt(next, options);
+        }
+        if (!this._agentEnabled) {
+            return false;
         }
         if (!this._promptInput) return false;
         this._promptInput.value = next;

@@ -11,7 +11,8 @@ Analyze the attached camera image and the conversation. Reply with JSON only (no
 }
 
 Rules:
-- Coordinates are normalized 0..1. Origin (0,0) is top-left. x is fraction of image width, y is fraction of image height.
+- Coordinates are normalized 0..1. Origin (0,0) is top-left. (1,1) is the bottom right.
+- x is fraction of image width, y is fraction of image height. S (0.5, 1) would be the bottom center. 
 - "shift" places a flow-tracking box at (fromX, fromY) like a tap on the video, then sets the yaw tracker PID goal to toX and the forward tracker PID goal to toY.
 - Pick a small, textured feature (corners, edges), not blank floor or sky, or tracking will fail.
 - For moving forward/back, prefer features on the floor or lower wall so the goal is reachable.

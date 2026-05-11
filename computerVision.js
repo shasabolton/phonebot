@@ -885,6 +885,25 @@ class ComputerVisionAiModel {
         return true;
     }
 
+    /** Remove tap- or agent-placed flow tracks (same classes cleared when placing a new flow box). */
+    clearManualFlowTracks() {
+        const kept = [];
+        for (const t of this._tracks) {
+            if (t?.manualId === "flowTouch" || t?.manualId === "flowDice4") {
+                this._releaseTrackMats(t);
+                continue;
+            }
+            kept.push(t);
+        }
+        this._tracks = kept;
+        this._syncDetectionsFromTracks();
+        const camera = this._getCameraSensor();
+        const videoEl = camera?.getVideoElement?.();
+        if (videoEl) this._drawDetections(videoEl, this._detections);
+        this._renderResponseOutput();
+        this._setStatus("Removed manual flow box.", "muted", 2200);
+    }
+
     async createOrbObjectAt(frameX, frameY) {
         const camera = this._getCameraSensor();
         const videoEl = camera?.getVideoElement?.();
@@ -1688,6 +1707,18 @@ class ComputerVisionAiModel {
         const title = document.createElement("h4");
         title.textContent = this.name;
 
+        const underFrameActions = document.createElement("div");
+        underFrameActions.className = "computervision-frame-actions";
+        underFrameActions.style.marginBottom = "8px";
+        const deleteFlowBtn = document.createElement("button");
+        deleteFlowBtn.type = "button";
+        deleteFlowBtn.textContent = "Delete flow box";
+        deleteFlowBtn.title = "Remove the tap- or agent-placed optical-flow tracking box";
+        deleteFlowBtn.addEventListener("click", () => {
+            this.clearManualFlowTracks();
+        });
+        underFrameActions.appendChild(deleteFlowBtn);
+
         const controls = document.createElement("div");
         controls.className = "ai-model-controls";
 
@@ -1813,6 +1844,7 @@ class ComputerVisionAiModel {
         controls.appendChild(makeCenterBtn);
         controls.appendChild(makeCenterOrbBtn);
         wrap.appendChild(title);
+        wrap.appendChild(underFrameActions);
         wrap.appendChild(controls);
         wrap.appendChild(hint);
         wrap.appendChild(status);
@@ -1828,6 +1860,7 @@ class ComputerVisionAiModel {
         this._flowBboxPctLowInput = flowBboxPctLowInput;
         this._makeCenterBtn = makeCenterBtn;
         this._makeCenterOrbBtn = makeCenterOrbBtn;
+        this._deleteFlowBtn = deleteFlowBtn;
         this._statusEl = status;
         this._outputEl = output;
     }

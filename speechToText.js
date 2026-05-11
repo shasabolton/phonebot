@@ -594,7 +594,15 @@ class SpeechToTextAiModel {
         });
         this._logEvent(`Sending transcript (${transcriber}): "${text}"`);
         try {
-            await agent.submitPrompt(text, { fromSpeech: true, speechTranscriber: transcriber });
+            const ok = await agent.submitPrompt(text, { fromSpeech: true, speechTranscriber: transcriber });
+            if (!ok) {
+                this._setStatus(
+                    `Not sent. Turn the chat agent on in “Chat agents”, enter an API key, and ensure no other send is running.`,
+                    "warn"
+                );
+                this._cooldownUntil = Date.now() + 2000;
+                return;
+            }
             this._setStatus(`Sent. Listening for "${this.wakePhrase}"`, "ok");
             this._cooldownUntil = Date.now() + 1500;
         } catch (err) {
