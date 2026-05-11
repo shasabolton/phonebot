@@ -502,6 +502,31 @@ class AgentInterface {
     }
 
     /**
+     * Text sent to the API for one stored history turn. User turns prefer `fullPrompt` when set
+     * (first message includes merged introduction + state + user text).
+     */
+    _historyTurnToChatContent(m) {
+        if (!m || (m.role !== "user" && m.role !== "assistant")) return "";
+        if (m.role === "user" && typeof m.fullPrompt === "string" && m.fullPrompt.trim()) {
+            return m.fullPrompt.trim();
+        }
+        return String(m.text || "");
+    }
+
+    /**
+     * On the first user message of a session, prefix the introduction template so it lives in history
+     * and is re-sent on every later turn via `_historyTurnToChatContent`.
+     */
+    async _mergeIntroductionIntoFirstUserMessage(fullUserContent, priorLength) {
+        const body = String(fullUserContent || "");
+        if (priorLength > 0) return body;
+        const intro = await this._fetchIntroductionPromptContent();
+        const head = intro != null ? String(intro).trim() : "";
+        if (!head) return body;
+        return `${head}\n\n${body}`;
+    }
+
+    /**
      * @param {string} userText
      * @param {{ singleTurn?: boolean, messages?: Array<{role:string,content:string|unknown}> }} [options]
      * If `messages` is provided, it is sent as-is (then the last user message gets the current camera image if available).
@@ -860,18 +885,14 @@ class AgentInterface {
                 .filter((m) => m && (m.role === "user" || m.role === "assistant"))
                 .map((m) => ({
                     role: m.role,
-                    content: String(m.text || "")
+                    content: this._historyTurnToChatContent(m)
                 }));
-            const introPrefix = [];
-            if (!prior.length) {
-                const intro = await this._fetchIntroductionPromptContent();
-                if (intro) introPrefix.push({ role: "user", content: intro });
-            }
-            const conversationMessages = [...introPrefix, ...prior, { role: "user", content: fullUserContent }];
+            const outboundUser = await this._mergeIntroductionIntoFirstUserMessage(fullUserContent, prior.length);
+            const conversationMessages = [...prior, { role: "user", content: outboundUser }];
             this.messageHistory.push({
                 role: "user",
-                text,
-                fullPrompt: fullUserContent,
+                text: prior.length ? text : outboundUser,
+                fullPrompt: outboundUser,
                 at: new Date().toISOString()
             });
             this._renderHistory();
@@ -944,21 +965,17 @@ class AgentInterface {
                 .filter((m) => m && (m.role === "user" || m.role === "assistant"))
                 .map((m) => ({
                     role: m.role,
-                    content: String(m.text || "")
+                    content: this._historyTurnToChatContent(m)
                 }));
-            const introPrefix = [];
-            if (!prior.length) {
-                const intro = await this._fetchIntroductionPromptContent();
-                if (intro) introPrefix.push({ role: "user", content: intro });
-            }
+            const outboundUser = await this._mergeIntroductionIntoFirstUserMessage(fullUserContent, prior.length);
             this.messageHistory.push({
                 role: "user",
-                text,
-                fullPrompt: fullUserContent,
+                text: prior.length ? text : outboundUser,
+                fullPrompt: outboundUser,
                 at: new Date().toISOString()
             });
             this._renderHistory();
-            const conversationMessages = [...introPrefix, ...prior, { role: "user", content: fullUserContent }];
+            const conversationMessages = [...prior, { role: "user", content: outboundUser }];
             const reply = await this.sendPrompt("", { messages: conversationMessages });
             this.messageHistory.push({
                 role: "assistant",
@@ -990,7 +1007,7 @@ class AgentInterface {
     /**
      * Used by external modules (e.g. SpeechToText model) to submit a prompt.
      * @param {string} text
-     * @param {{ fromSpeech?: boolean, speechTranscriber?: string }} [options] If fromSpeech, sends full user/assistant history plus current state and this transcript (introduction template is prepended on the first voice turn only). speechTranscriber labels the STT path for status/TTS hints.
+     * @param {{ fromSpeech?: boolean, speechTranscriber?: string }} [options] If fromSpeech, sends full user/assistant history plus current state and transcript; the introduction template is merged into the first user message only and stored in history. speechTranscriber labels the STT path for status/TTS hints.
      * @returns {Promise<boolean>}
      */
     async submitPrompt(text, options = {}) {
@@ -1011,7 +1028,7 @@ class AgentInterface {
     /**
      * Same request shape as voice prompts: prior user/assistant history plus one user message that starts with state machine JSON.
      * For proactive robot notices (e.g. strategies) so the model sees current state and conversation context.
-     * @param {string} text Short text shown in the history bubble.
+     * @param {string} text Short text shown in the history bubble after the first turn (first turn may include merged introduction in the bubble).
      * @param {{ contextLabel?: string, speechTranscriber?: string }} [options] contextLabel prefixes the payload block (default "Robot notice"). speechTranscriber labels status/TTS hints.
      * @returns {Promise<boolean>} false if agent off, empty text, send already in progress, or missing API key / agent
      */
@@ -1060,13 +1077,14 @@ class AgentInterface {
                 .filter((m) => m && (m.role === "user" || m.role === "assistant"))
                 .map((m) => ({
                     role: m.role,
-                    content: String(m.text || "")
+                    content: this._historyTurnToChatContent(m)
                 }));
-            const conversationMessages = [...prior, { role: "user", content: fullUserContent }];
+            const outboundUser = await this._mergeIntroductionIntoFirstUserMessage(fullUserContent, prior.length);
+            const conversationMessages = [...prior, { role: "user", content: outboundUser }];
             this.messageHistory.push({
                 role: "user",
-                text: transcript,
-                fullPrompt: fullUserContent,
+                text: prior.length ? transcript : outboundUser,
+                fullPrompt: outboundUser,
                 at: new Date().toISOString()
             });
             this._renderHistory();
