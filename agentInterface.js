@@ -32,6 +32,8 @@ class AgentInterface {
         const jq = this.config.cameraCaptureJpegQuality;
         this.cameraCaptureJpegQuality = Number.isFinite(jq) ? jq : 0.85;
         this.cameraCaptureJpegQuality = Math.max(0.4, Math.min(0.98, this.cameraCaptureJpegQuality));
+        /** If true, shift auto-check opens a modal with the exact JPEG sent to the model before the request. */
+        this.previewShiftConfirmImageBeforeSend = this.config.previewShiftConfirmImageBeforeSend !== false;
         this._captureCanvas = null;
         this._captureCtx = null;
         this._apiKey = "";
@@ -61,6 +63,9 @@ class AgentInterface {
          * - running: guard to prevent re-entrancy
          */
         this._shiftConfirm = { pending: null, fixCount: 0, running: false };
+        /** @type {HTMLElement | null} */
+        this._shiftPreviewBackdrop = null;
+        this._previewShiftConfirmInput = null;
         this._loadSavedKeyPreference();
         this._voiceOn = this._resolveVoiceDefault(null);
     }
@@ -802,6 +807,126 @@ class AgentInterface {
         return base;
     }
 
+    _removeShiftPreviewBackdrop() {
+        const el = this._shiftPreviewBackdrop;
+        if (el && el._phonebotShiftPreviewKeydown) {
+            document.removeEventListener("keydown", el._phonebotShiftPreviewKeydown);
+            delete el._phonebotShiftPreviewKeydown;
+        }
+        if (el?.parentNode) {
+            el.parentNode.removeChild(el);
+        }
+        this._shiftPreviewBackdrop = null;
+    }
+
+    /**
+     * Modal: same JPEG bytes as the next chat request (grid + arrow). Download or continue.
+     * @returns {Promise<void>} resolves when user sends; rejects with `{ cancelled: true }` on cancel
+     */
+    _promptShiftConfirmImagePreview(dataUrl, spec, width, height) {
+        if (!this.previewShiftConfirmImageBeforeSend) {
+            return Promise.resolve();
+        }
+        this._removeShiftPreviewBackdrop();
+        return new Promise((resolve, reject) => {
+            const backdrop = document.createElement("div");
+            backdrop.className = "agent-shift-confirm-preview-backdrop";
+            backdrop.setAttribute("role", "dialog");
+            backdrop.setAttribute("aria-modal", "true");
+            backdrop.setAttribute("aria-label", "Shift confirmation image preview");
+
+            const panel = document.createElement("div");
+            panel.className = "agent-shift-confirm-preview-panel";
+
+            const title = document.createElement("div");
+            title.className = "agent-shift-confirm-preview-title";
+            title.textContent = "Image sent to the agent (shift check)";
+
+            const sub = document.createElement("p");
+            sub.className = "muted agent-shift-confirm-preview-sub";
+            sub.textContent =
+                `This is the exact frame attached to the next request (${width}×${height} px). ` +
+                `Compare grid and arrow to your live camera preview.`;
+
+            const img = document.createElement("img");
+            img.className = "agent-shift-confirm-preview-img";
+            img.alt = "Shift confirmation frame with grid and arrow";
+            img.src = dataUrl;
+
+            const meta = document.createElement("div");
+            meta.className = "agent-shift-confirm-preview-meta";
+            meta.textContent = `from (${spec.fromX}, ${spec.fromY}) → (${spec.toX}, ${spec.toY})`;
+
+            const row = document.createElement("div");
+            row.className = "agent-shift-confirm-preview-actions";
+
+            const downloadBtn = document.createElement("button");
+            downloadBtn.type = "button";
+            downloadBtn.className = "secondary";
+            downloadBtn.textContent = "Download image";
+            downloadBtn.addEventListener("click", () => {
+                const ts = new Date().toISOString().replace(/[:.]/g, "-");
+                const name = `phonebot-shift-confirm-${width}x${height}-${ts}.jpg`;
+                const a = document.createElement("a");
+                a.href = dataUrl;
+                a.download = name;
+                a.rel = "noopener";
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+            });
+
+            const sendBtn = document.createElement("button");
+            sendBtn.type = "button";
+            sendBtn.textContent = "Send to agent";
+            sendBtn.addEventListener("click", () => {
+                this._removeShiftPreviewBackdrop();
+                resolve();
+            });
+
+            const cancelBtn = document.createElement("button");
+            cancelBtn.type = "button";
+            cancelBtn.className = "secondary";
+            cancelBtn.textContent = "Cancel";
+            cancelBtn.addEventListener("click", () => {
+                this._removeShiftPreviewBackdrop();
+                reject(Object.assign(new Error("Preview cancelled"), { cancelled: true }));
+            });
+
+            row.appendChild(downloadBtn);
+            row.appendChild(cancelBtn);
+            row.appendChild(sendBtn);
+
+            panel.appendChild(title);
+            panel.appendChild(sub);
+            panel.appendChild(img);
+            panel.appendChild(meta);
+            panel.appendChild(row);
+            backdrop.appendChild(panel);
+
+            const onKey = (ev) => {
+                if (ev.key === "Escape") {
+                    document.removeEventListener("keydown", onKey);
+                    cancelBtn.click();
+                }
+            };
+            document.addEventListener("keydown", onKey);
+            backdrop._phonebotShiftPreviewKeydown = onKey;
+
+            backdrop.addEventListener("click", (ev) => {
+                if (ev.target === backdrop) cancelBtn.click();
+            });
+
+            const cleanupKeyOnSend = () => document.removeEventListener("keydown", onKey);
+            sendBtn.addEventListener("click", cleanupKeyOnSend);
+            cancelBtn.addEventListener("click", cleanupKeyOnSend);
+
+            this._shiftPreviewBackdrop = backdrop;
+            document.body.appendChild(backdrop);
+            setTimeout(() => sendBtn.focus(), 0);
+        });
+    }
+
     async _runShiftConfirmationLoop(initialSpec) {
         if (this._shiftConfirm.running) return;
         this._shiftConfirm.running = true;
@@ -871,6 +996,27 @@ class AgentInterface {
                     at: new Date().toISOString()
                 });
                 this._renderHistory();
+
+                try {
+                    await this._promptShiftConfirmImagePreview(
+                        frame.dataUrl,
+                        pending,
+                        frame.width | 0,
+                        frame.height | 0
+                    );
+                } catch (err) {
+                    if (err && err.cancelled) {
+                        this.messageHistory.push({
+                            role: "system",
+                            text: "Shift confirm: cancelled at image preview (not sent to agent).",
+                            at: new Date().toISOString()
+                        });
+                        this._shiftConfirm.pending = null;
+                        this._renderHistory();
+                        return;
+                    }
+                    throw err;
+                }
 
                 const reply = await this.sendPrompt("", {
                     messages: [...prior, userMsg],
@@ -1529,6 +1675,22 @@ class AgentInterface {
             document.createTextNode("Show full prompt for voice (not just speech text)")
         );
 
+        const previewShiftWrap = document.createElement("label");
+        previewShiftWrap.style.display = "flex";
+        previewShiftWrap.style.alignItems = "center";
+        previewShiftWrap.style.gap = "8px";
+        const previewShiftInput = document.createElement("input");
+        previewShiftInput.type = "checkbox";
+        previewShiftInput.checked = this.previewShiftConfirmImageBeforeSend;
+        previewShiftInput.addEventListener("change", () => {
+            this.previewShiftConfirmImageBeforeSend = !!previewShiftInput.checked;
+        });
+        previewShiftWrap.appendChild(previewShiftInput);
+        previewShiftWrap.appendChild(
+            document.createTextNode("Pause shift check to preview/download image before API send")
+        );
+        this._previewShiftConfirmInput = previewShiftInput;
+
         const templateLabel = document.createElement("label");
         templateLabel.textContent = "Prompt template";
         const templateSelect = document.createElement("select");
@@ -1590,6 +1752,7 @@ class AgentInterface {
         controls.appendChild(voiceWrap);
         controls.appendChild(agentPowerBtn);
         controls.appendChild(fullSpeechPromptWrap);
+        controls.appendChild(previewShiftWrap);
         controls.appendChild(historyLabel);
         controls.appendChild(historyEl);
         controls.appendChild(promptLabel);
@@ -1627,6 +1790,7 @@ class AgentInterface {
     }
 
     destroy() {
+        this._removeShiftPreviewBackdrop();
         if (this._containerEl && this._containerEl.parentNode) {
             this._containerEl.parentNode.removeChild(this._containerEl);
         }
@@ -1636,6 +1800,7 @@ class AgentInterface {
         this._rememberInput = null;
         this._voiceInput = null;
         this._fullSpeechPromptInput = null;
+        this._previewShiftConfirmInput = null;
         this._modelOverrideInput = null;
         this._templateSelect = null;
         this._insertTemplateBtn = null;

@@ -162,6 +162,8 @@ window.ROBOTS_DATA = {
                 transcriptionModel: "whisper-large-v3",
                 cameraCaptureMaxEdge: 960,
                 cameraCaptureJpegQuality: 0.85,
+                /** Pause shift auto-check to show the exact JPEG (grid + arrow) before each confirm API call. */
+                previewShiftConfirmImageBeforeSend: true,
                 promptTemplates: [
                     { name: "Image + shift prompt", path: "promptTemplates/introImagePrompt.txt" }
                 ],
