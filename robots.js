@@ -134,12 +134,13 @@ window.ROBOTS_DATA = {
                 {
                     actionName: "shift",
                     functionPath: "strategies.shiftCameraFeature",
-                    actionArgsHint: '{"fromX":0.8,"fromY":0.5,"toX":0.5,"toY":0.9}',
+                    actionArgsHint: '{"fromCell":55,"toX":0.5,"toY":0.9}',
                     type: "float",
                     min: 0,
                     max: 1,
                     increment: 0.01,
-                    usage: "Pick a feature at normalized fromX/fromY (0–1), then set yaw PID goal to toX and forward/speed PID goal to toY."
+                    usage:
+                        "Pick FROM via fromCell (11–99, intersection labels) or fromX/fromY (0–1, 0.1 steps); set yaw PID goal to toX and forward/speed PID goal to toY (0–1, 0.1 steps)."
                 },
                 //{actionName: "filter", functionPath: "objectFilters.mainObjectFilter.setFilters", actionArgsHint: '["cup"], ["door","doorway"], ["human","person","face","head"]', usage: "Set filters for objects already in your vision to track them, else set objects to pan and search for. Value may be a comma-separated string, a JSON array of label strings, or objects (e.g. type label/bbox)." },
                 //{actionName: "x", functionPath: "pidControllers.yaw object tracker PID.setGoal", actionArgsHint: "0, 0.25, 0.5, 0.75, 1", type: "float", min: 0, max: 1, increment: 0.05, usage: "Horizontal aim for the tracked object: 0.5 centers it in the view; 0 and 1 are the left and right extremes (values are 0–1, same units as filter output x)." }

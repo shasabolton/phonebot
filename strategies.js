@@ -250,14 +250,23 @@ class RobotStrategies {
     }
 
     /**
-     * Agent "shift" action: same flow box as tapping the camera frame at (fromX, fromY) in normalized 0–1,
+     * Agent "shift" action: same flow box as tapping the camera frame at (fromX, fromY) in normalized 0–1
+     * (or use fromCell 11–99 from intersection labels — resolved to the same point before this runs),
      * then set yaw PID goal to toX and y/speed PID goal to toY (same units as tracker goals, typically 0–1).
-     * @param {{ fromX?: number, fromY?: number, toX?: number, toY?: number }} spec
+     * @param {{ fromX?: number, fromY?: number, fromCell?: number, toX?: number, toY?: number }} spec
      */
     async shiftCameraFeature(spec) {
         const o = typeof spec === "object" && spec ? spec : {};
-        const fromX = Number(o.fromX);
-        const fromY = Number(o.fromY);
+        let fromX = Number(o.fromX);
+        let fromY = Number(o.fromY);
+        if (!(Number.isFinite(fromX) && Number.isFinite(fromY)) && o.fromCell != null) {
+            const Grid = typeof window !== "undefined" ? window.PhonebotNormalizationGrid : null;
+            const p = Grid && typeof Grid.fromCellToNormXY === "function" ? Grid.fromCellToNormXY(o.fromCell) : null;
+            if (p) {
+                fromX = p.fromX;
+                fromY = p.fromY;
+            }
+        }
         const toX = Number(o.toX);
         const toY = Number(o.toY);
         if (!Number.isFinite(fromX) || !Number.isFinite(fromY)) {

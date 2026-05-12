@@ -1,9 +1,23 @@
 /**
- * Normalized 0.1–0.9 guide: 9 vertical + 9 horizontal lines; labels on top and left.
- * Coordinates match normalized fractions of full width/height (same as bbox / shift fromX,fromY).
+ * Decile reference: two-digit labels 11–99 at grid intersections (column 1–9 left→right, row 1–9 top→bottom).
+ * Same normalized fromX/fromY as intersection (col/10, row/10) for shift / bbox.
  */
 window.PhonebotNormalizationGrid = {
     /**
+     * @param {number|string} cell Two-digit code 11–99; tens and ones digits must each be 1–9.
+     * @returns {{ fromX: number, fromY: number } | null}
+     */
+    fromCellToNormXY(cell) {
+        const n = Math.round(Number(cell));
+        if (!Number.isFinite(n) || n < 11 || n > 99) return null;
+        const ones = n % 10;
+        const tens = Math.floor(n / 10);
+        if (ones < 1 || ones > 9 || tens < 1 || tens > 9) return null;
+        return { fromX: ones / 10, fromY: tens / 10 };
+    },
+
+    /**
+     * Draw intersection labels only (no grid lines): top row 11–19 … bottom row 91–99.
      * @param {CanvasRenderingContext2D} ctx
      * @param {number} w canvas width (pixels)
      * @param {number} h canvas height (pixels)
@@ -12,50 +26,26 @@ window.PhonebotNormalizationGrid = {
         if (!ctx || !(w > 0) || !(h > 0)) return;
         const cw = Math.floor(w);
         const ch = Math.floor(h);
-        const fontPx = Math.max(9, Math.min(13, Math.round(Math.min(cw, ch) * 0.026)));
+        const fontPx = Math.max(8, Math.min(12, Math.round(Math.min(cw, ch) * 0.022)));
 
         ctx.save();
-
-        ctx.lineWidth = 1;
-        ctx.strokeStyle = "rgba(255, 255, 255, 0.42)";
-        ctx.setLineDash([]);
-
-        for (let i = 1; i <= 9; i++) {
-            const x = (i / 10) * cw;
-            ctx.beginPath();
-            ctx.moveTo(x + 0.5, 0);
-            ctx.lineTo(x + 0.5, ch);
-            ctx.stroke();
-        }
-        for (let j = 1; j <= 9; j++) {
-            const y = (j / 10) * ch;
-            ctx.beginPath();
-            ctx.moveTo(0, y + 0.5);
-            ctx.lineTo(cw, y + 0.5);
-            ctx.stroke();
-        }
-
         ctx.font = `${fontPx}px Arial, sans-serif`;
         ctx.textBaseline = "middle";
-        ctx.shadowColor = "rgba(0, 0, 0, 0.9)";
-        ctx.shadowBlur = 4;
+        ctx.textAlign = "center";
+        ctx.shadowColor = "rgba(0, 0, 0, 0.92)";
+        ctx.shadowBlur = 5;
         ctx.shadowOffsetX = 0;
         ctx.shadowOffsetY = 0;
-        ctx.fillStyle = "rgba(255, 255, 255, 0.92)";
+        ctx.fillStyle = "rgba(255, 255, 255, 0.95)";
         ctx.lineWidth = 1;
 
-        const topY = Math.max(fontPx * 0.55, 8);
-        ctx.textAlign = "center";
-        for (let i = 1; i <= 9; i++) {
-            const x = (i / 10) * cw;
-            ctx.fillText((i / 10).toFixed(1), x, topY);
-        }
-
-        const leftPad = Math.min(28, Math.max(18, Math.round(fontPx * 2.1)));
-        ctx.textAlign = "right";
-        for (let j = 1; j <= 9; j++) {
-            const y = (j / 10) * ch;
-            ctx.fillText((j / 10).toFixed(1), leftPad - 2, y);
+        for (let row = 1; row <= 9; row++) {
+            for (let col = 1; col <= 9; col++) {
+                const code = row * 10 + col;
+                const x = (col / 10) * cw;
+                const y = (row / 10) * ch;
+                ctx.fillText(String(code), x, y);
+            }
         }
 
         ctx.shadowBlur = 0;

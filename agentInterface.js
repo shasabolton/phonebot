@@ -703,14 +703,40 @@ class AgentInterface {
         return Math.round(clamped * 10) / 10;
     }
 
+    /** @returns {{ fromX: number, fromY: number } | null} */
+    _fromCellToNormXY(cell) {
+        const Grid = typeof window !== "undefined" ? window.PhonebotNormalizationGrid : null;
+        if (Grid && typeof Grid.fromCellToNormXY === "function") {
+            return Grid.fromCellToNormXY(cell);
+        }
+        const n = Math.round(Number(cell));
+        if (!Number.isFinite(n) || n < 11 || n > 99) return null;
+        const ones = n % 10;
+        const tens = Math.floor(n / 10);
+        if (ones < 1 || ones > 9 || tens < 1 || tens > 9) return null;
+        return { fromX: ones / 10, fromY: tens / 10 };
+    }
+
     _normalizeShiftSpec(actionArgs) {
         const o = actionArgs && typeof actionArgs === "object" ? actionArgs : {};
-        const fromX = this._snap01ToTenth(o.fromX);
-        const fromY = this._snap01ToTenth(o.fromY);
+        let fromX = this._snap01ToTenth(o.fromX);
+        let fromY = this._snap01ToTenth(o.fromY);
+        const fromCellRaw = o.fromCell;
+        let fromCell = null;
+        if (fromCellRaw != null && String(fromCellRaw).trim() !== "") {
+            const p = this._fromCellToNormXY(fromCellRaw);
+            if (p) {
+                fromX = p.fromX;
+                fromY = p.fromY;
+                fromCell = Math.round(Number(fromCellRaw));
+            }
+        }
         const toX = this._snap01ToTenth(o.toX);
         const toY = this._snap01ToTenth(o.toY);
         if (fromX == null || fromY == null || toX == null || toY == null) return null;
-        return { fromX, fromY, toX, toY };
+        const out = { fromX, fromY, toX, toY };
+        if (fromCell != null) out.fromCell = fromCell;
+        return out;
     }
 
     _shiftSpecEqual(a, b) {
@@ -778,9 +804,11 @@ class AgentInterface {
         ctx.font = `${Math.max(11, Math.min(15, Math.round(Math.min(w, h) * 0.028)))}px Arial, sans-serif`;
         ctx.textBaseline = "top";
         ctx.fillStyle = "rgba(255,255,255,0.98)";
-        const label = `from=(${spec.fromX.toFixed(1)},${spec.fromY.toFixed(1)})  to=(${spec.toX.toFixed(
-            1
-        )},${spec.toY.toFixed(1)})`;
+        const fromPart =
+            spec.fromCell != null
+                ? `fromCell=${spec.fromCell} (${spec.fromX.toFixed(1)},${spec.fromY.toFixed(1)})`
+                : `from=(${spec.fromX.toFixed(1)},${spec.fromY.toFixed(1)})`;
+        const label = `${fromPart}  to=(${spec.toX.toFixed(1)},${spec.toY.toFixed(1)})`;
         ctx.fillText(label, 8, 8);
 
         ctx.restore();
@@ -820,7 +848,7 @@ class AgentInterface {
     }
 
     /**
-     * Modal: same JPEG bytes as the next chat request (grid + arrow). Download or continue.
+     * Modal: same JPEG bytes as the next chat request (labels + arrow). Send or cancel.
      * @returns {Promise<void>} resolves when user sends; rejects with `{ cancelled: true }` on cancel
      */
     _promptShiftConfirmImagePreview(dataUrl, spec, width, height) {
@@ -846,35 +874,22 @@ class AgentInterface {
             sub.className = "muted agent-shift-confirm-preview-sub";
             sub.textContent =
                 `This is the exact frame attached to the next request (${width}×${height} px). ` +
-                `Compare grid and arrow to your live camera preview.`;
+                `Compare intersection labels and arrow to your live camera preview.`;
 
             const img = document.createElement("img");
             img.className = "agent-shift-confirm-preview-img";
-            img.alt = "Shift confirmation frame with grid and arrow";
+            img.alt = "Shift confirmation frame with intersection labels and arrow";
             img.src = dataUrl;
 
             const meta = document.createElement("div");
             meta.className = "agent-shift-confirm-preview-meta";
-            meta.textContent = `from (${spec.fromX}, ${spec.fromY}) → (${spec.toX}, ${spec.toY})`;
+            meta.textContent =
+                spec.fromCell != null
+                    ? `fromCell ${spec.fromCell} → (${spec.fromX}, ${spec.fromY})  motion → (${spec.toX}, ${spec.toY})`
+                    : `from (${spec.fromX}, ${spec.fromY}) → (${spec.toX}, ${spec.toY})`;
 
             const row = document.createElement("div");
             row.className = "agent-shift-confirm-preview-actions";
-
-            const downloadBtn = document.createElement("button");
-            downloadBtn.type = "button";
-            downloadBtn.className = "secondary";
-            downloadBtn.textContent = "Download image";
-            downloadBtn.addEventListener("click", () => {
-                const ts = new Date().toISOString().replace(/[:.]/g, "-");
-                const name = `phonebot-shift-confirm-${width}x${height}-${ts}.jpg`;
-                const a = document.createElement("a");
-                a.href = dataUrl;
-                a.download = name;
-                a.rel = "noopener";
-                document.body.appendChild(a);
-                a.click();
-                a.remove();
-            });
 
             const sendBtn = document.createElement("button");
             sendBtn.type = "button";
@@ -893,7 +908,6 @@ class AgentInterface {
                 reject(Object.assign(new Error("Preview cancelled"), { cancelled: true }));
             });
 
-            row.appendChild(downloadBtn);
             row.appendChild(cancelBtn);
             row.appendChild(sendBtn);
 
@@ -961,14 +975,14 @@ class AgentInterface {
                 }
 
                 const confirmPrompt =
-                    `Confirm the arrow placement (0.1 increments only). ` +
+                    `Confirm the arrow placement (0.1 increments for toX/toY only). ` +
                     `The blunt/yellow START dot of the arrow is the FROM point. ` +
-                    `Question 1: Is the FROM dot directly on top of the intended object (e.g. the cup), not one grid cell away? ` +
-                    `If NO, move fromX/fromY to the correct cell so the dot is on the object. ` +
+                    `The image shows two-digit labels 11–19 on the top row of intersections, …, 91–99 on the bottom row (column digit = x decile 1–9 left→right, row digit = y decile 1–9 top→bottom). ` +
+                    `Question 1: Is the FROM dot on the correct intersection for the object you mean (same number you would report as fromCell)? ` +
+                    `If NO, fix fromCell (preferred) or fromX/fromY so the dot sits on the object. ` +
                     `Question 2: Is the arrow direction correct for the intended motion (toX/toY)? ` +
                     `If YES to both, confirm by replying with the EXACT same JSON as last time. ` +
-                    `If not, fix the coordinates (still using 0.1 increments only). ` +
-                    `Do not be pedantic about sub-cell pixels, but DO require the dot to be in the correct cell on the object.\n\n` +
+                    `If not, fix the shift (still 0.1 for toX/toY when using coordinates).\n\n` +
                     `Last proposal:\n${JSON.stringify({ message: "confirm shift", actions: [{ shift: pending }] }, null, 2)}`;
 
                 const prior = this.messageHistory
@@ -987,11 +1001,17 @@ class AgentInterface {
                 };
 
                 // Store the auto-check prompt in history so you can see the loop.
+                const autoLine =
+                    pending.fromCell != null
+                        ? `Auto-check shift: fromCell ${pending.fromCell} (${pending.fromX.toFixed(1)},${pending.fromY.toFixed(
+                              1
+                          )}) → ${pending.toX.toFixed(1)},${pending.toY.toFixed(1)}`
+                        : `Auto-check shift: ${pending.fromX.toFixed(1)},${pending.fromY.toFixed(1)} → ${pending.toX.toFixed(
+                              1
+                          )},${pending.toY.toFixed(1)}`;
                 this.messageHistory.push({
                     role: "user",
-                    text: `Auto-check shift: ${pending.fromX.toFixed(1)},${pending.fromY.toFixed(1)} → ${pending.toX.toFixed(
-                        1
-                    )},${pending.toY.toFixed(1)}`,
+                    text: autoLine,
                     fullPrompt: confirmPrompt,
                     at: new Date().toISOString()
                 });
@@ -1049,7 +1069,13 @@ class AgentInterface {
                 }
 
                 if (this._shiftSpecEqual(next, pending)) {
-                    await this.act("shift", pending);
+                    const actArgs = {
+                        fromX: pending.fromX,
+                        fromY: pending.fromY,
+                        toX: pending.toX,
+                        toY: pending.toY
+                    };
+                    await this.act("shift", actArgs);
                     this.messageHistory.push({
                         role: "system",
                         text: `Shift confirmed and executed: ${JSON.stringify(pending)} ✓`,
@@ -1687,7 +1713,7 @@ class AgentInterface {
         });
         previewShiftWrap.appendChild(previewShiftInput);
         previewShiftWrap.appendChild(
-            document.createTextNode("Pause shift check to preview/download image before API send")
+            document.createTextNode("Pause shift check to preview image before API send")
         );
         this._previewShiftConfirmInput = previewShiftInput;
 
