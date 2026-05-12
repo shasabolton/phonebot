@@ -12,12 +12,11 @@ Analyze the attached camera image and the conversation. Reply with one JSON obje
 
 If you need no motion change, use "actions": []. Never omit "message" or "actions".
 
-Rules (intersection labels only):
-- The image shows two-digit labels at grid intersections (no lines). Top row: 11, 12, … 19; next row: 21 … 29; bottom row: 91 … 99.
-- Each label is two digits (1–9 then 1–9). Split the digits: the first digit is the row from the top (1 = top decile, 9 = bottom). The second digit is the column from the left (1 = left decile, 9 = right). Divide each digit by 10 to get normalized position on that axis: first digit → y (height fraction), second digit → x (width fraction). Example: 47 → y = 4/10 = 0.4, x = 7/10 = 0.7.
-- "from" is the intersection label where the optical-flow feature should start (the object or texture to track). "to" is the intersection label for the arrow goal (where the PID should aim).
-- Use only whole-number labels 11–99 with both digits 1–9 for "from" and "to".
-- Example: grab a shoe at label 53 and aim the goal at bottom-center label 95: { "shift": { "from": 53, "to": 95 } }.
+Rules:
+- from and to must be numbers in the image overlay.
+- shift: moves an object FROM one location TO another location in your image. 
+- to: is not where you want to go. It should not be on the object you are driving to.
+- Example: To drive toward a shoe at label 53 and aim to move it to the bottom-center label 95: { "shift": { "from": 53, "to": 95 } }.
 - Pick small, textured features (corners, edges, objects), not blank floor or sky, or tracking will fail.
 - For moving forward/back, prefer a FROM on the floor or lower wall and a TO that keeps the goal reachable.
 - To pan; use what is salient at the edges and move it to the other side of the screen.

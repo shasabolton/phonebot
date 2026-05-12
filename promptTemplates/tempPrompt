@@ -7,9 +7,12 @@ Analyze the attached camera image and the conversation. Reply with one JSON obje
   ]
 }
 
+The image has numbers to define locations.
+from: is the number label over a feature or object in the image.
+to: Is the new location to drag that feature/object to.
 You must only use the "shift" action.
 Use shift to drag the image so you can explore within it.
 Shift left to explore to the right.
 Shift down to explore forward.
-Only grab hold of salient features. Use intersection labels "from" and "to" (two digits each, 11–99, both digits 1–9): first digit ÷10 = row (y), second digit ÷10 = column (x).
+Only grab hold of salient features. Use intersection labels
 Always include a message.
