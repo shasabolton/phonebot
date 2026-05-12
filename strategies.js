@@ -250,27 +250,48 @@ class RobotStrategies {
     }
 
     /**
-     * Agent "shift" action: same flow box as tapping the camera frame at (fromX, fromY) in normalized 0–1
-     * (or use fromCell 11–99 from intersection labels — resolved to the same point before this runs),
-     * then set yaw PID goal to toX and y/speed PID goal to toY (same units as tracker goals, typically 0–1).
-     * @param {{ fromX?: number, fromY?: number, fromCell?: number, toX?: number, toY?: number }} spec
+     * Agent "shift" action: optical-flow FROM at normalized (fromX, fromY), or decode "from" / "to" labels
+     * (two digits 11–99: first÷10 = y, second÷10 = x). Sets yaw PID to toX and forward/speed PID to toY.
+     * @param {{ fromX?: number, fromY?: number, from?: number, fromCell?: number, to?: number, toX?: number, toY?: number }} spec
      */
     async shiftCameraFeature(spec) {
         const o = typeof spec === "object" && spec ? spec : {};
         let fromX = Number(o.fromX);
         let fromY = Number(o.fromY);
-        if (!(Number.isFinite(fromX) && Number.isFinite(fromY)) && o.fromCell != null) {
-            const Grid = typeof window !== "undefined" ? window.PhonebotNormalizationGrid : null;
-            const p = Grid && typeof Grid.fromCellToNormXY === "function" ? Grid.fromCellToNormXY(o.fromCell) : null;
+        const Grid = typeof window !== "undefined" ? window.PhonebotNormalizationGrid : null;
+        const labelXY = (n) => (Grid && typeof Grid.fromCellToNormXY === "function" ? Grid.fromCellToNormXY(n) : null);
+
+        if (!(Number.isFinite(fromX) && Number.isFinite(fromY)) && o.from != null) {
+            const p = labelXY(o.from);
             if (p) {
                 fromX = p.fromX;
                 fromY = p.fromY;
             }
         }
-        const toX = Number(o.toX);
-        const toY = Number(o.toY);
+        if (!(Number.isFinite(fromX) && Number.isFinite(fromY)) && o.fromCell != null) {
+            const p = labelXY(o.fromCell);
+            if (p) {
+                fromX = p.fromX;
+                fromY = p.fromY;
+            }
+        }
+
+        let toX = Number(o.toX);
+        let toY = Number(o.toY);
+        if (!(Number.isFinite(toX) && Number.isFinite(toY)) && o.to != null) {
+            const p = labelXY(o.to);
+            if (p) {
+                toX = p.fromX;
+                toY = p.fromY;
+            }
+        }
+
         if (!Number.isFinite(fromX) || !Number.isFinite(fromY)) {
-            console.warn("shiftCameraFeature: need numeric fromX, fromY", spec);
+            console.warn("shiftCameraFeature: need from/fromCell or fromX+fromY", spec);
+            return false;
+        }
+        if (!Number.isFinite(toX) || !Number.isFinite(toY)) {
+            console.warn("shiftCameraFeature: need to or toX+toY", spec);
             return false;
         }
         const nx = Math.min(1, Math.max(0, fromX));

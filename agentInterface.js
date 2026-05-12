@@ -721,21 +721,41 @@ class AgentInterface {
         const o = actionArgs && typeof actionArgs === "object" ? actionArgs : {};
         let fromX = this._snap01ToTenth(o.fromX);
         let fromY = this._snap01ToTenth(o.fromY);
-        const fromCellRaw = o.fromCell;
-        let fromCell = null;
-        if (fromCellRaw != null && String(fromCellRaw).trim() !== "") {
-            const p = this._fromCellToNormXY(fromCellRaw);
+        let toX = this._snap01ToTenth(o.toX);
+        let toY = this._snap01ToTenth(o.toY);
+
+        if (o.from != null && String(o.from).trim() !== "") {
+            const p = this._fromCellToNormXY(o.from);
             if (p) {
                 fromX = p.fromX;
                 fromY = p.fromY;
-                fromCell = Math.round(Number(fromCellRaw));
+            }
+        } else if (o.fromCell != null && String(o.fromCell).trim() !== "") {
+            const p = this._fromCellToNormXY(o.fromCell);
+            if (p) {
+                fromX = p.fromX;
+                fromY = p.fromY;
             }
         }
-        const toX = this._snap01ToTenth(o.toX);
-        const toY = this._snap01ToTenth(o.toY);
+
+        if (o.to != null && String(o.to).trim() !== "") {
+            const p = this._fromCellToNormXY(o.to);
+            if (p) {
+                toX = p.fromX;
+                toY = p.fromY;
+            }
+        }
+
         if (fromX == null || fromY == null || toX == null || toY == null) return null;
         const out = { fromX, fromY, toX, toY };
-        if (fromCell != null) out.fromCell = fromCell;
+        if (o.from != null && String(o.from).trim() !== "" && this._fromCellToNormXY(o.from)) {
+            out.from = Math.round(Number(o.from));
+        } else if (o.fromCell != null && String(o.fromCell).trim() !== "" && this._fromCellToNormXY(o.fromCell)) {
+            out.fromCell = Math.round(Number(o.fromCell));
+        }
+        if (o.to != null && String(o.to).trim() !== "" && this._fromCellToNormXY(o.to)) {
+            out.to = Math.round(Number(o.to));
+        }
         return out;
     }
 
@@ -805,10 +825,13 @@ class AgentInterface {
         ctx.textBaseline = "top";
         ctx.fillStyle = "rgba(255,255,255,0.98)";
         const fromPart =
-            spec.fromCell != null
-                ? `fromCell=${spec.fromCell} (${spec.fromX.toFixed(1)},${spec.fromY.toFixed(1)})`
-                : `from=(${spec.fromX.toFixed(1)},${spec.fromY.toFixed(1)})`;
-        const label = `${fromPart}  to=(${spec.toX.toFixed(1)},${spec.toY.toFixed(1)})`;
+            spec.from != null
+                ? `from=${spec.from}`
+                : spec.fromCell != null
+                  ? `fromCell=${spec.fromCell}`
+                  : `from=(${spec.fromX.toFixed(1)},${spec.fromY.toFixed(1)})`;
+        const toPart = spec.to != null ? `to=${spec.to}` : `to=(${spec.toX.toFixed(1)},${spec.toY.toFixed(1)})`;
+        const label = `${fromPart}  ${toPart}`;
         ctx.fillText(label, 8, 8);
 
         ctx.restore();
@@ -884,9 +907,15 @@ class AgentInterface {
             const meta = document.createElement("div");
             meta.className = "agent-shift-confirm-preview-meta";
             meta.textContent =
-                spec.fromCell != null
-                    ? `fromCell ${spec.fromCell} → (${spec.fromX}, ${spec.fromY})  motion → (${spec.toX}, ${spec.toY})`
-                    : `from (${spec.fromX}, ${spec.fromY}) → (${spec.toX}, ${spec.toY})`;
+                spec.from != null && spec.to != null
+                    ? `from ${spec.from} → to ${spec.to}  (resolved ${spec.fromX},${spec.fromY} → ${spec.toX},${spec.toY})`
+                    : spec.from != null
+                      ? `from ${spec.from} → (${spec.toX}, ${spec.toY})`
+                      : spec.to != null
+                        ? `(${spec.fromX}, ${spec.fromY}) → to ${spec.to}`
+                        : spec.fromCell != null
+                          ? `fromCell ${spec.fromCell} → (${spec.toX}, ${spec.toY})`
+                          : `(${spec.fromX}, ${spec.fromY}) → (${spec.toX}, ${spec.toY})`;
 
             const row = document.createElement("div");
             row.className = "agent-shift-confirm-preview-actions";
@@ -975,14 +1004,10 @@ class AgentInterface {
                 }
 
                 const confirmPrompt =
-                    `Confirm the arrow placement (0.1 increments for toX/toY only). ` +
-                    `The blunt/yellow START dot of the arrow is the FROM point. ` +
-                    `The image shows two-digit labels 11–19 on the top row of intersections, …, 91–99 on the bottom row (column digit = x decile 1–9 left→right, row digit = y decile 1–9 top→bottom). ` +
-                    `Question 1: Is the FROM dot on the correct intersection for the object you mean (same number you would report as fromCell)? ` +
-                    `If NO, fix fromCell (preferred) or fromX/fromY so the dot sits on the object. ` +
-                    `Question 2: Is the arrow direction correct for the intended motion (toX/toY)? ` +
-                    `If YES to both, confirm by replying with the EXACT same JSON as last time. ` +
-                    `If not, fix the shift (still 0.1 for toX/toY when using coordinates).\n\n` +
+                    `Confirm the arrow (intersection labels only). The yellow dot is the FROM point; the arrowhead aims at the TO point. ` +
+                    `Each label is two digits 11–99 (both digits 1–9): split them — first digit divided by 10 is the y decile (row from top), second digit divided by 10 is the x decile (column from left). ` +
+                    `Question 1: Is "from" the correct label on the object? Question 2: Is "to" the correct goal label? ` +
+                    `If YES to both, reply with the EXACT same JSON as last time. If NO, fix "from" and/or "to".\n\n` +
                     `Last proposal:\n${JSON.stringify({ message: "confirm shift", actions: [{ shift: pending }] }, null, 2)}`;
 
                 const prior = this.messageHistory
@@ -1001,14 +1026,15 @@ class AgentInterface {
                 };
 
                 // Store the auto-check prompt in history so you can see the loop.
-                const autoLine =
-                    pending.fromCell != null
-                        ? `Auto-check shift: fromCell ${pending.fromCell} (${pending.fromX.toFixed(1)},${pending.fromY.toFixed(
-                              1
-                          )}) → ${pending.toX.toFixed(1)},${pending.toY.toFixed(1)}`
-                        : `Auto-check shift: ${pending.fromX.toFixed(1)},${pending.fromY.toFixed(1)} → ${pending.toX.toFixed(
-                              1
-                          )},${pending.toY.toFixed(1)}`;
+                const fromBits =
+                    pending.from != null
+                        ? `from ${pending.from}`
+                        : pending.fromCell != null
+                          ? `fromCell ${pending.fromCell}`
+                          : `${pending.fromX.toFixed(1)},${pending.fromY.toFixed(1)}`;
+                const toBits =
+                    pending.to != null ? `to ${pending.to}` : `${pending.toX.toFixed(1)},${pending.toY.toFixed(1)}`;
+                const autoLine = `Auto-check shift: ${fromBits} → ${toBits}`;
                 this.messageHistory.push({
                     role: "user",
                     text: autoLine,

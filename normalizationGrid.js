@@ -1,6 +1,6 @@
 /**
  * Decile reference: two-digit labels 11–99 at grid intersections (column 1–9 left→right, row 1–9 top→bottom).
- * Same normalized fromX/fromY as intersection (col/10, row/10) for shift / bbox.
+ * Same mapping for shift keys `from` / `to` and legacy `fromCell` (split digits: tens/10 = y, ones/10 = x).
  */
 window.PhonebotNormalizationGrid = {
     /**
