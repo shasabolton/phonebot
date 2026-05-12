@@ -32,8 +32,6 @@ class AgentInterface {
         const jq = this.config.cameraCaptureJpegQuality;
         this.cameraCaptureJpegQuality = Number.isFinite(jq) ? jq : 0.85;
         this.cameraCaptureJpegQuality = Math.max(0.4, Math.min(0.98, this.cameraCaptureJpegQuality));
-        /** If true, shift auto-check opens a modal with the exact JPEG sent to the model before the request. */
-        this.previewShiftConfirmImageBeforeSend = this.config.previewShiftConfirmImageBeforeSend !== false;
         this._captureCanvas = null;
         this._captureCtx = null;
         this._apiKey = "";
@@ -56,16 +54,6 @@ class AgentInterface {
         this._agentEnabled = true;
         this._sendInProgress = false;
         this._agentPowerBtn = null;
-        /**
-         * Shift confirm loop state:
-         * - pending: last proposed shift (snapped to 0.1)
-         * - fixCount: number of times model changed the arrow during the confirm loop
-         * - running: guard to prevent re-entrancy
-         */
-        this._shiftConfirm = { pending: null, fixCount: 0, running: false };
-        /** @type {HTMLElement | null} */
-        this._shiftPreviewBackdrop = null;
-        this._previewShiftConfirmInput = null;
         this._loadSavedKeyPreference();
         this._voiceOn = this._resolveVoiceDefault(null);
     }
@@ -695,446 +683,6 @@ class AgentInterface {
         }
     }
 
-    _snap01ToTenth(value) {
-        const n = Number(value);
-        if (!Number.isFinite(n)) return null;
-        const clamped = Math.max(0, Math.min(1, n));
-        // 0.1 increments only
-        return Math.round(clamped * 10) / 10;
-    }
-
-    /** @returns {{ fromX: number, fromY: number } | null} */
-    _fromCellToNormXY(cell) {
-        const Grid = typeof window !== "undefined" ? window.PhonebotNormalizationGrid : null;
-        if (Grid && typeof Grid.fromCellToNormXY === "function") {
-            return Grid.fromCellToNormXY(cell);
-        }
-        const n = Math.round(Number(cell));
-        if (!Number.isFinite(n) || n < 11 || n > 99) return null;
-        const ones = n % 10;
-        const tens = Math.floor(n / 10);
-        if (ones < 1 || ones > 9 || tens < 1 || tens > 9) return null;
-        return { fromX: ones / 10, fromY: tens / 10 };
-    }
-
-    _normalizeShiftSpec(actionArgs) {
-        const o = actionArgs && typeof actionArgs === "object" ? actionArgs : {};
-        let fromX = this._snap01ToTenth(o.fromX);
-        let fromY = this._snap01ToTenth(o.fromY);
-        let toX = this._snap01ToTenth(o.toX);
-        let toY = this._snap01ToTenth(o.toY);
-
-        if (o.from != null && String(o.from).trim() !== "") {
-            const p = this._fromCellToNormXY(o.from);
-            if (p) {
-                fromX = p.fromX;
-                fromY = p.fromY;
-            }
-        } else if (o.fromCell != null && String(o.fromCell).trim() !== "") {
-            const p = this._fromCellToNormXY(o.fromCell);
-            if (p) {
-                fromX = p.fromX;
-                fromY = p.fromY;
-            }
-        }
-
-        if (o.to != null && String(o.to).trim() !== "") {
-            const p = this._fromCellToNormXY(o.to);
-            if (p) {
-                toX = p.fromX;
-                toY = p.fromY;
-            }
-        }
-
-        if (fromX == null || fromY == null || toX == null || toY == null) return null;
-        const out = { fromX, fromY, toX, toY };
-        if (o.from != null && String(o.from).trim() !== "" && this._fromCellToNormXY(o.from)) {
-            out.from = Math.round(Number(o.from));
-        } else if (o.fromCell != null && String(o.fromCell).trim() !== "" && this._fromCellToNormXY(o.fromCell)) {
-            out.fromCell = Math.round(Number(o.fromCell));
-        }
-        if (o.to != null && String(o.to).trim() !== "" && this._fromCellToNormXY(o.to)) {
-            out.to = Math.round(Number(o.to));
-        }
-        return out;
-    }
-
-    _shiftSpecEqual(a, b) {
-        if (!a || !b) return false;
-        return a.fromX === b.fromX && a.fromY === b.fromY && a.toX === b.toX && a.toY === b.toY;
-    }
-
-    _drawShiftArrowOverlay(ctx, w, h, spec, sourceW, sourceH) {
-        if (!ctx || !spec || !(w > 0) || !(h > 0)) return;
-        let fx = spec.fromX * w;
-        let fy = spec.fromY * h;
-        const fw = sourceW | 0;
-        const fh = sourceH | 0;
-        const Vision = typeof window !== "undefined" ? window.ComputerVisionAiModel : null;
-        if (fw > 0 && fh > 0 && Vision && typeof Vision.flowTouchCenterPxForAgentNorm === "function") {
-            const c = Vision.flowTouchCenterPxForAgentNorm(spec.fromX, spec.fromY, fw, fh);
-            if (c && Number.isFinite(c.cx) && Number.isFinite(c.cy)) {
-                fx = (c.cx / fw) * w;
-                fy = (c.cy / fh) * h;
-            }
-        }
-        const tx = spec.toX * w;
-        const ty = spec.toY * h;
-        const dx = tx - fx;
-        const dy = ty - fy;
-        const len = Math.hypot(dx, dy) || 1;
-        const ux = dx / len;
-        const uy = dy / len;
-        const head = Math.max(10, Math.min(24, Math.round(Math.min(w, h) * 0.03)));
-
-        ctx.save();
-        ctx.lineWidth = Math.max(2, Math.round(Math.min(w, h) * 0.004));
-        ctx.strokeStyle = "rgba(0, 255, 255, 0.95)";
-        ctx.fillStyle = "rgba(0, 255, 255, 0.95)";
-        ctx.shadowColor = "rgba(0,0,0,0.9)";
-        ctx.shadowBlur = 6;
-
-        // main line
-        ctx.beginPath();
-        ctx.moveTo(fx, fy);
-        ctx.lineTo(tx, ty);
-        ctx.stroke();
-
-        // arrow head
-        const hx = tx - ux * head;
-        const hy = ty - uy * head;
-        const px = -uy;
-        const py = ux;
-        ctx.beginPath();
-        ctx.moveTo(tx, ty);
-        ctx.lineTo(hx + px * (head * 0.55), hy + py * (head * 0.55));
-        ctx.lineTo(hx - px * (head * 0.55), hy - py * (head * 0.55));
-        ctx.closePath();
-        ctx.fill();
-
-        // from marker
-        ctx.fillStyle = "rgba(255, 255, 0, 0.95)";
-        ctx.strokeStyle = "rgba(255, 255, 0, 0.95)";
-        ctx.beginPath();
-        ctx.arc(fx, fy, Math.max(4, head * 0.35), 0, Math.PI * 2);
-        ctx.fill();
-
-        // labels
-        ctx.shadowBlur = 4;
-        ctx.font = `${Math.max(11, Math.min(15, Math.round(Math.min(w, h) * 0.028)))}px Arial, sans-serif`;
-        ctx.textBaseline = "top";
-        ctx.fillStyle = "rgba(255,255,255,0.98)";
-        const fromPart =
-            spec.from != null
-                ? `from=${spec.from}`
-                : spec.fromCell != null
-                  ? `fromCell=${spec.fromCell}`
-                  : `from=(${spec.fromX.toFixed(1)},${spec.fromY.toFixed(1)})`;
-        const toPart = spec.to != null ? `to=${spec.to}` : `to=(${spec.toX.toFixed(1)},${spec.toY.toFixed(1)})`;
-        const label = `${fromPart}  ${toPart}`;
-        ctx.fillText(label, 8, 8);
-
-        ctx.restore();
-    }
-
-    _captureFrameDataUrlWithShiftOverlay(videoEl, spec) {
-        const base = this._captureFrameDataUrl(videoEl);
-        if (!base) return null;
-        // Re-draw onto the same canvas so the dataUrl includes the arrow.
-        // _captureFrameDataUrl already drew the video + grid; we only add the arrow here.
-        if (this._captureCtx && this._captureCanvas) {
-            const sw = videoEl.videoWidth | 0;
-            const sh = videoEl.videoHeight | 0;
-            this._drawShiftArrowOverlay(
-                this._captureCtx,
-                this._captureCanvas.width,
-                this._captureCanvas.height,
-                spec,
-                sw,
-                sh
-            );
-            base.dataUrl = this._captureCanvas.toDataURL("image/jpeg", this.cameraCaptureJpegQuality);
-        }
-        return base;
-    }
-
-    _removeShiftPreviewBackdrop() {
-        const el = this._shiftPreviewBackdrop;
-        if (el && el._phonebotShiftPreviewKeydown) {
-            document.removeEventListener("keydown", el._phonebotShiftPreviewKeydown);
-            delete el._phonebotShiftPreviewKeydown;
-        }
-        if (el?.parentNode) {
-            el.parentNode.removeChild(el);
-        }
-        this._shiftPreviewBackdrop = null;
-    }
-
-    /**
-     * Modal: same JPEG bytes as the next chat request (labels + arrow). Send or cancel.
-     * @returns {Promise<void>} resolves when user sends; rejects with `{ cancelled: true }` on cancel
-     */
-    _promptShiftConfirmImagePreview(dataUrl, spec, width, height) {
-        if (!this.previewShiftConfirmImageBeforeSend) {
-            return Promise.resolve();
-        }
-        this._removeShiftPreviewBackdrop();
-        return new Promise((resolve, reject) => {
-            const backdrop = document.createElement("div");
-            backdrop.className = "agent-shift-confirm-preview-backdrop";
-            backdrop.setAttribute("role", "dialog");
-            backdrop.setAttribute("aria-modal", "true");
-            backdrop.setAttribute("aria-label", "Shift confirmation image preview");
-
-            const panel = document.createElement("div");
-            panel.className = "agent-shift-confirm-preview-panel";
-
-            const title = document.createElement("div");
-            title.className = "agent-shift-confirm-preview-title";
-            title.textContent = "Image sent to the agent (shift check)";
-
-            const sub = document.createElement("p");
-            sub.className = "muted agent-shift-confirm-preview-sub";
-            sub.textContent =
-                `This is the exact frame attached to the next request (${width}×${height} px). ` +
-                `Compare intersection labels and arrow to your live camera preview.`;
-
-            const img = document.createElement("img");
-            img.className = "agent-shift-confirm-preview-img";
-            img.alt = "Shift confirmation frame with intersection labels and arrow";
-            img.src = dataUrl;
-
-            const meta = document.createElement("div");
-            meta.className = "agent-shift-confirm-preview-meta";
-            meta.textContent =
-                spec.from != null && spec.to != null
-                    ? `from ${spec.from} → to ${spec.to}  (resolved ${spec.fromX},${spec.fromY} → ${spec.toX},${spec.toY})`
-                    : spec.from != null
-                      ? `from ${spec.from} → (${spec.toX}, ${spec.toY})`
-                      : spec.to != null
-                        ? `(${spec.fromX}, ${spec.fromY}) → to ${spec.to}`
-                        : spec.fromCell != null
-                          ? `fromCell ${spec.fromCell} → (${spec.toX}, ${spec.toY})`
-                          : `(${spec.fromX}, ${spec.fromY}) → (${spec.toX}, ${spec.toY})`;
-
-            const row = document.createElement("div");
-            row.className = "agent-shift-confirm-preview-actions";
-
-            const sendBtn = document.createElement("button");
-            sendBtn.type = "button";
-            sendBtn.textContent = "Send to agent";
-            sendBtn.addEventListener("click", () => {
-                this._removeShiftPreviewBackdrop();
-                resolve();
-            });
-
-            const cancelBtn = document.createElement("button");
-            cancelBtn.type = "button";
-            cancelBtn.className = "secondary";
-            cancelBtn.textContent = "Cancel";
-            cancelBtn.addEventListener("click", () => {
-                this._removeShiftPreviewBackdrop();
-                reject(Object.assign(new Error("Preview cancelled"), { cancelled: true }));
-            });
-
-            row.appendChild(cancelBtn);
-            row.appendChild(sendBtn);
-
-            panel.appendChild(title);
-            panel.appendChild(sub);
-            panel.appendChild(img);
-            panel.appendChild(meta);
-            panel.appendChild(row);
-            backdrop.appendChild(panel);
-
-            const onKey = (ev) => {
-                if (ev.key === "Escape") {
-                    document.removeEventListener("keydown", onKey);
-                    cancelBtn.click();
-                }
-            };
-            document.addEventListener("keydown", onKey);
-            backdrop._phonebotShiftPreviewKeydown = onKey;
-
-            backdrop.addEventListener("click", (ev) => {
-                if (ev.target === backdrop) cancelBtn.click();
-            });
-
-            const cleanupKeyOnSend = () => document.removeEventListener("keydown", onKey);
-            sendBtn.addEventListener("click", cleanupKeyOnSend);
-            cancelBtn.addEventListener("click", cleanupKeyOnSend);
-
-            this._shiftPreviewBackdrop = backdrop;
-            document.body.appendChild(backdrop);
-            setTimeout(() => sendBtn.focus(), 0);
-        });
-    }
-
-    async _runShiftConfirmationLoop(initialSpec) {
-        if (this._shiftConfirm.running) return;
-        this._shiftConfirm.running = true;
-        try {
-            let pending = this._normalizeShiftSpec(initialSpec);
-            if (!pending) return;
-            this._shiftConfirm.pending = pending;
-            this._shiftConfirm.fixCount = 0;
-
-            for (;;) {
-                const camera = this._getCameraSensor();
-                const videoEl = camera?.getVideoElement?.();
-                if (!videoEl || videoEl.readyState < 2) {
-                    this.messageHistory.push({
-                        role: "system",
-                        text: "Shift confirm: camera frame unavailable; skipped.",
-                        at: new Date().toISOString()
-                    });
-                    this._shiftConfirm.pending = null;
-                    return;
-                }
-
-                const frame = this._captureFrameDataUrlWithShiftOverlay(videoEl, pending);
-                if (!frame?.dataUrl) {
-                    this.messageHistory.push({
-                        role: "system",
-                        text: "Shift confirm: failed to capture annotated frame; skipped.",
-                        at: new Date().toISOString()
-                    });
-                    this._shiftConfirm.pending = null;
-                    return;
-                }
-
-                const confirmPrompt =
-                    `Confirm the arrow (intersection labels only). The yellow dot is the FROM point; the arrowhead aims at the TO point. ` +
-                    `Each label is two digits 11–99 (both digits 1–9): split them — first digit divided by 10 is the y decile (row from top), second digit divided by 10 is the x decile (column from left). ` +
-                    `Question 1: Is "from" the correct label on the object? Question 2: Is "to" the correct goal label? ` +
-                    `If YES to both, reply with the EXACT same JSON as last time. If NO, fix "from" and/or "to".\n\n` +
-                    `Last proposal:\n${JSON.stringify({ message: "confirm shift", actions: [{ shift: pending }] }, null, 2)}`;
-
-                const prior = this.messageHistory
-                    .filter((m) => m && (m.role === "user" || m.role === "assistant"))
-                    .map((m) => ({
-                        role: m.role,
-                        content: this._historyTurnToChatContent(m)
-                    }));
-
-                const userMsg = {
-                    role: "user",
-                    content: [
-                        { type: "text", text: confirmPrompt },
-                        { type: "image_url", image_url: { url: frame.dataUrl } }
-                    ]
-                };
-
-                // Store the auto-check prompt in history so you can see the loop.
-                const fromBits =
-                    pending.from != null
-                        ? `from ${pending.from}`
-                        : pending.fromCell != null
-                          ? `fromCell ${pending.fromCell}`
-                          : `${pending.fromX.toFixed(1)},${pending.fromY.toFixed(1)}`;
-                const toBits =
-                    pending.to != null ? `to ${pending.to}` : `${pending.toX.toFixed(1)},${pending.toY.toFixed(1)}`;
-                const autoLine = `Auto-check shift: ${fromBits} → ${toBits}`;
-                this.messageHistory.push({
-                    role: "user",
-                    text: autoLine,
-                    fullPrompt: confirmPrompt,
-                    at: new Date().toISOString()
-                });
-                this._renderHistory();
-
-                try {
-                    await this._promptShiftConfirmImagePreview(
-                        frame.dataUrl,
-                        pending,
-                        frame.width | 0,
-                        frame.height | 0
-                    );
-                } catch (err) {
-                    if (err && err.cancelled) {
-                        this.messageHistory.push({
-                            role: "system",
-                            text: "Shift confirm: cancelled at image preview (not sent to agent).",
-                            at: new Date().toISOString()
-                        });
-                        this._shiftConfirm.pending = null;
-                        this._renderHistory();
-                        return;
-                    }
-                    throw err;
-                }
-
-                const reply = await this.sendPrompt("", {
-                    messages: [...prior, userMsg],
-                    skipVisionAttachment: true
-                });
-
-                this.messageHistory.push({
-                    role: "assistant",
-                    text: reply.contentText || "",
-                    at: new Date().toISOString()
-                });
-                this._renderHistory();
-
-                const payload =
-                    this._tryParseJson(reply.contentText) ||
-                    this._extractJsonObjectFromModelText(reply.contentText) ||
-                    this._tryParseJson(reply.rawText) ||
-                    this._extractJsonObjectFromModelText(reply.rawText);
-                const specs = payload && typeof payload === "object" ? this._collectActionsFromPayload(payload) : [];
-                const shiftItem = specs.find((s) => String(s?.actionName || "").trim().toLowerCase() === "shift");
-                const next = this._normalizeShiftSpec(shiftItem?.actionArgs);
-                if (!next) {
-                    this.messageHistory.push({
-                        role: "system",
-                        text: "Shift confirm: model did not return a shift; stopped.",
-                        at: new Date().toISOString()
-                    });
-                    this._shiftConfirm.pending = null;
-                    return;
-                }
-
-                if (this._shiftSpecEqual(next, pending)) {
-                    const actArgs = {
-                        fromX: pending.fromX,
-                        fromY: pending.fromY,
-                        toX: pending.toX,
-                        toY: pending.toY
-                    };
-                    await this.act("shift", actArgs);
-                    this.messageHistory.push({
-                        role: "system",
-                        text: `Shift confirmed and executed: ${JSON.stringify(pending)} ✓`,
-                        at: new Date().toISOString()
-                    });
-                    this._shiftConfirm.pending = null;
-                    this._shiftConfirm.fixCount = 0;
-                    this._renderHistory();
-                    return;
-                }
-
-                // Model corrected the arrow.
-                this._shiftConfirm.fixCount += 1;
-                pending = next;
-                this._shiftConfirm.pending = pending;
-                if (this._shiftConfirm.fixCount >= 3) {
-                    this.messageHistory.push({
-                        role: "system",
-                        text: `Shift confirm: model adjusted arrow 3 times without confirming; stopping auto-check. Last proposal: ${JSON.stringify(
-                            pending
-                        )}`,
-                        at: new Date().toISOString()
-                    });
-                    this._shiftConfirm.pending = null;
-                    this._renderHistory();
-                    return;
-                }
-            }
-        } finally {
-            this._shiftConfirm.running = false;
-        }
-    }
-
     _findNamedItem(list, name) {
         if (!Array.isArray(list)) return null;
         const key = String(name || "").trim().toLowerCase();
@@ -1280,16 +828,6 @@ class AgentInterface {
 
         const specs = this._collectActionsFromPayload(payload);
         if (!specs.length) return;
-
-        // Special case: shift confirmation loop (do not execute immediately).
-        const shiftSpec = specs.find((s) => String(s?.actionName || "").trim().toLowerCase() === "shift");
-        if (shiftSpec) {
-            const initial = this._normalizeShiftSpec(shiftSpec.actionArgs);
-            if (initial) {
-                await this._runShiftConfirmationLoop(initial);
-                return;
-            }
-        }
 
         const summaries = [];
         for (const { actionName, actionArgs } of specs) {
@@ -1727,22 +1265,6 @@ class AgentInterface {
             document.createTextNode("Show full prompt for voice (not just speech text)")
         );
 
-        const previewShiftWrap = document.createElement("label");
-        previewShiftWrap.style.display = "flex";
-        previewShiftWrap.style.alignItems = "center";
-        previewShiftWrap.style.gap = "8px";
-        const previewShiftInput = document.createElement("input");
-        previewShiftInput.type = "checkbox";
-        previewShiftInput.checked = this.previewShiftConfirmImageBeforeSend;
-        previewShiftInput.addEventListener("change", () => {
-            this.previewShiftConfirmImageBeforeSend = !!previewShiftInput.checked;
-        });
-        previewShiftWrap.appendChild(previewShiftInput);
-        previewShiftWrap.appendChild(
-            document.createTextNode("Pause shift check to preview image before API send")
-        );
-        this._previewShiftConfirmInput = previewShiftInput;
-
         const templateLabel = document.createElement("label");
         templateLabel.textContent = "Prompt template";
         const templateSelect = document.createElement("select");
@@ -1804,7 +1326,6 @@ class AgentInterface {
         controls.appendChild(voiceWrap);
         controls.appendChild(agentPowerBtn);
         controls.appendChild(fullSpeechPromptWrap);
-        controls.appendChild(previewShiftWrap);
         controls.appendChild(historyLabel);
         controls.appendChild(historyEl);
         controls.appendChild(promptLabel);
@@ -1842,7 +1363,6 @@ class AgentInterface {
     }
 
     destroy() {
-        this._removeShiftPreviewBackdrop();
         if (this._containerEl && this._containerEl.parentNode) {
             this._containerEl.parentNode.removeChild(this._containerEl);
         }
@@ -1852,7 +1372,6 @@ class AgentInterface {
         this._rememberInput = null;
         this._voiceInput = null;
         this._fullSpeechPromptInput = null;
-        this._previewShiftConfirmInput = null;
         this._modelOverrideInput = null;
         this._templateSelect = null;
         this._insertTemplateBtn = null;
