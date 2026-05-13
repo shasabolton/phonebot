@@ -355,6 +355,10 @@ class ObjectFilter {
         const [x, y, width, height] = picked.bbox;
         const centerX = x + width / 2;
         const centerY = y + height / 2;
+        if (![centerX, centerY].every(Number.isFinite)) {
+            this.result = null;
+            return;
+        }
         const centerX01 = this.invertX ? 1 - centerX : centerX;
         const pixelOffsetRaw = (centerX - 0.5) * frameWidth;
         const pixelOffsetX = Number((this.invertX ? -pixelOffsetRaw : pixelOffsetRaw).toFixed(2));

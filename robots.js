@@ -104,7 +104,7 @@ window.ROBOTS_DATA = {
                 {
                     name: "y object tracker PID",
                     on: true,
-                    feedback: "mainObjectFilter.result.bbox.y",
+                    feedback: "mainObjectFilter.result.center.y",
                     controlInput: "speed",
                     goal: 0.9,
                     kp: -0.2,

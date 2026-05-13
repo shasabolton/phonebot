@@ -62,7 +62,7 @@ class RobotStrategies {
     }
 
     /**
-     * Same resolution as PID._resolveFeedbackValue: path like mainObjectFilter.result.output.x
+     * Same resolution as PID._resolveFeedbackValue: e.g. mainObjectFilter.result.output.x / .center.y
      */
     _readPidFeedbackValue(pid) {
         if (!pid) return null;
