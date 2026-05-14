@@ -127,6 +127,12 @@ window.ROBOTS_DATA = {
                     path: "agentInterface.currentCameraImageUrl",
                     description:
                         "Latest camera frame"
+                },
+                {
+                    name: "gyroYaw",
+                    path: "sensors.gyro.yaw",
+                    description:
+                        "Phone yaw in degrees"
                 }
                 //{name: "objects seen", path: "processing.computervision.results", description: "Tracks in the camera feed. Each bbox is normalized: x and width are 0–1 fractions of frame width, y and height are 0–1 fractions of frame height. Field bboxUnit is \"normalized01\"."},
             ],

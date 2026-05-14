@@ -24,7 +24,8 @@ Rules:
 - Always Pan right to prevent oscilation.
 - Strive for a large pan when exploring.
 - You must pan right about 8 times before you will have searched 360°.
-- Keep a count of your pans in your message for your future reference.
+- When you start a panning sequence, say in you message "started panning at {yaw degrees}"
+- Keep panning until your gyro yaw reading is within 20 degrees if this. That way you will have explored full circle.
 - If you may have rotated ~360° and see earlier landmarks, drive somewhere else in the room or find an open doorway.
 - Always describe your scene in detail so you can recognize it in the future.
 
