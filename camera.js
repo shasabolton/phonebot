@@ -226,6 +226,56 @@ class Camera extends Sensor {
         });
         flowRow.appendChild(deleteFlowBtn);
 
+        const flowBoxSizeWrap = document.createElement("div");
+        flowBoxSizeWrap.className = "sensor-camera-flow-box-size";
+        const flowBoxSizeLabel = document.createElement("label");
+        flowBoxSizeLabel.className = "sensor-camera-flow-box-size-label";
+        flowBoxSizeLabel.style.display = "block";
+        const flowBoxSizeText = document.createElement("span");
+        flowBoxSizeText.textContent = "Flow box width (% of frame)";
+        const flowBoxSizeSelect = document.createElement("select");
+        flowBoxSizeSelect.setAttribute("aria-label", "Flow box width as percent of camera frame width");
+        const Vision = typeof window !== "undefined" ? window.ComputerVisionAiModel : null;
+        const pctOptions = Vision?.FLOW_TOUCH_BOX_WIDTH_PCT_OPTIONS || [10, 15, 20, 25, 30];
+        for (const p of pctOptions) {
+            const opt = document.createElement("option");
+            opt.value = String(p);
+            opt.textContent = `${p}%`;
+            flowBoxSizeSelect.appendChild(opt);
+        }
+        const r0 = this.robot;
+        const cv0 =
+            (r0 && typeof r0.getAiModelByType === "function" && r0.getAiModelByType("computervision")) ||
+            (r0 &&
+                Array.isArray(r0.aiModels) &&
+                r0.aiModels.find((m) => String(m?.type || "").toLowerCase() === "computervision")) ||
+            null;
+        if (cv0 && typeof cv0.getFlowTouchBoxWidthPercent === "function") {
+            flowBoxSizeSelect.value = String(cv0.getFlowTouchBoxWidthPercent());
+        } else {
+            flowBoxSizeSelect.value = "10";
+        }
+        if (!cv0 || typeof cv0.setFlowTouchBoxWidthPercent !== "function") {
+            flowBoxSizeSelect.disabled = true;
+            flowBoxSizeSelect.title = "Computer vision model is required to change flow box size.";
+        }
+        flowBoxSizeSelect.addEventListener("change", () => {
+            const r = this.robot;
+            const cv =
+                (r && typeof r.getAiModelByType === "function" && r.getAiModelByType("computervision")) ||
+                (r &&
+                    Array.isArray(r.aiModels) &&
+                    r.aiModels.find((m) => String(m?.type || "").toLowerCase() === "computervision")) ||
+                null;
+            if (cv && typeof cv.setFlowTouchBoxWidthPercent === "function") {
+                cv.setFlowTouchBoxWidthPercent(Number(flowBoxSizeSelect.value));
+            }
+        });
+        flowBoxSizeLabel.appendChild(flowBoxSizeText);
+        flowBoxSizeLabel.appendChild(flowBoxSizeSelect);
+        flowBoxSizeWrap.appendChild(flowBoxSizeLabel);
+        flowRow.appendChild(flowBoxSizeWrap);
+
         const status = document.createElement("p");
         status.className = "muted sensor-camera-status";
         const startBtn = document.createElement("button");

@@ -49,7 +49,7 @@ window.ROBOTS_DATA = {
                     y: "speed"
                 }
             ],
-            sensors: ["camera", "microphone"],
+            sensors: ["camera", "microphone", "gyro"],
             processing: [
                 { type: "groqvision", frequencyHz: 0.2, model: "meta-llama/llama-4-scout-17b-16e-instruct" },
                 {

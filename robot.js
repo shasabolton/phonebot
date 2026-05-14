@@ -110,6 +110,8 @@ class Robot {
                         throw new Error("Microphone class is unavailable. Check microphone.js loading.");
                     }
                     this.sensors.push(new MicClass(cfg));
+                } else if (cfg.type === "gyro") {
+                    this.sensors.push(new Gyro(cfg));
                 } else {
                     this.sensors.push(new Sensor(cfg));
                 }

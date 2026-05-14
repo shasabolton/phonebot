@@ -146,6 +146,36 @@
       user-select: none;
       touch-action: none;
     }
+    .sensor-gyro-readouts {
+      margin-top: 8px;
+    }
+    .sensor-gyro-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 12px;
+      padding: 6px 0;
+      border-bottom: 1px solid #eee;
+      font-size: 0.95em;
+    }
+    .sensor-gyro-label {
+      color: #555;
+    }
+    .sensor-gyro-value {
+      font-variant-numeric: tabular-nums;
+      font-family: ui-monospace, Consolas, monospace;
+      min-width: 5.5em;
+      text-align: right;
+    }
+    .sensor-gyro-status {
+      margin: 8px 0 0 0;
+      font-size: 0.9em;
+    }
+    .sensor-gyro-toggle {
+      width: auto;
+      max-width: none;
+      margin-top: 8px;
+    }
     .servo-deadband-label {
       display: block;
       margin-top: 8px;
@@ -162,6 +192,23 @@
       height: 100%;
       pointer-events: none;
       z-index: 4;
+    }
+    .sensor-camera-flow-box-size {
+      margin-top: 8px;
+    }
+    .sensor-camera-flow-box-size-label {
+      font-size: 0.9em;
+      color: #555;
+    }
+    .sensor-camera-flow-box-size-label span {
+      display: block;
+      margin-bottom: 4px;
+    }
+    .sensor-camera-flow-box-size-label select {
+      width: 100%;
+      max-width: 12rem;
+      padding: 6px 8px;
+      box-sizing: border-box;
     }
     .strategy-pid-arrow-overlay {
       position: absolute;
@@ -322,6 +369,7 @@
     "sensors.js",
     "camera.js",
     "microphone.js",
+    "gyro/gyro.js",
     "normalizationGrid.js",
     "aiModelGroqVision.js",
     "computerVision.js",

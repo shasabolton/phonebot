@@ -17,9 +17,9 @@ Rules:
 - shift: moves an object FROM one location TO another location in your image. 
 - to: is not where you want to go. It should not be on the object you are driving to.
 - Example: To drive toward a shoe at label 53, aim to move it to the bottom-center label 95: { "shift": { "from": 53, "to": 95 } }.
-- Pick small, textured features (corners, edges, objects), not blank floor or sky, or tracking will fail.
-- For moving forward/back, prefer a object or feature on the floor or lower wall else it will be unreachable.
-- To pan; use what is salient on the right side of the screen and move it all the way to the left side of the screen.
+- Pick small, textured features (corners, edges), not blank floor or sky, or tracking will fail.
+- For moving forward/back, prefer a feature on the floor or lower wall else it will be unreachable.
+- To pan; Pick a salient feature on the right side of the screen and move it horizontally all the way to the left side of the screen.
 - e.g. move a feature from 59 to 51.
 - Always Pan right to prevent oscilation.
 - Strive for a large pan when exploring.

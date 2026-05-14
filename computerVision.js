@@ -19,6 +19,19 @@ class ComputerVisionAiModel {
     static MIN_SCORE = 0.01;
     static MAX_SCORE = 0.99;
 
+    /** Flow-touch box side length options: % of intrinsic frame width (square). */
+    static FLOW_TOUCH_BOX_WIDTH_PCT_OPTIONS = Object.freeze([10, 15, 20, 25, 30]);
+    static _FLOW_TOUCH_BOX_WIDTH_PCT_STORAGE_KEY = "phonebot.flowTouchBoxWidthPct";
+
+    /** @param {number} value */
+    static normalizeFlowTouchBoxWidthPercent(value) {
+        const allowed = ComputerVisionAiModel.FLOW_TOUCH_BOX_WIDTH_PCT_OPTIONS;
+        const n = Math.round(Number(value));
+        if (!Number.isFinite(n)) return 10;
+        if (allowed.includes(n)) return n;
+        return allowed.reduce((best, a) => (Math.abs(a - n) < Math.abs(best - n) ? a : best));
+    }
+
     constructor(robot, config = {}) {
         this.robot = robot;
         this.type = "computervision";
@@ -126,6 +139,18 @@ class ComputerVisionAiModel {
             : 28;
         this.orbUpdateTemplateMinMatches = Math.max(6, Math.min(500, this.orbUpdateTemplateMinMatches));
 
+        let flowTouchPct = Number.isFinite(config.flowTouchBoxWidthPercent) ? config.flowTouchBoxWidthPercent : 10;
+        try {
+            if (typeof localStorage !== "undefined") {
+                const s = localStorage.getItem(ComputerVisionAiModel._FLOW_TOUCH_BOX_WIDTH_PCT_STORAGE_KEY);
+                if (s != null && s !== "") {
+                    const parsed = Number(s);
+                    if (Number.isFinite(parsed)) flowTouchPct = parsed;
+                }
+            }
+        } catch (_) {}
+        this.flowTouchBoxWidthPercent = ComputerVisionAiModel.normalizeFlowTouchBoxWidthPercent(flowTouchPct);
+
         this._timer = null;
         this._busy = false;
         this._overlayCanvas = null;
@@ -157,6 +182,31 @@ class ComputerVisionAiModel {
         this._framePointerTarget = null;
         this._onFramePointerDown = (ev) => this._handleFramePointerDown(ev);
         this._lastTapMarker = null;
+    }
+
+    getFlowTouchBoxWidthPercent() {
+        return this.flowTouchBoxWidthPercent;
+    }
+
+    /**
+     * @param {number} pct one of {@link ComputerVisionAiModel.FLOW_TOUCH_BOX_WIDTH_PCT_OPTIONS}
+     * @returns {number} normalized stored value
+     */
+    setFlowTouchBoxWidthPercent(pct) {
+        this.flowTouchBoxWidthPercent = ComputerVisionAiModel.normalizeFlowTouchBoxWidthPercent(pct);
+        try {
+            if (typeof localStorage !== "undefined") {
+                localStorage.setItem(
+                    ComputerVisionAiModel._FLOW_TOUCH_BOX_WIDTH_PCT_STORAGE_KEY,
+                    String(this.flowTouchBoxWidthPercent)
+                );
+            }
+        } catch (_) {}
+        return this.flowTouchBoxWidthPercent;
+    }
+
+    _flowTouchCellPx(fw) {
+        return Math.max(8, fw * (this.flowTouchBoxWidthPercent / 100));
     }
 
     static _loadScript(src) {
@@ -343,15 +393,19 @@ class ComputerVisionAiModel {
      * @param {number} fromY
      * @param {number} fw
      * @param {number} fh
+     * @param {number} [boxWidthPercent] % of frame width (defaults to 10; should match {@link #flowTouchBoxWidthPercent} when mirroring UI).
      * @returns {{ cx: number, cy: number } | null}
      */
-    static flowTouchCenterPxForAgentNorm(fromX, fromY, fw, fh) {
+    static flowTouchCenterPxForAgentNorm(fromX, fromY, fw, fh, boxWidthPercent) {
         if (!fw || !fh) return null;
         const nx = Math.min(1, Math.max(0, Number(fromX)));
         const ny = Math.min(1, Math.max(0, Number(fromY)));
         const frameX = nx * fw;
         const frameY = ny * fh;
-        const cell = Math.max(8, fw * 0.1);
+        const pct = ComputerVisionAiModel.normalizeFlowTouchBoxWidthPercent(
+            boxWidthPercent != null ? boxWidthPercent : 10
+        );
+        const cell = Math.max(8, fw * (pct / 100));
         const [x, y, w, h] = ComputerVisionAiModel.clampBbox(
             [frameX - cell * 0.5, frameY - cell * 0.5, cell, cell],
             fw,
@@ -922,7 +976,7 @@ class ComputerVisionAiModel {
             return false;
         }
 
-        const cell = Math.max(8, fw * 0.1);
+        const cell = this._flowTouchCellPx(fw);
         const bbox = this._clampBbox([frameX - cell * 0.5, frameY - cell * 0.5, cell, cell], fw, fh);
 
         const kept = [];
@@ -958,7 +1012,11 @@ class ComputerVisionAiModel {
         this._syncDetectionsFromTracks();
         if (videoEl) this._drawDetections(videoEl, this._detections);
         this._renderResponseOutput();
-        this._setStatus("Created fixed flow box (10% frame width) at touch.", "muted", 2200);
+        this._setStatus(
+            `Created fixed flow box (${this.flowTouchBoxWidthPercent}% frame width) at touch.`,
+            "muted",
+            2200
+        );
         return true;
     }
 
