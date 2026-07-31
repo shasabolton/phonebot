@@ -29,12 +29,28 @@ class AudioPlayerAiModel {
         this._stopBtn = null;
         this._fileInput = null;
         this._statusEl = null;
+        this._delaySlider = null;
+        this._delayValueEl = null;
+
+        /**
+         * Playback vs analysis offset in ms (−500…500).
+         * Positive: hear later than analyser (mouth can lead).
+         * Negative: analyser later than hear (mouth lags).
+         */
+        this.delayMs = AudioPlayerAiModel._clampDelayMs(config.delayMs);
 
         /** Web Audio tap so processors (e.g. audioMouthFilter) can read playback level. */
         this._audioContext = null;
         this._mediaSource = null;
         this._analyserNode = null;
+        this._delayNode = null;
         this._levelData = null;
+    }
+
+    static _clampDelayMs(value) {
+        const n = Number(value);
+        if (!Number.isFinite(n)) return 0;
+        return Math.max(-500, Math.min(500, Math.round(n)));
     }
 
     /** HTMLAudioElement used for playback (created lazily). */
@@ -61,12 +77,66 @@ class AudioPlayerAiModel {
             this._analyserNode = this._audioContext.createAnalyser();
             this._analyserNode.fftSize = 1024;
             this._levelData = new Uint8Array(this._analyserNode.fftSize);
-            this._mediaSource.connect(this._analyserNode);
-            this._analyserNode.connect(this._audioContext.destination);
+            this._delayNode = this._audioContext.createDelay(0.5);
+            this._applyDelayRouting();
             return this._analyserNode;
         } catch (err) {
             console.warn("Audio player playback tap failed:", err);
             return null;
+        }
+    }
+
+    _disconnectGraph() {
+        if (this._mediaSource) {
+            try {
+                this._mediaSource.disconnect();
+            } catch (_) {}
+        }
+        if (this._analyserNode) {
+            try {
+                this._analyserNode.disconnect();
+            } catch (_) {}
+        }
+        if (this._delayNode) {
+            try {
+                this._delayNode.disconnect();
+            } catch (_) {}
+        }
+    }
+
+    /**
+     * Rewire analyser vs speakers according to delayMs.
+     * delayMs ≥ 0: source → analyser; source → delay → destination
+     * delayMs < 0: source → destination; source → delay → analyser
+     */
+    _applyDelayRouting() {
+        if (!this._mediaSource || !this._analyserNode || !this._delayNode || !this._audioContext) {
+            return;
+        }
+        this._disconnectGraph();
+        const absSec = Math.abs(this.delayMs) / 1000;
+        try {
+            this._delayNode.delayTime.setValueAtTime(absSec, this._audioContext.currentTime);
+        } catch (_) {
+            this._delayNode.delayTime.value = absSec;
+        }
+        if (this.delayMs >= 0) {
+            this._mediaSource.connect(this._analyserNode);
+            this._mediaSource.connect(this._delayNode);
+            this._delayNode.connect(this._audioContext.destination);
+        } else {
+            this._mediaSource.connect(this._audioContext.destination);
+            this._mediaSource.connect(this._delayNode);
+            this._delayNode.connect(this._analyserNode);
+        }
+    }
+
+    setDelayMs(value) {
+        this.delayMs = AudioPlayerAiModel._clampDelayMs(value);
+        if (this._delaySlider) this._delaySlider.value = String(this.delayMs);
+        if (this._delayValueEl) this._delayValueEl.textContent = String(this.delayMs);
+        if (this._analyserNode && this._delayNode) {
+            this._applyDelayRouting();
         }
     }
 
@@ -384,6 +454,18 @@ class AudioPlayerAiModel {
         controls.appendChild(playPauseBtn);
         controls.appendChild(stopBtn);
 
+        const delayLabel = document.createElement("label");
+        delayLabel.className = "audio-player-slider-label";
+        delayLabel.innerHTML =
+            'Delay <span class="audio-player-delay-value">0</span> ms <span class="muted">(+ hear later / mouth leads; − mouth lags)</span>';
+        const delaySlider = document.createElement("input");
+        delaySlider.type = "range";
+        delaySlider.min = "-500";
+        delaySlider.max = "500";
+        delaySlider.step = "1";
+        delaySlider.value = String(this.delayMs);
+        delaySlider.addEventListener("input", () => this.setDelayMs(Number(delaySlider.value)));
+
         const status = document.createElement("p");
         status.className = "muted";
         status.textContent = "Loading audio folder…";
@@ -392,6 +474,8 @@ class AudioPlayerAiModel {
         wrap.appendChild(selectLabel);
         wrap.appendChild(uploadRow);
         wrap.appendChild(controls);
+        wrap.appendChild(delayLabel);
+        wrap.appendChild(delaySlider);
         wrap.appendChild(status);
         container.appendChild(wrap);
 
@@ -400,7 +484,10 @@ class AudioPlayerAiModel {
         this._stopBtn = stopBtn;
         this._fileInput = fileInput;
         this._statusEl = status;
+        this._delaySlider = delaySlider;
+        this._delayValueEl = delayLabel.querySelector(".audio-player-delay-value");
 
+        this.setDelayMs(this.delayMs);
         this._rebuildSelect();
         this._syncTransportButtons();
         void this.loadFolderListing();
@@ -408,18 +495,10 @@ class AudioPlayerAiModel {
 
     destroy() {
         this.stop();
-        if (this._mediaSource) {
-            try {
-                this._mediaSource.disconnect();
-            } catch (_) {}
-            this._mediaSource = null;
-        }
-        if (this._analyserNode) {
-            try {
-                this._analyserNode.disconnect();
-            } catch (_) {}
-            this._analyserNode = null;
-        }
+        this._disconnectGraph();
+        this._mediaSource = null;
+        this._analyserNode = null;
+        this._delayNode = null;
         this._levelData = null;
         if (this._audioContext) {
             try {

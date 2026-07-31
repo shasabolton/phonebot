@@ -47,7 +47,7 @@ window.ROBOTS_DATA = {
             ],
             sensors: ["microphone"],
             processing: [
-                { type: "audioPlayer" },
+                { type: "audioPlayer", delayMs: 200},
                 { type: "audioMouthFilter", input: "audioPlayer", threshold: 0.01, gain: 20 }
             ]
         },
