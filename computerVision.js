@@ -279,7 +279,7 @@ class ComputerVisionAiModel {
     }
 
     _getGroqModel() {
-        return this.robot.getAiModelByType(this.groqFeedType) || this.robot.getAiModelByName(this.groqFeedType);
+        return this.robot.getProcessingByType(this.groqFeedType) || this.robot.getProcessingByName(this.groqFeedType);
     }
 
     _ensureOverlay() {

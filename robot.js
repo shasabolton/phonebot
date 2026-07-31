@@ -7,9 +7,15 @@ class Robot {
         this.controlInputs = {};
         this.joysticks = [];
         this.actuatorMixes = [];
-        this.inputUnsubscribes = [];
+        this.mixEnabled = false;
+        this.mixFrequencyHz = Number.isFinite(this.config?.mixFrequencyHz)
+            ? Math.max(1, Math.min(60, this.config.mixFrequencyHz))
+            : 30;
+        this._mixTimer = null;
+        this._mixToggleBtn = null;
+        this._mixFreqInput = null;
         this.sensors = [];
-        this.aiModels = [];
+        this.processing = [];
         this.agentInterface = null;
         this.objectFilters = [];
         this.targets = [];
@@ -22,8 +28,8 @@ class Robot {
         this.stateMachine = null;
         this.strategies = null;
         //if mode === track, if trackcoods!= null it means open cv has found the trackTarget.
-        // PID controllers read targets/sensors and may set control inputs. Mix functions map control inputs to actuators.
-        // Actuators have their own sliders; mixing updates angles when control inputs change.
+        // PID controllers read targets/sensors and may set control inputs.
+        // Mix clock rematches control inputs + processing → actuators at mixFrequencyHz.
 
         this.buildRobot();
         this.buildGUI();
@@ -31,10 +37,10 @@ class Robot {
 
     destroy() {
         this.teardownJoysticks();
-        this.teardownInputMixSubscriptions();
+        this.stopMixClock();
         this.teardownStrategies();
         this.teardownSensors();
-        this.teardownAiModels();
+        this.teardownProcessing();
         this.teardownAgentInterface();
         this.teardownObjectFilters();
         this.teardownPidControllers();
@@ -52,7 +58,7 @@ class Robot {
         this.buildControlInputs(this.config.controlInputs || this.config.inputs || {});
         this.buildJoysticks(this.config.joysticks || []);
         this.buildSensors(this.config.sensors || []);
-        this.buildAiModels(this.config.processing || this.config.aiModels || []);
+        this.buildProcessing(this.config.processing || this.config.aiModels || []);
         this.buildAgentInterface();
         this.buildObjectFilters(this.config.objectFilters || []);
         this.buildPidControllers(this.config.pidControllers || []);
@@ -128,49 +134,61 @@ class Robot {
         this.sensors = [];
     }
 
-    buildAiModels(aiModelConfigs) {
-        this.teardownAiModels();
-        for (const item of aiModelConfigs || []) {
+    buildProcessing(processingConfigs) {
+        this.teardownProcessing();
+        for (const item of processingConfigs || []) {
             const cfg = typeof item === "string" ? { type: item } : { ...item };
             const type = String(cfg.type || "").trim().toLowerCase();
             try {
-                let model = null;
+                let module = null;
                 if (type === "groqvision" || type === "groq") {
                     const GroqVisionModelClass = window.GroqVisionAiModel;
                     if (typeof GroqVisionModelClass !== "function") {
                         throw new Error("GroqVisionAiModel class is unavailable. Check aiModelGroqVision.js loading.");
                     }
-                    model = new GroqVisionModelClass(this, cfg);
+                    module = new GroqVisionModelClass(this, cfg);
                 } else if (type === "computervision") {
                     const VisionClass = window.ComputerVisionAiModel;
                     if (typeof VisionClass !== "function") {
                         throw new Error("ComputerVisionAiModel class is unavailable. Check computerVision.js loading.");
                     }
-                    model = new VisionClass(this, cfg);
+                    module = new VisionClass(this, cfg);
                 } else if (type === "speechtotext" || type === "speachtotext") {
                     const SpeechClass = window.SpeechToTextAiModel;
                     if (typeof SpeechClass !== "function") {
                         throw new Error("SpeechToTextAiModel class is unavailable. Check speechToText.js loading.");
                     }
-                    model = new SpeechClass(this, cfg);
+                    module = new SpeechClass(this, cfg);
+                } else if (type === "audioplayer") {
+                    const AudioPlayerClass = window.AudioPlayerAiModel;
+                    if (typeof AudioPlayerClass !== "function") {
+                        throw new Error("AudioPlayerAiModel class is unavailable. Check audioPlayer.js loading.");
+                    }
+                    module = new AudioPlayerClass(this, cfg);
+                } else if (type === "audiomouthfilter") {
+                    const MouthFilterClass = window.AudioMouthFilterAiModel;
+                    if (typeof MouthFilterClass !== "function") {
+                        throw new Error("AudioMouthFilterAiModel class is unavailable. Check audioMouthFilter.js loading.");
+                    }
+                    module = new MouthFilterClass(this, cfg);
                 } else if (type) {
-                    console.warn(`Unknown AI model type: ${cfg.type}`);
+                    console.warn(`Unknown processing type: ${cfg.type}`);
                 }
-                if (model) {
-                    model._startupOn = !!cfg.on;
-                    this.aiModels.push(model);
+                if (module) {
+                    module._startupOn = !!cfg.on;
+                    this.processing.push(module);
                 }
             } catch (err) {
-                console.error("AI model build failed:", err);
+                console.error("Processing module build failed:", err);
             }
         }
     }
 
-    teardownAiModels() {
-        for (const model of this.aiModels) {
-            if (typeof model.destroy === "function") model.destroy();
+    teardownProcessing() {
+        for (const module of this.processing) {
+            if (typeof module.destroy === "function") module.destroy();
         }
-        this.aiModels = [];
+        this.processing = [];
     }
 
     buildAgentInterface() {
@@ -297,14 +315,14 @@ class Robot {
         this.stateMachine = null;
     }
 
-    getAiModelByType(type) {
+    getProcessingByType(type) {
         const key = String(type || "").trim().toLowerCase();
-        return this.aiModels.find((model) => String(model?.type || "").toLowerCase() === key) || null;
+        return this.processing.find((module) => String(module?.type || "").toLowerCase() === key) || null;
     }
 
-    getAiModelByName(name) {
+    getProcessingByName(name) {
         const key = String(name || "").trim().toLowerCase();
-        return this.aiModels.find((model) => String(model?.name || "").toLowerCase() === key) || null;
+        return this.processing.find((module) => String(module?.name || "").toLowerCase() === key) || null;
     }
 
     getObjectFilterByName(name) {
@@ -322,7 +340,13 @@ class Robot {
 
     applyMixing() {
         if (!this.actuatorMixes.length) return;
-        const ctx = { controlInputs: this.getControlInputValues(), robot: this };
+        const processing = Object.create(null);
+        for (const module of this.processing) {
+            if (!module) continue;
+            if (module.type) processing[module.type] = module;
+            if (module.name && module.name !== module.type) processing[module.name] = module;
+        }
+        const ctx = { controlInputs: this.getControlInputValues(), robot: this, processing };
         for (const { servo, mix } of this.actuatorMixes) {
             const us = mix(ctx);
             if (Number.isFinite(us)) {
@@ -331,30 +355,64 @@ class Robot {
         }
     }
 
+    setMixFrequencyHz(value) {
+        const parsed = Number(value);
+        if (!Number.isFinite(parsed)) return;
+        this.mixFrequencyHz = Math.max(1, Math.min(60, Math.round(parsed)));
+        if (this._mixFreqInput) this._mixFreqInput.value = String(this.mixFrequencyHz);
+        if (this.mixEnabled) {
+            this.stopMixClock();
+            this.startMixClock();
+        }
+    }
+
+    startMixClock() {
+        this.stopMixClock();
+        if (!this.actuatorMixes.length) return;
+        const intervalMs = Math.max(16, Math.round(1000 / this.mixFrequencyHz));
+        this._mixTimer = setInterval(() => this.applyMixing(), intervalMs);
+        this.applyMixing();
+    }
+
+    stopMixClock() {
+        if (this._mixTimer) {
+            clearInterval(this._mixTimer);
+            this._mixTimer = null;
+        }
+    }
+
+    setMixEnabled(nextEnabled) {
+        this.mixEnabled = !!nextEnabled && this.actuatorMixes.length > 0;
+        if (this._mixToggleBtn) {
+            this._mixToggleBtn.textContent = this.mixEnabled ? "On" : "Off";
+        }
+        if (this.mixEnabled) {
+            this.startMixClock();
+        } else {
+            this.stopMixClock();
+        }
+    }
+
     buildActuatorMixing() {
-        this.teardownInputMixSubscriptions();
+        this.stopMixClock();
+        this.mixEnabled = false;
         this.actuatorMixes = [];
         const actuatorConfigs = this.config.actuators || [];
         for (let i = 0; i < actuatorConfigs.length; i++) {
             const cfg = actuatorConfigs[i];
             const servo = this.actuators[i];
-            if (typeof cfg?.mix === 'function' && servo) {
+            if (typeof cfg?.mix === "function" && servo) {
                 this.actuatorMixes.push({ servo, mix: cfg.mix });
             }
         }
         if (!this.actuatorMixes.length) return;
-        const onInputChange = () => this.applyMixing();
-        for (const input of Object.values(this.controlInputs)) {
-            this.inputUnsubscribes.push(input.onChange(onInputChange));
+        // Default on so joystick / mouth filter drive servos; set mixOn: false to start off.
+        const startOn = this.config.mixOn !== false;
+        if (startOn) {
+            this.setMixEnabled(true);
+        } else {
+            this.applyMixing();
         }
-        this.applyMixing();
-    }
-
-    teardownInputMixSubscriptions() {
-        for (const unsub of this.inputUnsubscribes) {
-            unsub();
-        }
-        this.inputUnsubscribes = [];
     }
 
     setControlInput(name, value) {
@@ -401,8 +459,8 @@ class Robot {
         let current = this;
         for (const segment of segments) {
             if (current == null) return undefined;
-            if (current === this && segment === "processing") {
-                current = this.aiModels;
+            if (current === this && segment === "aiModels") {
+                current = this.processing;
                 continue;
             }
             if (Array.isArray(current)) {
@@ -535,12 +593,12 @@ class Robot {
     /** Turn on modules marked `on: true` in robot config after GUI exists (toggle labels sync). */
     _applyStartupModuleEnabled() {
         const run = async () => {
-            for (const m of this.aiModels) {
+            for (const m of this.processing) {
                 if (!m._startupOn || typeof m.setEnabled !== "function") continue;
                 try {
                     await Promise.resolve(m.setEnabled(true));
                 } catch (err) {
-                    console.error("Startup enable failed (AI model):", err);
+                    console.error("Startup enable failed (processing):", err);
                 }
             }
             for (const f of this.objectFilters) {
@@ -567,7 +625,7 @@ class Robot {
         const majorPanels = [
             { selector: ".robot-goal", fallback: "goal" },
             { selector: ".robot-sensors", fallback: "sensors" },
-            { selector: ".robot-ai-models", fallback: "processing" },
+            { selector: ".robot-processing", fallback: "processing" },
             { selector: ".robot-agent-interfaces", fallback: "agentInterface" },
             { selector: ".robot-object-filters", fallback: "objectFilters" },
             { selector: ".robot-pid", fallback: "pidControllers" },
@@ -619,26 +677,30 @@ class Robot {
         }
         this.container.appendChild(sensorsDiv);
 
-        const aiModelsDiv = document.createElement('div');
-        aiModelsDiv.className = 'robot-ai-models';
-        const aiTitle = document.createElement('h4');
-        aiTitle.textContent = 'Processing';
-        aiModelsDiv.appendChild(aiTitle);
-        const requestedAiModels = Array.isArray(this.config.processing) ? this.config.processing.length : (Array.isArray(this.config.aiModels) ? this.config.aiModels.length : 0);
-        for (const model of this.aiModels) {
-            if (typeof model.buildGUI === 'function') {
-                model.buildGUI(aiModelsDiv);
+        const processingDiv = document.createElement('div');
+        processingDiv.className = 'robot-processing';
+        const processingTitle = document.createElement('h4');
+        processingTitle.textContent = 'Processing';
+        processingDiv.appendChild(processingTitle);
+        const requestedProcessing = Array.isArray(this.config.processing)
+            ? this.config.processing.length
+            : Array.isArray(this.config.aiModels)
+              ? this.config.aiModels.length
+              : 0;
+        for (const module of this.processing) {
+            if (typeof module.buildGUI === 'function') {
+                module.buildGUI(processingDiv);
             }
         }
-        if (!this.aiModels.length) {
+        if (!this.processing.length) {
             const none = document.createElement('p');
-            none.className = requestedAiModels ? 'error' : 'muted';
-            none.textContent = requestedAiModels
-                ? 'AI models were requested but failed to load. Check browser console.'
-                : 'No AI models configured for this robot.';
-            aiModelsDiv.appendChild(none);
+            none.className = requestedProcessing ? 'error' : 'muted';
+            none.textContent = requestedProcessing
+                ? 'Processing modules were requested but failed to load. Check browser console.'
+                : 'No processing modules configured for this robot.';
+            processingDiv.appendChild(none);
         }
-        this.container.appendChild(aiModelsDiv);
+        this.container.appendChild(processingDiv);
 
         if (this.agentInterface && typeof this.agentInterface.buildGUI === "function") {
             const agentDiv = document.createElement("div");
@@ -714,6 +776,52 @@ class Robot {
 
         const actuatorsDiv = document.createElement('div');
         actuatorsDiv.className = 'robot-actuators';
+
+        const actuatorsHeader = document.createElement('div');
+        actuatorsHeader.className = 'robot-actuators-header';
+        const actuatorsTitle = document.createElement('h4');
+        actuatorsTitle.textContent = 'Actuators';
+        actuatorsHeader.appendChild(actuatorsTitle);
+
+        if (this.actuatorMixes.length) {
+            const mixControls = document.createElement('div');
+            mixControls.className = 'robot-actuators-mix-controls';
+
+            const mixLabel = document.createElement('span');
+            mixLabel.className = 'muted';
+            mixLabel.textContent = 'Mix';
+
+            const mixToggle = document.createElement('button');
+            mixToggle.type = 'button';
+            mixToggle.className = 'ai-model-toggle-btn';
+            mixToggle.textContent = this.mixEnabled ? 'On' : 'Off';
+            mixToggle.addEventListener('click', () => {
+                this.setMixEnabled(!this.mixEnabled);
+            });
+
+            const freqLabel = document.createElement('label');
+            freqLabel.className = 'robot-actuators-mix-freq';
+            freqLabel.textContent = 'Hz';
+            const freqInput = document.createElement('input');
+            freqInput.type = 'number';
+            freqInput.min = '1';
+            freqInput.max = '60';
+            freqInput.step = '1';
+            freqInput.value = String(this.mixFrequencyHz);
+            freqInput.addEventListener('change', () => this.setMixFrequencyHz(freqInput.value));
+            freqInput.addEventListener('blur', () => this.setMixFrequencyHz(freqInput.value));
+            freqLabel.appendChild(freqInput);
+
+            mixControls.appendChild(mixLabel);
+            mixControls.appendChild(mixToggle);
+            mixControls.appendChild(freqLabel);
+            actuatorsHeader.appendChild(mixControls);
+
+            this._mixToggleBtn = mixToggle;
+            this._mixFreqInput = freqInput;
+        }
+
+        actuatorsDiv.appendChild(actuatorsHeader);
         for (const actuator of this.actuators) {
             if (actuator.gui) {
                 actuatorsDiv.appendChild(actuator.gui);

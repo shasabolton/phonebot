@@ -217,8 +217,8 @@ class Camera extends Sensor {
         deleteFlowBtn.addEventListener("click", () => {
             const r = this.robot;
             const cv =
-                (r && typeof r.getAiModelByType === "function" && r.getAiModelByType("computervision")) ||
-                (r && Array.isArray(r.aiModels) && r.aiModels.find((m) => String(m?.type || "").toLowerCase() === "computervision")) ||
+                (r && typeof r.getProcessingByType === "function" && r.getProcessingByType("computervision")) ||
+                (r && Array.isArray(r.processing) && r.processing.find((m) => String(m?.type || "").toLowerCase() === "computervision")) ||
                 null;
             if (cv && typeof cv.clearManualFlowTracks === "function") {
                 cv.clearManualFlowTracks();
@@ -245,10 +245,10 @@ class Camera extends Sensor {
         }
         const r0 = this.robot;
         const cv0 =
-            (r0 && typeof r0.getAiModelByType === "function" && r0.getAiModelByType("computervision")) ||
+            (r0 && typeof r0.getProcessingByType === "function" && r0.getProcessingByType("computervision")) ||
             (r0 &&
-                Array.isArray(r0.aiModels) &&
-                r0.aiModels.find((m) => String(m?.type || "").toLowerCase() === "computervision")) ||
+                Array.isArray(r0.processing) &&
+                r0.processing.find((m) => String(m?.type || "").toLowerCase() === "computervision")) ||
             null;
         if (cv0 && typeof cv0.getFlowTouchBoxWidthPercent === "function") {
             flowBoxSizeSelect.value = String(cv0.getFlowTouchBoxWidthPercent());
@@ -262,10 +262,10 @@ class Camera extends Sensor {
         flowBoxSizeSelect.addEventListener("change", () => {
             const r = this.robot;
             const cv =
-                (r && typeof r.getAiModelByType === "function" && r.getAiModelByType("computervision")) ||
+                (r && typeof r.getProcessingByType === "function" && r.getProcessingByType("computervision")) ||
                 (r &&
-                    Array.isArray(r.aiModels) &&
-                    r.aiModels.find((m) => String(m?.type || "").toLowerCase() === "computervision")) ||
+                    Array.isArray(r.processing) &&
+                    r.processing.find((m) => String(m?.type || "").toLowerCase() === "computervision")) ||
                 null;
             if (cv && typeof cv.setFlowTouchBoxWidthPercent === "function") {
                 cv.setFlowTouchBoxWidthPercent(Number(flowBoxSizeSelect.value));

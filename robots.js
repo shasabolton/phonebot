@@ -9,6 +9,11 @@ window.ROBOTS_DATA = {
             targets: [],
             pidControllers: []
         },
+
+
+
+
+
         {
             name: "talking head",
             bodyPlan: "A face with one sevro for mouth and one for eye yaw",
@@ -26,7 +31,7 @@ window.ROBOTS_DATA = {
                     maxMicroseconds: 2000,
                     deadbandMicrosecondsMin: 1480,
                     deadbandMicrosecondsMax: 1520,
-                    mix: ({ controlInputs }) => controlInputs.mouth
+                    mix: ({ processing }) => (Number(processing.audioMouthFilter?.output) || 0) * 500 + 1500
                 },
                 {
                     type: "servo",
@@ -40,7 +45,19 @@ window.ROBOTS_DATA = {
                     mix: ({ controlInputs }) => controlInputs.eyeYaw
                 }
             ],
+            sensors: ["microphone"],
+            processing: [
+                { type: "audioPlayer" },
+                { type: "audioMouthFilter", input: "audioPlayer", threshold: 0.01, gain: 10 }
+            ]
         },
+
+
+
+
+
+
+
         {
             name: "rover1",
             bodyPlan: "A rover with two wheels and a camera",

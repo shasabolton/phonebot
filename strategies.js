@@ -298,8 +298,8 @@ class RobotStrategies {
         const ny = Math.min(1, Math.max(0, fromY));
 
         const cv =
-            (this.robot.getAiModelByType && this.robot.getAiModelByType("computervision")) ||
-            this.robot.aiModels?.find((m) => String(m?.type || "").toLowerCase() === "computervision") ||
+            (this.robot.getProcessingByType && this.robot.getProcessingByType("computervision")) ||
+            this.robot.processing?.find((m) => String(m?.type || "").toLowerCase() === "computervision") ||
             null;
         const camera = this._getCameraSensor();
         const videoEl = camera?.getVideoElement?.();

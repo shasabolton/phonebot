@@ -146,6 +146,27 @@
       user-select: none;
       touch-action: none;
     }
+    .sensor-microphone-controls {
+      display: flex;
+      gap: 8px;
+      margin-top: 8px;
+    }
+    .sensor-microphone-controls button {
+      flex: 1 1 0;
+      min-width: 0;
+      width: auto;
+      max-width: none;
+      margin-top: 0;
+      box-sizing: border-box;
+    }
+    .sensor-microphone-controls button:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+    }
+    .sensor-microphone-record-btn.active {
+      box-shadow: inset 0 0 0 2px #333;
+      font-weight: bold;
+    }
     .sensor-gyro-readouts {
       margin-top: 8px;
     }
@@ -218,10 +239,42 @@
       pointer-events: none;
       z-index: 6;
     }
-    .robot-ai-models {
+    .robot-processing {
       margin-top: 12px;
       border-top: 1px solid #ddd;
       padding-top: 8px;
+    }
+    .robot-actuators {
+      margin-top: 12px;
+      border-top: 1px solid #ddd;
+      padding-top: 8px;
+    }
+    .robot-actuators-header {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .robot-actuators-header h4 {
+      margin: 0;
+    }
+    .robot-actuators-mix-controls {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+    }
+    .robot-actuators-mix-freq {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 0.9em;
+      color: #555;
+    }
+    .robot-actuators-mix-freq input {
+      width: 4em;
     }
     .ai-model {
       border: 1px solid #ddd;
@@ -237,6 +290,66 @@
       margin-top: 8px;
       font-size: 0.9em;
       color: #555;
+    }
+    .ai-model-audio-player label {
+      display: block;
+      margin-top: 8px;
+      font-size: 0.9em;
+      color: #555;
+    }
+    .audio-player-select {
+      display: block;
+      width: 100%;
+      max-width: 360px;
+      margin-top: 4px;
+    }
+    .audio-player-upload-row {
+      margin-top: 8px;
+    }
+    .audio-player-controls {
+      display: flex;
+      gap: 8px;
+      margin-top: 8px;
+    }
+    .audio-player-controls button:disabled {
+      opacity: 0.5;
+    }
+    .ai-model-audio-mouth-filter label {
+      display: block;
+      margin-top: 8px;
+      font-size: 0.9em;
+      color: #555;
+    }
+    .audio-mouth-filter-input {
+      display: block;
+      width: 100%;
+      max-width: 360px;
+      margin-top: 4px;
+    }
+    .audio-mouth-filter-meter-label {
+      margin: 10px 0 4px 0;
+    }
+    .audio-mouth-filter-level {
+      height: 14px;
+      background: #e8e8e8;
+      border-radius: 4px;
+      overflow: hidden;
+      max-width: 360px;
+    }
+    .audio-mouth-filter-level-fill {
+      height: 100%;
+      width: 0%;
+      background: #3a9d5d;
+      transition: width 40ms linear;
+    }
+    .audio-mouth-filter-slider-label {
+      margin-top: 10px;
+    }
+    .ai-model-audio-mouth-filter input[type="range"] {
+      display: block;
+      width: 100%;
+      max-width: 360px;
+      margin-top: 4px;
     }
     .ai-model-output {
       margin-top: 8px;
@@ -374,6 +487,8 @@
     "aiModelGroqVision.js",
     "computerVision.js",
     "speechToText.js",
+    "audioPlayer.js",
+    "audioMouthFilter.js",
     "stateMachine.js",
     "strategies.js",
     "objectFilter.js",

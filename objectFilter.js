@@ -95,8 +95,8 @@ class ObjectFilter {
                 model.makeCenterObject();
             } else {
                 const fallback =
-                    this.robot?.getAiModelByType?.("computervision") ||
-                    this.robot?.getAiModelByName?.("computervision");
+                    this.robot?.getProcessingByType?.("computervision") ||
+                    this.robot?.getProcessingByName?.("computervision");
                 if (fallback && typeof fallback.makeCenterObject === "function") {
                     fallback.makeCenterObject();
                 }
@@ -200,7 +200,7 @@ class ObjectFilter {
     }
 
     _getFeedModel() {
-        return this.robot.getAiModelByType(this.dataFeed) || this.robot.getAiModelByName(this.dataFeed);
+        return this.robot.getProcessingByType(this.dataFeed) || this.robot.getProcessingByName(this.dataFeed);
     }
 
     _resolveFrequencyHz() {

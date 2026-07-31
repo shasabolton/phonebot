@@ -719,15 +719,16 @@ class AgentInterface {
             }
             if (segment === "aiModels" || segment === "processing") {
                 const key = String(nextSegment || "").trim().toLowerCase();
+                const list = this.robot?.processing;
                 const byType =
-                    Array.isArray(this.robot?.aiModels) &&
-                    this.robot.aiModels.find((m) => String(m?.type || "").trim().toLowerCase() === key);
+                    Array.isArray(list) &&
+                    list.find((m) => String(m?.type || "").trim().toLowerCase() === key);
                 const model =
-                    this.robot?.getAiModelByName?.(nextSegment) ||
-                    this._findNamedItem(this.robot?.aiModels, nextSegment) ||
-                    this.robot?.getAiModelByType?.(nextSegment) ||
+                    this.robot?.getProcessingByName?.(nextSegment) ||
+                    this._findNamedItem(list, nextSegment) ||
+                    this.robot?.getProcessingByType?.(nextSegment) ||
                     byType;
-                if (!model) throw new Error(`AI model not found: ${nextSegment}`);
+                if (!model) throw new Error(`Processing module not found: ${nextSegment}`);
                 current = model;
                 i += 1;
                 continue;
