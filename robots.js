@@ -25,7 +25,7 @@ window.ROBOTS_DATA = {
                 {
                     type: "servo",
                     name: "mouth",
-                    pin: 5,
+                    pin: 4,
                     homeMicroseconds: 1500,
                     minMicroseconds: 1000,
                     maxMicroseconds: 2000,
@@ -36,13 +36,13 @@ window.ROBOTS_DATA = {
                 {
                     type: "servo",
                     name: "eye yaw",
-                    pin: 4,
+                    pin: 5,
                     homeMicroseconds: 1500,
                     minMicroseconds: 1000,
                     maxMicroseconds: 2000,
                     deadbandMicrosecondsMin: 1480,
                     deadbandMicrosecondsMax: 1520,
-                    mix: ({ controlInputs }) => controlInputs.eyeYaw
+                    mix: () => (Math.random() > 0.8 ? Math.random() * 1000 + 1000 : 1500)
                 }
             ],
             sensors: ["microphone"],
