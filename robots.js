@@ -25,18 +25,18 @@ window.ROBOTS_DATA = {
                 {
                     type: "servo",
                     name: "mouth",
-                    pin: 4,
+                    pin: 5,
                     homeMicroseconds: 1500,
                     minMicroseconds: 1000,
                     maxMicroseconds: 2000,
                     deadbandMicrosecondsMin: 1480,
                     deadbandMicrosecondsMax: 1520,
-                    mix: ({ processing }) => (Number(processing.audioMouthFilter?.output) || 0) * 500 + 1500
+                    mix: ({ processing }) => (Number(processing.audioMouthFilter?.output) || 0) * -500 + 1000
                 },
                 {
                     type: "servo",
                     name: "eye yaw",
-                    pin: 5,
+                    pin: 4,
                     homeMicroseconds: 1500,
                     minMicroseconds: 1000,
                     maxMicroseconds: 2000,
