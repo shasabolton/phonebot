@@ -10,6 +10,38 @@ window.ROBOTS_DATA = {
             pidControllers: []
         },
         {
+            name: "talking head",
+            bodyPlan: "A face with one sevro for mouth and one for eye yaw",
+            controlPlan:"Mp3 file uploaded, processing filter maps this to value via theshold and gain. Servo mix function maps to position",
+            //alt plan: Simon Says (needs local free pose Ai)
+            //Yes no game. Think of an animal and I will guess. Touch nose for yes (needs AI groq)
+            //conversation: Needs speech to text. (unreliable, costs money) 
+            actuators: [
+                {
+                    type: "servo",
+                    name: "mouth",
+                    pin: 4,
+                    homeMicroseconds: 1500,
+                    minMicroseconds: 1000,
+                    maxMicroseconds: 2000,
+                    deadbandMicrosecondsMin: 1480,
+                    deadbandMicrosecondsMax: 1520,
+                    mix: ({ controlInputs }) => controlInputs.mouth
+                },
+                {
+                    type: "servo",
+                    name: "eye yaw",
+                    pin: 5,
+                    homeMicroseconds: 1500,
+                    minMicroseconds: 1000,
+                    maxMicroseconds: 2000,
+                    deadbandMicrosecondsMin: 1480,
+                    deadbandMicrosecondsMax: 1520,
+                    mix: ({ controlInputs }) => controlInputs.eyeYaw
+                }
+            ],
+        },
+        {
             name: "rover1",
             bodyPlan: "A rover with two wheels and a camera",
             controlPlan:
