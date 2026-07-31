@@ -43,7 +43,7 @@ window.ROBOTS_DATA = {
                     deadbandMicrosecondsMin: 1480,
                     deadbandMicrosecondsMax: 1520,
                     mix: () => {
-                        if (Math.random() > 0.8) return Math.random() * 1000 + 1000;
+                        if (Math.random() > 0.95) return Math.random() * 1000 + 1000;
                     }
                 }
             ],
