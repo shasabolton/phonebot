@@ -121,6 +121,84 @@ class Servo {
         return this.maxMicroseconds;
     }
 
+    setName(value) {
+        const next = String(value ?? "").trim() || "servo";
+        this.name = next;
+        if (this._nameInput && this._nameInput.value !== next) this._nameInput.value = next;
+        if (this._titleEl) this._titleEl.textContent = next;
+    }
+
+    setPin(value) {
+        const n = Math.round(Number(value));
+        if (!Number.isFinite(n)) {
+            if (this._pinInput) this._pinInput.value = String(this.pin ?? "");
+            return;
+        }
+        this.pin = n;
+        if (this._pinInput && Number(this._pinInput.value) !== n) this._pinInput.value = String(n);
+    }
+
+    setHomeMicroseconds(value) {
+        const n = Servo._clampInt(value, this.minMicroseconds, this.maxMicroseconds);
+        this.homeMicroseconds = n;
+        if (this._homeInput && Number(this._homeInput.value) !== n) this._homeInput.value = String(n);
+    }
+
+    setMinMicroseconds(value) {
+        const n = Math.round(Number(value));
+        if (!Number.isFinite(n)) {
+            if (this._minInput) this._minInput.value = String(this.minMicroseconds);
+            return;
+        }
+        this.minMicroseconds = n;
+        if (this.minMicroseconds > this.maxMicroseconds) {
+            const t = this.minMicroseconds;
+            this.minMicroseconds = this.maxMicroseconds;
+            this.maxMicroseconds = t;
+        }
+        this._syncRangeDependentUi();
+    }
+
+    setMaxMicroseconds(value) {
+        const n = Math.round(Number(value));
+        if (!Number.isFinite(n)) {
+            if (this._maxInput) this._maxInput.value = String(this.maxMicroseconds);
+            return;
+        }
+        this.maxMicroseconds = n;
+        if (this.minMicroseconds > this.maxMicroseconds) {
+            const t = this.minMicroseconds;
+            this.minMicroseconds = this.maxMicroseconds;
+            this.maxMicroseconds = t;
+        }
+        this._syncRangeDependentUi();
+    }
+
+    _syncRangeDependentUi() {
+        if (this._minInput) this._minInput.value = String(this.minMicroseconds);
+        if (this._maxInput) this._maxInput.value = String(this.maxMicroseconds);
+        this.homeMicroseconds = Servo._clampInt(this.homeMicroseconds, this.minMicroseconds, this.maxMicroseconds);
+        if (this._homeInput) {
+            this._homeInput.min = String(this.minMicroseconds);
+            this._homeInput.max = String(this.maxMicroseconds);
+            this._homeInput.value = String(this.homeMicroseconds);
+        }
+        if (this._usSlider) {
+            this._usSlider.min = String(this.minMicroseconds);
+            this._usSlider.max = String(this.maxMicroseconds);
+        }
+        if (this._dbMinInput) {
+            this._dbMinInput.min = String(this.minMicroseconds);
+            this._dbMinInput.max = String(this.maxMicroseconds);
+        }
+        if (this._dbMaxInput) {
+            this._dbMaxInput.min = String(this.minMicroseconds);
+            this._dbMaxInput.max = String(this.maxMicroseconds);
+        }
+        this._readDeadbandFromInputs();
+        this.setMicroseconds(this.microseconds);
+    }
+
     _updateDeadbandHint() {
         if (!this._deadbandHintEl) return;
         if (
@@ -172,29 +250,66 @@ class Servo {
         const gui = document.createElement("div");
         const dbMinVal = this.deadbandMicrosecondsMin != null ? String(this.deadbandMicrosecondsMin) : "";
         const dbMaxVal = this.deadbandMicrosecondsMax != null ? String(this.deadbandMicrosecondsMax) : "";
+        const pinVal = this.pin != null && Number.isFinite(Number(this.pin)) ? String(this.pin) : "";
         gui.innerHTML = `
-        <h3>${this.name}</h3>
-        <p>Pin: ${this.pin}</p>
-        <p>Home: ${this.homeMicroseconds} µs</p>
-        <p>Range: ${this.minMicroseconds} – ${this.maxMicroseconds} µs</p>
+        <h3 class="servo-title">${this.name}</h3>
+        <label class="servo-deadband-label">Name</label>
+        <input type="text" class="servo-name" value="${this.name}">
+        <label class="servo-deadband-label">Pin</label>
+        <input type="number" class="servo-pin" step="1" value="${pinVal}">
+        <label class="servo-deadband-label">Min (µs)</label>
+        <input type="number" class="servo-min-us" step="1" value="${this.minMicroseconds}">
+        <label class="servo-deadband-label">Max (µs)</label>
+        <input type="number" class="servo-max-us" step="1" value="${this.maxMicroseconds}">
+        <label class="servo-deadband-label">Home (µs)</label>
+        <input type="number" class="servo-home-us" min="${this.minMicroseconds}" max="${this.maxMicroseconds}" step="1" value="${this.homeMicroseconds}">
         <p class="muted servo-deadband-hint"></p>
         <label class="servo-deadband-label">Deadband min (µs)</label>
         <input type="number" class="servo-deadband-min" min="${this.minMicroseconds}" max="${this.maxMicroseconds}" step="1" value="${dbMinVal}" placeholder="none">
         <label class="servo-deadband-label">Deadband max (µs)</label>
         <input type="number" class="servo-deadband-max" min="${this.minMicroseconds}" max="${this.maxMicroseconds}" step="1" value="${dbMaxVal}" placeholder="none">
-        <input type="range" min="${this.minMicroseconds}" max="${this.maxMicroseconds}" value="${this.microseconds}" step="1">
+        <label class="servo-deadband-label">Pulse (µs)</label>
+        <input type="range" class="servo-us-slider" min="${this.minMicroseconds}" max="${this.maxMicroseconds}" value="${this.microseconds}" step="1">
         <p class="servo-us-display">Pulse: ${this.microseconds} µs</p>
         `;
+        this._titleEl = gui.querySelector(".servo-title");
+        this._nameInput = gui.querySelector(".servo-name");
+        this._pinInput = gui.querySelector(".servo-pin");
+        this._minInput = gui.querySelector(".servo-min-us");
+        this._maxInput = gui.querySelector(".servo-max-us");
+        this._homeInput = gui.querySelector(".servo-home-us");
         this._deadbandHintEl = gui.querySelector(".servo-deadband-hint");
         this._dbMinInput = gui.querySelector(".servo-deadband-min");
         this._dbMaxInput = gui.querySelector(".servo-deadband-max");
-        this._usSlider = gui.querySelector('input[type="range"]');
+        this._usSlider = gui.querySelector(".servo-us-slider");
         this._usLabel = gui.querySelector(".servo-us-display");
+
+        const onNameChange = () => this.setName(this._nameInput.value);
+        this._nameInput.addEventListener("change", onNameChange);
+        this._nameInput.addEventListener("blur", onNameChange);
+
+        const onPinChange = () => this.setPin(this._pinInput.value);
+        this._pinInput.addEventListener("change", onPinChange);
+        this._pinInput.addEventListener("blur", onPinChange);
+
+        const onMinChange = () => this.setMinMicroseconds(this._minInput.value);
+        this._minInput.addEventListener("change", onMinChange);
+        this._minInput.addEventListener("blur", onMinChange);
+
+        const onMaxChange = () => this.setMaxMicroseconds(this._maxInput.value);
+        this._maxInput.addEventListener("change", onMaxChange);
+        this._maxInput.addEventListener("blur", onMaxChange);
+
+        const onHomeChange = () => this.setHomeMicroseconds(this._homeInput.value);
+        this._homeInput.addEventListener("change", onHomeChange);
+        this._homeInput.addEventListener("blur", onHomeChange);
+
         const onDeadbandChange = () => this._readDeadbandFromInputs();
         this._dbMinInput.addEventListener("change", onDeadbandChange);
         this._dbMinInput.addEventListener("blur", onDeadbandChange);
         this._dbMaxInput.addEventListener("change", onDeadbandChange);
         this._dbMaxInput.addEventListener("blur", onDeadbandChange);
+
         this._usSlider.addEventListener("input", () => {
             this.setMicroseconds(Number(this._usSlider.value));
         });
