@@ -139,7 +139,7 @@ class AudioMouthFilterAiModel {
 
     setGain(value) {
         const n = Number(value);
-        this.gain = Number.isFinite(n) ? Math.max(0, Math.min(10, n)) : this.gain;
+        this.gain = Number.isFinite(n) ? Math.max(0, Math.min(20, n)) : this.gain;
         if (this._gainSlider) this._gainSlider.value = String(this.gain);
         if (this._gainValueEl) this._gainValueEl.textContent = this.gain.toFixed(2);
     }
@@ -211,7 +211,7 @@ class AudioMouthFilterAiModel {
         const gainSlider = document.createElement("input");
         gainSlider.type = "range";
         gainSlider.min = "0";
-        gainSlider.max = "10";
+        gainSlider.max = "20";
         gainSlider.step = "0.05";
         gainSlider.value = String(this.gain);
         gainSlider.addEventListener("input", () => this.setGain(Number(gainSlider.value)));
