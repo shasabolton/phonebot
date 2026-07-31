@@ -42,7 +42,9 @@ window.ROBOTS_DATA = {
                     maxMicroseconds: 2000,
                     deadbandMicrosecondsMin: 1480,
                     deadbandMicrosecondsMax: 1520,
-                    mix: () => (Math.random() > 0.8 ? Math.random() * 1000 + 1000 : 1500)
+                    mix: () => {
+                        if (Math.random() > 0.8) return Math.random() * 1000 + 1000;
+                    }
                 }
             ],
             sensors: ["microphone"],
