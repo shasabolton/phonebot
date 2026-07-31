@@ -31,7 +31,7 @@ window.ROBOTS_DATA = {
                     maxMicroseconds: 2000,
                     deadbandMicrosecondsMin: 1480,
                     deadbandMicrosecondsMax: 1520,
-                    mix: ({ processing }) => (Number(processing.audioMouthFilter?.output) || 0) * 500 + 1000
+                    mix: ({ processing }) => (Number(processing.audioMouthFilter?.output) || 0) * 1000 + 1000
                 },
                 {
                     type: "servo",
