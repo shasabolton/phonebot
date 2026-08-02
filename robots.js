@@ -17,10 +17,11 @@ window.ROBOTS_DATA = {
         {
             name: "talking head",
             bodyPlan: "A face with one sevro for mouth and one for eye yaw",
-            controlPlan:"Mp3 file uploaded, processing filter maps this to value via theshold and gain. Servo mix function maps to position",
+            controlPlan:
+                "Modes: random eyes, or eyes track MoveNet nose x. Mp3 → audioMouthFilter → mouth servo.",
             //alt plan: Simon Says (needs local free pose Ai)
             //Yes no game. Think of an animal and I will guess. Touch nose for yes (needs AI groq)
-            //conversation: Needs speech to text. (unreliable, costs money) 
+            //conversation: Needs speech to text. (unreliable, costs money)
             actuators: [
                 {
                     type: "servo",
@@ -41,17 +42,62 @@ window.ROBOTS_DATA = {
                     minMicroseconds: 1000,
                     maxMicroseconds: 2000,
                     deadbandMicrosecondsMin: 1480,
-                    deadbandMicrosecondsMax: 1520,
-                    mix: () => {
-                        if (Math.random() > 0.95) return Math.random() * 1000 + 1000;
-                    }
+                    deadbandMicrosecondsMax: 1520
                 }
             ],
-            sensors: ["microphone"],
+            sensors: ["microphone", "camera"],
             processing: [
                 { type: "audioPlayer", delayMs: 200},
-                { type: "audioMouthFilter", input: "audioPlayer", threshold: 0.01, gain: 20 }
-            ]
+                { type: "audioMouthFilter", input: "audioPlayer", threshold: 0.01, gain: 20 },
+                {
+                    type: "computervision",
+                    on: true,
+                    model: "movenet",
+                    frequencyHz: 15,
+                    name: "Computer vision"
+                }
+            ],
+            defaultMode: "randomEyes",
+            modes: {
+                randomEyes: {
+                    label: "Random eyes",
+                    actuators: {
+                        "eye yaw": {
+                            mix: () => {
+                                if (Math.random() > 0.95) return Math.random() * 1000 + 1000;
+                            }
+                        }
+                    }
+                },
+                trackNose: {
+                    label: "Track nose",
+                    actuators: {
+                        "eye yaw": {
+                            mix: ({ processing, robot }) => {
+                                const poses = processing.computervision?.poses;
+                                const keypoints = poses?.[0]?.keypoints;
+                                if (!Array.isArray(keypoints)) return;
+                                const nose = keypoints.find(
+                                    (kp) => String(kp?.name || "").toLowerCase() === "nose"
+                                );
+                                if (!nose || !Number.isFinite(nose.x) || (nose.score || 0) < 0.3) return;
+                                const servo =
+                                    robot?.actuators?.find(
+                                        (a) => String(a?.name || "").toLowerCase() === "eye yaw"
+                                    ) || null;
+                                const minUs = Number.isFinite(servo?.minMicroseconds)
+                                    ? servo.minMicroseconds
+                                    : 1000;
+                                const maxUs = Number.isFinite(servo?.maxMicroseconds)
+                                    ? servo.maxMicroseconds
+                                    : 2000;
+                                const x = Math.max(0, Math.min(1, Number(nose.x)));
+                                return minUs + x * (maxUs - minUs);
+                            }
+                        }
+                    }
+                }
+            }
         },
 
 
@@ -106,6 +152,7 @@ window.ROBOTS_DATA = {
                 {
                     type: "computervision",
                     on: true,
+                    model: "opencv",
                     frequencyHz: 10,
                     groqFeedType: "groqvision",
                     maxNumBoxes: 40,

@@ -1,8 +1,8 @@
 /**
  * Computer vision fusion model:
- * - Internal high-frequency COCO detections for geometry.
- * - Lower-frequency Groq updates for stronger labels.
- * - Optical-flow between informer updates to reduce flicker.
+ * - Modes: opencv (COCO + optical flow), coco (COCO only), movenet (pose).
+ * - Lower-frequency Groq updates for stronger labels (opencv/coco).
+ * - Optical-flow between informer updates to reduce flicker (opencv).
  * - Optional tap-to-track ORB cluster (fixed fingerprint, homography updates).
  */
 class ComputerVisionAiModel {
@@ -10,6 +10,9 @@ class ComputerVisionAiModel {
     static _tfLoadPromise = null;
     static _cocoModelLoadPromise = null;
     static _cocoModelInstance = null;
+    static _poseDetectionLoadPromise = null;
+    static _moveNetLoadPromise = null;
+    static _moveNetInstance = null;
 
     static MIN_FREQUENCY_HZ = 1;
     static MAX_FREQUENCY_HZ = 30;
@@ -18,6 +21,29 @@ class ComputerVisionAiModel {
     static MAX_BOXES = 100;
     static MIN_SCORE = 0.01;
     static MAX_SCORE = 0.99;
+
+    /** @type {readonly string[]} */
+    static MODEL_OPTIONS = Object.freeze(["opencv", "coco", "movenet"]);
+
+    /** MoveNet / COCO-17 skeleton edges by keypoint name. */
+    static MOVENET_SKELETON = Object.freeze([
+        ["nose", "left_eye"],
+        ["nose", "right_eye"],
+        ["left_eye", "left_ear"],
+        ["right_eye", "right_ear"],
+        ["left_shoulder", "right_shoulder"],
+        ["left_shoulder", "left_elbow"],
+        ["left_elbow", "left_wrist"],
+        ["right_shoulder", "right_elbow"],
+        ["right_elbow", "right_wrist"],
+        ["left_shoulder", "left_hip"],
+        ["right_shoulder", "right_hip"],
+        ["left_hip", "right_hip"],
+        ["left_hip", "left_knee"],
+        ["left_knee", "left_ankle"],
+        ["right_hip", "right_knee"],
+        ["right_knee", "right_ankle"]
+    ]);
 
     /** Flow-touch box side length options: % of intrinsic frame width (square). */
     static FLOW_TOUCH_BOX_WIDTH_PCT_OPTIONS = Object.freeze([10, 15, 20, 25, 30]);
@@ -32,11 +58,24 @@ class ComputerVisionAiModel {
         return allowed.reduce((best, a) => (Math.abs(a - n) < Math.abs(best - n) ? a : best));
     }
 
+    /** @param {unknown} value */
+    static normalizeModel(value) {
+        const raw = String(value == null ? "" : value)
+            .trim()
+            .toLowerCase()
+            .replace(/[\s_-]+/g, "");
+        if (raw === "movenet" || raw === "pose" || raw === "posenet") return "movenet";
+        if (raw === "coco" || raw === "cocossd") return "coco";
+        if (raw === "opencv" || raw === "cv" || raw === "flow") return "opencv";
+        return "opencv";
+    }
+
     constructor(robot, config = {}) {
         this.robot = robot;
         this.type = "computervision";
         this.name = config.name || "Computer vision";
         this.enabled = false;
+        this.model = ComputerVisionAiModel.normalizeModel(config.model ?? config.defaultModel ?? "opencv");
         this.frequencyHz = Number.isFinite(config.frequencyHz) ? config.frequencyHz : 10;
         this.frequencyHz = Math.max(
             ComputerVisionAiModel.MIN_FREQUENCY_HZ,
@@ -166,8 +205,10 @@ class ComputerVisionAiModel {
         this._frameWidth = 0;
         this._frameHeight = 0;
         this._detections = [];
+        this._poses = [];
 
         this._toggleBtn = null;
+        this._modelSelect = null;
         this._freqInput = null;
         this._minScoreInput = null;
         this._refreshInput = null;
@@ -176,6 +217,7 @@ class ComputerVisionAiModel {
         this._flowBboxPctLowInput = null;
         this._makeCenterBtn = null;
         this._makeCenterOrbBtn = null;
+        this._hintEl = null;
         this._statusEl = null;
         this._outputEl = null;
         this._statusHoldUntilMs = 0;
@@ -254,6 +296,37 @@ class ComputerVisionAiModel {
             })();
         }
         return this._cocoModelLoadPromise;
+    }
+
+    static async _loadPoseDetection() {
+        if (window.poseDetection) return;
+        await this._loadTfJs();
+        if (!this._poseDetectionLoadPromise) {
+            this._poseDetectionLoadPromise = this._loadScript(
+                "https://cdn.jsdelivr.net/npm/@tensorflow-models/pose-detection@2.1.3/dist/pose-detection.min.js"
+            );
+        }
+        await this._poseDetectionLoadPromise;
+        if (!window.poseDetection) {
+            throw new Error("pose-detection loaded but window.poseDetection is missing.");
+        }
+    }
+
+    static async _loadMoveNet() {
+        if (this._moveNetInstance) return this._moveNetInstance;
+        await this._loadPoseDetection();
+        if (!this._moveNetLoadPromise) {
+            this._moveNetLoadPromise = (async () => {
+                const poseDetection = window.poseDetection;
+                const modelType =
+                    poseDetection.movenet?.modelType?.SINGLEPOSE_LIGHTNING || "SinglePose.Lightning";
+                this._moveNetInstance = await poseDetection.createDetector(poseDetection.SupportedModels.MoveNet, {
+                    modelType
+                });
+                return this._moveNetInstance;
+            })();
+        }
+        return this._moveNetLoadPromise;
     }
 
     static async _loadOpenCv() {
@@ -946,6 +1019,7 @@ class ComputerVisionAiModel {
 
     async _handleFramePointerDown(ev) {
         if (!this.enabled) return;
+        if (this.model !== "opencv") return;
         const camera = this._getCameraSensor();
         const videoEl = camera?.getVideoElement?.();
         if (!videoEl || !videoEl.videoWidth || !videoEl.videoHeight) return;
@@ -1425,24 +1499,28 @@ class ComputerVisionAiModel {
         ctx.font = "12px Arial";
         ctx.textBaseline = "top";
 
-        list.forEach((item) => {
-            const [x, y, w, h] = item.bbox;
-            const r = ComputerVisionAiModel.intrinsicBboxToVideoElementLocalRect([x, y, w, h], t);
-            const bx = r.x;
-            const by = r.y;
-            const bw = r.w;
-            const bh = r.h;
-            const label = `${item.class} ${(item.score * 100).toFixed(0)}%`;
+        if (this.model === "movenet") {
+            this._drawPoses(ctx, t, this._poses);
+        } else {
+            list.forEach((item) => {
+                const [x, y, w, h] = item.bbox;
+                const r = ComputerVisionAiModel.intrinsicBboxToVideoElementLocalRect([x, y, w, h], t);
+                const bx = r.x;
+                const by = r.y;
+                const bw = r.w;
+                const bh = r.h;
+                const label = `${item.class} ${(item.score * 100).toFixed(0)}%`;
 
-            ctx.strokeStyle = "#ff3333";
-            ctx.strokeRect(bx, by, bw, bh);
-            const labelW = ctx.measureText(label).width + 8;
-            const labelH = 16;
-            ctx.fillStyle = "rgba(0, 0, 0, 0.7)";
-            ctx.fillRect(bx, Math.max(0, by - labelH), labelW, labelH);
-            ctx.fillStyle = "#ff3333";
-            ctx.fillText(label, bx + 4, Math.max(0, by - labelH + 2));
-        });
+                ctx.strokeStyle = "#ff3333";
+                ctx.strokeRect(bx, by, bw, bh);
+                const labelW = ctx.measureText(label).width + 8;
+                const labelH = 16;
+                ctx.fillStyle = "rgba(0, 0, 0, 0.7)";
+                ctx.fillRect(bx, Math.max(0, by - labelH), labelW, labelH);
+                ctx.fillStyle = "#ff3333";
+                ctx.fillText(label, bx + 4, Math.max(0, by - labelH + 2));
+            });
+        }
 
         const marker = this._lastTapMarker;
         if (marker && marker.untilMs > Date.now()) {
@@ -1461,6 +1539,60 @@ class ComputerVisionAiModel {
         }
     }
 
+    /**
+     * @param {CanvasRenderingContext2D} ctx
+     * @param {{ scale: number, offsetX: number, offsetY: number }} t
+     * @param {Array<{ score: number, keypoints: Array<{ name: string, x: number, y: number, score: number }> }>} poses
+     */
+    _drawPoses(ctx, t, poses) {
+        const minKp = Math.max(0.1, this.minScore * 0.5);
+        for (const pose of poses || []) {
+            const byName = new Map();
+            for (const kp of pose.keypoints || []) {
+                const name = String(kp?.name || "").trim().toLowerCase();
+                if (!name) continue;
+                byName.set(name, kp);
+            }
+
+            ctx.strokeStyle = "#33ff99";
+            ctx.lineWidth = 2;
+            for (const [aName, bName] of ComputerVisionAiModel.MOVENET_SKELETON) {
+                const a = byName.get(aName);
+                const b = byName.get(bName);
+                if (!a || !b) continue;
+                if ((a.score || 0) < minKp || (b.score || 0) < minKp) continue;
+                ctx.beginPath();
+                ctx.moveTo(t.offsetX + a.x * t.scale, t.offsetY + a.y * t.scale);
+                ctx.lineTo(t.offsetX + b.x * t.scale, t.offsetY + b.y * t.scale);
+                ctx.stroke();
+            }
+
+            for (const kp of pose.keypoints || []) {
+                if ((kp.score || 0) < minKp) continue;
+                const px = t.offsetX + kp.x * t.scale;
+                const py = t.offsetY + kp.y * t.scale;
+                ctx.fillStyle = "#ffcc33";
+                ctx.beginPath();
+                ctx.arc(px, py, 4, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            const nose = byName.get("nose");
+            if (nose && (nose.score || 0) >= minKp) {
+                const label = `pose ${(pose.score * 100).toFixed(0)}%`;
+                const lx = t.offsetX + nose.x * t.scale;
+                const ly = t.offsetY + nose.y * t.scale;
+                ctx.font = "12px Arial";
+                ctx.textBaseline = "bottom";
+                const labelW = ctx.measureText(label).width + 8;
+                ctx.fillStyle = "rgba(0, 0, 0, 0.7)";
+                ctx.fillRect(lx - 4, ly - 18, labelW, 16);
+                ctx.fillStyle = "#33ff99";
+                ctx.fillText(label, lx, ly - 4);
+            }
+        }
+    }
+
     _syncDetectionsFromTracks() {
         this._detections = this._tracks.map((t) => ({
             class: t.class,
@@ -1470,19 +1602,77 @@ class ComputerVisionAiModel {
         }));
     }
 
+    _normalizePosesForOutput(poses, fw, fh) {
+        const width = Math.max(1, fw || 1);
+        const height = Math.max(1, fh || 1);
+        return (poses || []).map((pose, index) => ({
+            id: pose.id != null ? pose.id : index + 1,
+            score: Number((pose.score || 0).toFixed(3)),
+            keypoints: (pose.keypoints || []).map((kp) => ({
+                name: String(kp.name || ""),
+                score: Number((kp.score || 0).toFixed(3)),
+                x: Number((kp.x / width).toFixed(4)),
+                y: Number((kp.y / height).toFixed(4))
+            })),
+            bbox: Array.isArray(pose.bbox)
+                ? (() => {
+                      const [nx, ny, nw, nh] = this._bboxPixelsToNormalized(pose.bbox, width, height);
+                      return {
+                          x: Number(nx.toFixed(4)),
+                          y: Number(ny.toFixed(4)),
+                          width: Number(nw.toFixed(4)),
+                          height: Number(nh.toFixed(4))
+                      };
+                  })()
+                : null,
+            bboxUnit: "normalized01"
+        }));
+    }
+
+    _poseToPersonDetection(pose, fw, fh) {
+        const minKp = Math.max(0.1, this.minScore * 0.5);
+        const pts = (pose.keypoints || []).filter((kp) => (kp.score || 0) >= minKp);
+        if (!pts.length) return null;
+        let minX = Infinity;
+        let minY = Infinity;
+        let maxX = -Infinity;
+        let maxY = -Infinity;
+        for (const kp of pts) {
+            minX = Math.min(minX, kp.x);
+            minY = Math.min(minY, kp.y);
+            maxX = Math.max(maxX, kp.x);
+            maxY = Math.max(maxY, kp.y);
+        }
+        const padX = Math.max(4, (maxX - minX) * 0.08);
+        const padY = Math.max(4, (maxY - minY) * 0.08);
+        const bbox = this._clampBbox(
+            [minX - padX, minY - padY, maxX - minX + padX * 2, maxY - minY + padY * 2],
+            fw,
+            fh
+        );
+        return {
+            class: "person",
+            score: pose.score || 0,
+            bbox,
+            labelSource: "movenet"
+        };
+    }
+
     _renderResponseOutput() {
         if (!this._outputEl) return;
+        const fw = this._frameWidth || 1;
+        const fh = this._frameHeight || 1;
         const response = {
             model: this.type,
+            visionModel: this.model,
             detectedAt: new Date().toISOString(),
             objectCount: this._detections.length,
+            poseCount: this._poses.length,
             groqFeed: this.groqFeedType,
             groqRefreshMs: this.groqRefreshMs,
             cocoFeed: "internal",
             cocoRefreshMs: this.cocoRefreshMs,
             tracks: this._tracks.map((t) => {
-                const fw = this._frameWidth || 1;
-                const fh = this._frameHeight || 1;
                 const [nx, ny, nw, nh] = this._bboxPixelsToNormalized(t.bbox, fw, fh);
                 return {
                     id: t.id,
@@ -1497,21 +1687,123 @@ class ComputerVisionAiModel {
                     },
                     bboxUnit: "normalized01"
                 };
-            })
+            }),
+            poses: this._normalizePosesForOutput(this._poses, fw, fh)
         };
         this._outputEl.textContent = JSON.stringify(response, null, 2);
     }
 
-    async _tick() {
-        if (this._busy || !this.enabled) return;
-        const camera = this._getCameraSensor();
-        const videoEl = camera?.getVideoElement?.();
-        if (!videoEl || !videoEl.videoWidth || !videoEl.videoHeight || videoEl.readyState < 2) {
-            if (this._statusEl) this._statusEl.textContent = "Waiting for camera stream...";
+    async _ensureRuntimeForModel() {
+        if (this.model === "movenet") {
+            await ComputerVisionAiModel._loadMoveNet();
             return;
         }
+        if (this.model === "coco") {
+            await ComputerVisionAiModel._loadCocoModel();
+            return;
+        }
+        await ComputerVisionAiModel._loadOpenCv();
+        await ComputerVisionAiModel._loadCocoModel();
+    }
 
-        this._busy = true;
+    _resetTrackingState() {
+        if (this._prevGray) {
+            try {
+                this._prevGray.delete();
+            } catch (_) {}
+            this._prevGray = null;
+        }
+        this._releaseAllTrackPts(true);
+        this._tracks = [];
+        this._detections = [];
+        this._poses = [];
+        this._clearOverlay();
+    }
+
+    async _tickMoveNet(videoEl) {
+        const detector = await ComputerVisionAiModel._loadMoveNet();
+        this._ensureOverlay();
+        this._frameWidth = videoEl.videoWidth || 0;
+        this._frameHeight = videoEl.videoHeight || 0;
+        const fw = this._frameWidth;
+        const fh = this._frameHeight;
+
+        const rawPoses = await detector.estimatePoses(videoEl, { flipHorizontal: false });
+        const poses = [];
+        const detections = [];
+        for (let i = 0; i < (rawPoses || []).length; i++) {
+            const pose = rawPoses[i];
+            const keypoints = (pose.keypoints || []).map((kp) => ({
+                name: String(kp.name || "").trim().toLowerCase(),
+                x: Number(kp.x) || 0,
+                y: Number(kp.y) || 0,
+                score: Number.isFinite(kp.score) ? kp.score : 0
+            }));
+            const score = Number.isFinite(pose.score)
+                ? pose.score
+                : keypoints.reduce((s, kp) => s + (kp.score || 0), 0) / Math.max(1, keypoints.length);
+            const entry = { id: i + 1, score, keypoints };
+            const det = this._poseToPersonDetection(entry, fw, fh);
+            if (det) {
+                entry.bbox = [...det.bbox];
+                detections.push(det);
+            }
+            poses.push(entry);
+        }
+
+        this._poses = poses;
+        this._detections = detections;
+        this._tracks = detections.map((d, i) => ({
+            id: i + 1,
+            class: d.class,
+            score: d.score,
+            bbox: [...d.bbox],
+            labelSource: "movenet"
+        }));
+        this._drawDetections(videoEl, this._detections);
+        this._renderResponseOutput();
+        if (this._statusEl && this._canAutoUpdateStatus()) {
+            this._setStatus(`MoveNet: ${poses.length} pose(s) at ${this.frequencyHz} Hz`, "muted");
+        }
+    }
+
+    async _tickCoco(videoEl) {
+        const cocoModel = await ComputerVisionAiModel._loadCocoModel();
+        this._ensureOverlay();
+        this._frameWidth = videoEl.videoWidth || 0;
+        this._frameHeight = videoEl.videoHeight || 0;
+
+        const now = Date.now();
+        const shouldDetect = now - this._lastCocoReanchorMs >= this.cocoRefreshMs || !this._detections.length;
+        if (shouldDetect) {
+            this._lastCocoReanchorMs = now;
+            const rawCocoDets = await cocoModel.detect(videoEl, this.maxNumBoxes, this.minScore);
+            this._detections = Array.isArray(rawCocoDets)
+                ? rawCocoDets.map((d) => ({
+                      class: String(d?.class || "").trim().toLowerCase(),
+                      score: Number.isFinite(d?.score) ? d.score : 0,
+                      bbox: Array.isArray(d?.bbox) ? [...d.bbox] : [0, 0, 0, 0],
+                      labelSource: "coco"
+                  }))
+                : [];
+            this._tracks = this._detections.map((d, i) => ({
+                id: i + 1,
+                class: d.class,
+                score: d.score,
+                bbox: [...d.bbox],
+                labelSource: "coco"
+            }));
+            this._poses = [];
+        }
+
+        this._drawDetections(videoEl, this._detections);
+        this._renderResponseOutput();
+        if (this._statusEl && this._canAutoUpdateStatus()) {
+            this._setStatus(`COCO: ${this._detections.length} object(s) at ${this.frequencyHz} Hz`, "muted");
+        }
+    }
+
+    async _tickOpenCv(videoEl) {
         let rgba = null;
         let gray = null;
         try {
@@ -1535,10 +1827,10 @@ class ComputerVisionAiModel {
                 const rawCocoDets = await cocoModel.detect(videoEl, this.maxNumBoxes, this.minScore);
                 const cocoDets = Array.isArray(rawCocoDets)
                     ? rawCocoDets.map((d) => ({
-                        class: String(d?.class || "").trim().toLowerCase(),
-                        score: Number.isFinite(d?.score) ? d.score : 0,
-                        bbox: Array.isArray(d?.bbox) ? [...d.bbox] : [0, 0, 0, 0]
-                    }))
+                          class: String(d?.class || "").trim().toLowerCase(),
+                          score: Number.isFinite(d?.score) ? d.score : 0,
+                          bbox: Array.isArray(d?.bbox) ? [...d.bbox] : [0, 0, 0, 0]
+                      }))
                     : [];
                 if (Array.isArray(cocoDets) && cocoDets.length) {
                     this._mergeAnchorDetections(cocoDets, "coco", rgba, gray.cols, gray.rows);
@@ -1589,18 +1881,17 @@ class ComputerVisionAiModel {
             } catch (_) {}
             gray = null;
 
+            this._poses = [];
             this._syncDetectionsFromTracks();
             this._drawDetections(videoEl, this._detections);
             this._renderResponseOutput();
 
             if (this._statusEl && this._canAutoUpdateStatus()) {
                 const groqLabels = this._tracks.filter((t) => t.labelSource === "groq").length;
-                this._setStatus(`Tracking ${this._detections.length} object(s) at ${this.frequencyHz} Hz (COCO geometry + Groq labels: ${groqLabels})`, "muted");
-            }
-        } catch (err) {
-            console.error("ComputerVision error:", err);
-            if (this._statusEl) {
-                this._setStatus(`ComputerVision error: ${err?.message || "unknown error"}`, "error", 4000);
+                this._setStatus(
+                    `OpenCV tracking ${this._detections.length} object(s) at ${this.frequencyHz} Hz (COCO geometry + Groq labels: ${groqLabels})`,
+                    "muted"
+                );
             }
         } finally {
             if (gray) {
@@ -1613,6 +1904,33 @@ class ComputerVisionAiModel {
                     rgba.delete();
                 } catch (_) {}
             }
+        }
+    }
+
+    async _tick() {
+        if (this._busy || !this.enabled) return;
+        const camera = this._getCameraSensor();
+        const videoEl = camera?.getVideoElement?.();
+        if (!videoEl || !videoEl.videoWidth || !videoEl.videoHeight || videoEl.readyState < 2) {
+            if (this._statusEl) this._statusEl.textContent = "Waiting for camera stream...";
+            return;
+        }
+
+        this._busy = true;
+        try {
+            if (this.model === "movenet") {
+                await this._tickMoveNet(videoEl);
+            } else if (this.model === "coco") {
+                await this._tickCoco(videoEl);
+            } else {
+                await this._tickOpenCv(videoEl);
+            }
+        } catch (err) {
+            console.error("ComputerVision error:", err);
+            if (this._statusEl) {
+                this._setStatus(`ComputerVision error: ${err?.message || "unknown error"}`, "error", 4000);
+            }
+        } finally {
             this._busy = false;
         }
     }
@@ -1639,41 +1957,55 @@ class ComputerVisionAiModel {
         if (this._toggleBtn) this._toggleBtn.textContent = this.enabled ? "On" : "Off";
         if (this.enabled) {
             if (this._statusEl) {
-                this._statusEl.textContent = "Loading computer vision runtime...";
+                this._statusEl.textContent = `Loading ${this.model} runtime...`;
                 this._statusEl.className = "muted";
             }
             try {
-                await ComputerVisionAiModel._loadOpenCv();
-                await ComputerVisionAiModel._loadCocoModel();
+                await this._ensureRuntimeForModel();
                 this._attachFramePointerHandler();
                 this._startLoop();
             } catch (err) {
                 this.enabled = false;
                 if (this._toggleBtn) this._toggleBtn.textContent = "Off";
                 if (this._statusEl) {
-                    this._statusEl.textContent = `Failed to load OpenCV: ${err?.message || "unknown error"}`;
+                    this._statusEl.textContent = `Failed to load ${this.model}: ${err?.message || "unknown error"}`;
                     this._statusEl.className = "error";
                 }
             }
         } else {
             this._stopLoop();
             this._detachFramePointerHandler();
-            if (this._prevGray) {
-                try {
-                    this._prevGray.delete();
-                } catch (_) {}
-                this._prevGray = null;
-            }
-            this._releaseAllTrackPts(true);
-            this._tracks = [];
-            this._detections = [];
-            this._clearOverlay();
+            this._resetTrackingState();
             this._renderResponseOutput();
             if (this._statusEl) {
                 this._statusEl.textContent = "Model off.";
                 this._statusEl.className = "muted";
             }
         }
+    }
+
+    async setModel(nextModel) {
+        const normalized = ComputerVisionAiModel.normalizeModel(nextModel);
+        if (normalized === this.model) {
+            if (this._modelSelect) this._modelSelect.value = this.model;
+            return;
+        }
+        const wasEnabled = this.enabled;
+        if (wasEnabled) await this.setEnabled(false);
+        this.model = normalized;
+        if (this._modelSelect) this._modelSelect.value = this.model;
+        if (this._hintEl) this._hintEl.textContent = this._modelHintText();
+        if (wasEnabled) await this.setEnabled(true);
+    }
+
+    _modelHintText() {
+        if (this.model === "movenet") {
+            return "MoveNet pose model: draws keypoints + skeleton. Exported poses use normalized 0–1 keypoints; person bbox is derived for filters.";
+        }
+        if (this.model === "coco") {
+            return "COCO-SSD only: object boxes without OpenCV optical flow. Exported detections/results use bbox 0–1.";
+        }
+        return `OpenCV mode: internal COCO for bbox geometry + optical flow; "${this.groqFeedType}" for label updates. Exported detections/results use bbox 0–1.`;
     }
 
     setFrequencyHz(nextHz) {
@@ -1836,6 +2168,11 @@ class ComputerVisionAiModel {
         }));
     }
 
+    /** Normalized MoveNet poses (keypoints 0–1). Empty unless vision model is movenet. */
+    get poses() {
+        return this._normalizePosesForOutput(this._poses, this._frameWidth || 1, this._frameHeight || 1);
+    }
+
     getFrameSize() {
         return { width: this._frameWidth, height: this._frameHeight };
     }
@@ -1859,6 +2196,27 @@ class ComputerVisionAiModel {
             toggleBtn.disabled = true;
             await this.setEnabled(!this.enabled);
             toggleBtn.disabled = false;
+        });
+
+        const modelLabel = document.createElement("label");
+        modelLabel.textContent = "Vision model";
+        const modelSelect = document.createElement("select");
+        const modelLabels = {
+            opencv: "OpenCV (COCO + flow)",
+            coco: "COCO-SSD",
+            movenet: "MoveNet (pose)"
+        };
+        for (const value of ComputerVisionAiModel.MODEL_OPTIONS) {
+            const opt = document.createElement("option");
+            opt.value = value;
+            opt.textContent = modelLabels[value] || value;
+            modelSelect.appendChild(opt);
+        }
+        modelSelect.value = this.model;
+        modelSelect.addEventListener("change", async () => {
+            modelSelect.disabled = true;
+            await this.setModel(modelSelect.value);
+            modelSelect.disabled = false;
         });
 
         const freqLabel = document.createElement("label");
@@ -1947,7 +2305,7 @@ class ComputerVisionAiModel {
 
         const hint = document.createElement("p");
         hint.className = "muted";
-        hint.textContent = `Uses internal COCO for bbox geometry (pixels) and "${this.groqFeedType}" for label updates; exported detections/results use bbox 0–1 (x,w vs width, y,h vs height). Groq can overwrite labels, COCO cannot overwrite Groq labels.`;
+        hint.textContent = this._modelHintText();
 
         const status = document.createElement("p");
         status.className = "muted";
@@ -1958,6 +2316,8 @@ class ComputerVisionAiModel {
         output.textContent = "{}";
 
         controls.appendChild(toggleBtn);
+        controls.appendChild(modelLabel);
+        controls.appendChild(modelSelect);
         controls.appendChild(freqLabel);
         controls.appendChild(freqInput);
         controls.appendChild(minScoreLabel);
@@ -1980,6 +2340,7 @@ class ComputerVisionAiModel {
         container.appendChild(wrap);
 
         this._toggleBtn = toggleBtn;
+        this._modelSelect = modelSelect;
         this._freqInput = freqInput;
         this._minScoreInput = minScoreInput;
         this._refreshInput = refreshInput;
@@ -1988,6 +2349,7 @@ class ComputerVisionAiModel {
         this._flowBboxPctLowInput = flowBboxPctLowInput;
         this._makeCenterBtn = makeCenterBtn;
         this._makeCenterOrbBtn = makeCenterOrbBtn;
+        this._hintEl = hint;
         this._statusEl = status;
         this._outputEl = output;
     }
@@ -1995,15 +2357,7 @@ class ComputerVisionAiModel {
     destroy() {
         this._stopLoop();
         this._detachFramePointerHandler();
-        if (this._prevGray) {
-            try {
-                this._prevGray.delete();
-            } catch (_) {}
-            this._prevGray = null;
-        }
-        this._releaseAllTrackPts(true);
-        this._tracks = [];
-        this._clearOverlay();
+        this._resetTrackingState();
         if (this._overlayCanvas && this._overlayCanvas.parentNode) {
             this._overlayCanvas.parentNode.removeChild(this._overlayCanvas);
         }
@@ -2012,6 +2366,7 @@ class ComputerVisionAiModel {
         this._captureCanvas = null;
         this._captureCtx = null;
         this._detections = [];
+        this._poses = [];
     }
 }
 

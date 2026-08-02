@@ -21,16 +21,18 @@ class Robot {
         this.targets = [];
         this.pidControllers = [];
         this.transmitter;
-        this.mode = "track";
+        this.mode = null;
         this.deciders = [];
         this.goal="";
         this._goalInputEl = null;
+        this._modeSelect = null;
         this.stateMachine = null;
         this.strategies = null;
-        //if mode === track, if trackcoods!= null it means open cv has found the trackTarget.
         // PID controllers read targets/sensors and may set control inputs.
         // Mix clock rematches control inputs + processing → actuators at mixFrequencyHz.
+        // Modes sparsely override actuator mixes (and later, behaviors).
 
+        this._initModeFromConfig();
         this.buildRobot();
         this.buildGUI();
     }
@@ -393,26 +395,123 @@ class Robot {
         }
     }
 
-    buildActuatorMixing() {
-        this.stopMixClock();
-        this.mixEnabled = false;
-        this.actuatorMixes = [];
+    _initModeFromConfig() {
+        const modes = this._getModesMap();
+        if (!modes) {
+            this.mode = null;
+            return;
+        }
+        const want = String(this.config.defaultMode || "").trim();
+        if (want && modes[want]) {
+            this.mode = want;
+            return;
+        }
+        const first = Object.keys(modes)[0];
+        this.mode = first || null;
+    }
+
+    _getModesMap() {
+        const modes = this.config?.modes;
+        if (!modes || typeof modes !== "object" || Array.isArray(modes)) return null;
+        const keys = Object.keys(modes);
+        return keys.length ? modes : null;
+    }
+
+    getModeList() {
+        const modes = this._getModesMap();
+        if (!modes) return [];
+        return Object.entries(modes).map(([id, cfg]) => ({
+            id,
+            label: String(cfg?.label || id)
+        }));
+    }
+
+    _getActiveModeConfig() {
+        const modes = this._getModesMap();
+        if (!modes || !this.mode) return null;
+        return modes[this.mode] || null;
+    }
+
+    _lookupModeActuatorPatch(modeConfig, actuatorName) {
+        const acts = modeConfig?.actuators;
+        if (!acts || typeof acts !== "object") return null;
+        const name = String(actuatorName || "").trim();
+        if (!name) return null;
+        if (acts[name] && typeof acts[name] === "object") return acts[name];
+        const lower = name.toLowerCase();
+        for (const [key, patch] of Object.entries(acts)) {
+            if (String(key).trim().toLowerCase() === lower && patch && typeof patch === "object") {
+                return patch;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Resolve mix functions: base actuator config, then active mode patch by actuator name.
+     */
+    _resolveActuatorMixes() {
+        const mixes = [];
+        const modeConfig = this._getActiveModeConfig();
         const actuatorConfigs = this.config.actuators || [];
         for (let i = 0; i < actuatorConfigs.length; i++) {
             const cfg = actuatorConfigs[i];
             const servo = this.actuators[i];
-            if (typeof cfg?.mix === "function" && servo) {
-                this.actuatorMixes.push({ servo, mix: cfg.mix });
+            if (!servo) continue;
+            const patch = this._lookupModeActuatorPatch(modeConfig, cfg?.name || servo.name);
+            const mix = typeof patch?.mix === "function" ? patch.mix : cfg?.mix;
+            if (typeof mix === "function") {
+                mixes.push({ servo, mix });
             }
         }
-        if (!this.actuatorMixes.length) return;
-        // Default on so joystick / mouth filter drive servos; set mixOn: false to start off.
-        const startOn = this.config.mixOn !== false;
-        if (startOn) {
+        return mixes;
+    }
+
+    /**
+     * Switch robot mode (sparse config overrides). Rebuilds actuator mixes; preserves mix on/off.
+     * @param {string} id
+     * @returns {boolean}
+     */
+    setMode(id) {
+        const modes = this._getModesMap();
+        if (!modes) return false;
+        const want = String(id || "").trim();
+        if (!want || !modes[want]) return false;
+        if (this.mode === want) {
+            if (this._modeSelect) this._modeSelect.value = this.mode;
+            return true;
+        }
+        this.mode = want;
+        const wasEnabled = this.mixEnabled;
+        this._rebuildActuatorMixes({ restoreEnabled: wasEnabled });
+        if (this._modeSelect) this._modeSelect.value = this.mode;
+        return true;
+    }
+
+    _rebuildActuatorMixes({ restoreEnabled = null, startFromConfig = false } = {}) {
+        this.stopMixClock();
+        this.mixEnabled = false;
+        this.actuatorMixes = this._resolveActuatorMixes();
+        if (!this.actuatorMixes.length) {
+            if (this._mixToggleBtn) this._mixToggleBtn.textContent = "Off";
+            return;
+        }
+        if (startFromConfig) {
+            const startOn = this.config.mixOn !== false;
+            if (startOn) this.setMixEnabled(true);
+            else this.applyMixing();
+            return;
+        }
+        if (restoreEnabled) {
             this.setMixEnabled(true);
         } else {
             this.applyMixing();
+            if (this._mixToggleBtn) this._mixToggleBtn.textContent = "Off";
         }
+    }
+
+    buildActuatorMixing() {
+        this._rebuildActuatorMixes({ startFromConfig: true });
     }
 
     setControlInput(name, value) {
@@ -648,11 +747,42 @@ class Robot {
         }
     }
 
+    buildModesGUI(container) {
+        if (!container) return;
+        const modes = this.getModeList();
+        if (!modes.length) return;
+
+        const wrap = document.createElement("div");
+        wrap.className = "robot-modes";
+
+        const label = document.createElement("label");
+        label.textContent = "Mode";
+        const select = document.createElement("select");
+        select.className = "robot-modes-select";
+        for (const { id, label: text } of modes) {
+            const opt = document.createElement("option");
+            opt.value = id;
+            opt.textContent = text;
+            select.appendChild(opt);
+        }
+        if (this.mode && modes.some((m) => m.id === this.mode)) {
+            select.value = this.mode;
+        }
+        select.addEventListener("change", () => this.setMode(select.value));
+
+        wrap.appendChild(label);
+        wrap.appendChild(select);
+        container.appendChild(wrap);
+        this._modeSelect = select;
+    }
+
     buildGUI() {
         if (!this.container) return;
         const title = document.createElement('h3');
         title.textContent = this.name || 'Robot';
         this.container.appendChild(title);
+
+        this.buildModesGUI(this.container);
 
         const goalWrap = document.createElement("div");
         goalWrap.className = "robot-goal";
