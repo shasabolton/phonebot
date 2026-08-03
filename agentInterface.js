@@ -75,9 +75,10 @@ class AgentInterface {
         this._voiceOn = this._resolveVoiceDefault(null);
     }
 
-    /** True when Conversation is the active robot mode. */
+    /** True when a hand-up-to-talk mode is active (Conversation, 20 Questions). */
     _isConversationMode() {
-        return String(this.robot?.mode || "").trim().toLowerCase() === "conversation";
+        const mode = String(this.robot?.mode || "").trim().toLowerCase();
+        return mode === "conversation" || mode === "twentyquestions";
     }
 
     /** True when Simon Says is the active robot mode, template, or already in this chat. */

@@ -18,8 +18,7 @@ window.ROBOTS_DATA = {
             name: "talking head",
             bodyPlan: "A face with one sevro for mouth and one for eye yaw",
             controlPlan:
-                "Eyes track MoveNet nose x (random glances when no nose). Modes: Simon Says AI (pose countdown) / Conversation (hand above nose → record, lower → Whisper). Groq Orpheus TTS / Mp3 → audioPlayer → audioMouthFilter → mouth servo.",
-            //Yes no game. Think of an animal and I will guess. Touch nose for yes (needs AI groq)
+                "Eyes track MoveNet nose x (random glances when no nose). Modes: Simon Says AI (pose countdown) / Conversation / 20 Questions. Groq Orpheus TTS / Mp3 → audioPlayer → audioMouthFilter → mouth servo.",
             actuators: [
                 {
                     type: "servo",
@@ -86,6 +85,10 @@ window.ROBOTS_DATA = {
                 conversation: {
                     label: "Conversation",
                     promptTemplate: "promptTemplates/shortConversation"
+                },
+                twentyQuestions: {
+                    label: "20 Questions",
+                    promptTemplate: "promptTemplates/20QuestionsPrompt.txt"
                 }
             },
             agentInterface: {
@@ -99,7 +102,8 @@ window.ROBOTS_DATA = {
                 cameraCaptureJpegQuality: 0.85,
                 promptTemplates: [
                     { name: "Simon Says", path: "promptTemplates/simonSaysPrompt.txt" },
-                    { name: "Short conversation", path: "promptTemplates/shortConversation" }
+                    { name: "Short conversation", path: "promptTemplates/shortConversation" },
+                    { name: "20 Questions", path: "promptTemplates/20QuestionsPrompt.txt" }
                 ],
                 agents: [
                     {
