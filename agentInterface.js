@@ -59,12 +59,95 @@ class AgentInterface {
         this._fullSpeechPromptInput = null;
         this._agentEnabled = true;
         this._sendInProgress = false;
+        /** True while Simon Says countdown/pose-send cycle is running (blocks overlapping sends). */
+        this._simonPoseCycleRunning = false;
+        /** True while conversation-mode timed mic capture / transcribe is running. */
+        this._conversationListenRunning = false;
         this._agentPowerBtn = null;
         /** When true, attach current camera JPEG to the last user message on send. */
         this._sendCameraImage = this.config.sendCameraImage !== false;
         this._sendCameraImageInput = null;
+        /** DOM overlay for camera countdown (Simon pose / conversation record). */
+        this._countdownOverlayEl = null;
+        this._countdownNumberEl = null;
+        this._countdownLabelEl = null;
         this._loadSavedKeyPreference();
         this._voiceOn = this._resolveVoiceDefault(null);
+    }
+
+    /** True when Conversation is the active robot mode. */
+    _isConversationMode() {
+        return String(this.robot?.mode || "").trim().toLowerCase() === "conversation";
+    }
+
+    /** True when Simon Says is the active robot mode, template, or already in this chat. */
+    _isSimonSaysMode() {
+        if (/simonSays/i.test(String(this.robot?.mode || ""))) return true;
+        const selected = String(this._templateSelect?.value || "").trim();
+        if (/simonSays/i.test(selected)) return true;
+        const list = Array.isArray(this.promptTemplates) ? this.promptTemplates : [];
+        const tpl = list.find((t) => String(t?.path || "").trim() === selected);
+        if (/simon\s*says/i.test(String(tpl?.name || ""))) return true;
+        const marker = /you are simon in a game of simon says/i;
+        if (marker.test(String(this._promptInput?.value || ""))) return true;
+        for (const m of this.messageHistory || []) {
+            if (marker.test(String(m?.fullPrompt || "")) || marker.test(String(m?.text || ""))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Called when the robot mode select changes (or after GUI build).
+     * Starts timed listen in conversation mode; cancels prior countdown/TTS.
+     * @param {string} [_modeId]
+     */
+    onRobotModeChanged(_modeId) {
+        this._stopSpeaking();
+        if (this._agentEnabled && this._isConversationMode()) {
+            this._queueConversationListen(this._speakGeneration);
+        }
+    }
+
+    /**
+     * Select a prompt template by path or name and insert it into the prompt textarea.
+     * Used when a robot mode declares `promptTemplate`.
+     * @param {string} pathOrName
+     * @returns {Promise<boolean>}
+     */
+    async applyPromptTemplate(pathOrName) {
+        const want = String(pathOrName || "").trim();
+        if (!want || !this._promptInput) return false;
+        const list = Array.isArray(this.promptTemplates) ? this.promptTemplates : [];
+        const tpl =
+            list.find((t) => String(t?.path || "").trim() === want) ||
+            list.find((t) => String(t?.name || "").trim().toLowerCase() === want.toLowerCase());
+        const path = String(tpl?.path || want).trim();
+        if (!path || path === AgentInterface.TEMPLATE_VALUE_STATE) return false;
+        if (this._templateSelect) {
+            const hasOption = Array.from(this._templateSelect.options || []).some(
+                (opt) => opt.value === path
+            );
+            if (hasOption) this._templateSelect.value = path;
+        }
+        try {
+            const res = await fetch(path, { cache: "no-store" });
+            if (!res.ok) throw new Error(`Failed to load template: ${path}`);
+            const templateText = await res.text();
+            this._promptInput.value = this.buildInstructionPromptFromTemplate(templateText);
+            if (this._statusEl) {
+                this._statusEl.className = "ok";
+                this._statusEl.textContent = `Loaded template: ${tpl?.name || path}`;
+            }
+            return true;
+        } catch (err) {
+            if (this._statusEl) {
+                this._statusEl.className = "error";
+                this._statusEl.textContent = err?.message || "Template load failed.";
+            }
+            return false;
+        }
     }
 
     _setAgentEnabled(on) {
@@ -74,13 +157,19 @@ class AgentInterface {
         }
         if (!this._agentEnabled) {
             this._stopSpeaking();
+        } else if (this._isConversationMode()) {
+            this._queueConversationListen(this._speakGeneration);
         }
         this._syncSendButtonState();
     }
 
     _syncSendButtonState() {
         if (!this._sendBtn) return;
-        this._sendBtn.disabled = this._sendInProgress || !this._agentEnabled;
+        this._sendBtn.disabled =
+            this._sendInProgress ||
+            this._simonPoseCycleRunning ||
+            this._conversationListenRunning ||
+            !this._agentEnabled;
     }
 
     /**
@@ -311,6 +400,7 @@ class AgentInterface {
     _stopSpeaking() {
         this._speakGeneration += 1;
         window.__phonebotTtsSpeaking = false;
+        this._clearCameraCountdownOverlay();
         if (window.speechSynthesis) {
             try {
                 window.speechSynthesis.cancel();
@@ -348,18 +438,27 @@ class AgentInterface {
      * Falls back to browser speechSynthesis if TTS or audioPlayer is unavailable.
      */
     _speak(text) {
+        void this._speakAsync(text);
+    }
+
+    /**
+     * @param {string} text
+     * @returns {Promise<boolean>} true if this utterance finished without being superseded
+     */
+    async _speakAsync(text) {
         const content = String(text || "").trim();
-        if (!content) return;
+        if (!content) return false;
         this._stopSpeaking();
         const generation = this._speakGeneration;
-        void this._speakGroqAsync(content, generation);
+        await this._speakGroqAsync(content, generation);
+        return generation === this._speakGeneration;
     }
 
     async _speakGroqAsync(content, generation) {
         const player = this._getAudioPlayer();
         const canPlay = player && typeof player.playBlob === "function";
         if (!canPlay) {
-            this._speakBrowserFallback(content);
+            await this._speakBrowserFallback(content);
             return;
         }
 
@@ -372,7 +471,16 @@ class AgentInterface {
             if (generation !== this._speakGeneration) return;
             this._setVoiceStatus(`Speaking (${this._ttsVoice})…`);
             window.__phonebotTtsSpeaking = true;
-            await player.playBlob(blob, `Groq TTS (${this._ttsVoice})`);
+            const playTimeoutMs = 60000;
+            await Promise.race([
+                player.playBlob(blob, `Groq TTS (${this._ttsVoice})`),
+                new Promise((_, reject) =>
+                    setTimeout(
+                        () => reject(new Error(`TTS playback timed out after ${playTimeoutMs / 1000}s.`)),
+                        playTimeoutMs
+                    )
+                )
+            ]);
             if (generation === this._speakGeneration) {
                 this._setVoiceStatus("Groq Orpheus TTS (uses API credits).");
             }
@@ -381,7 +489,7 @@ class AgentInterface {
             if (generation !== this._speakGeneration) return;
             this._setVoiceStatus(`Groq TTS failed — using browser voice. (${err?.message || err})`);
             usedBrowserFallback = true;
-            this._speakBrowserFallback(content);
+            await this._speakBrowserFallback(content);
         } finally {
             if (generation === this._speakGeneration && !usedBrowserFallback) {
                 window.__phonebotTtsSpeaking = false;
@@ -391,24 +499,555 @@ class AgentInterface {
 
     _speakBrowserFallback(text) {
         const content = String(text || "").trim();
-        if (!content) return;
-        if (!window.speechSynthesis || typeof window.SpeechSynthesisUtterance !== "function") return;
+        if (!content) return Promise.resolve();
+        if (!window.speechSynthesis || typeof window.SpeechSynthesisUtterance !== "function") {
+            return Promise.resolve();
+        }
+        return new Promise((resolve) => {
+            try {
+                window.speechSynthesis.cancel();
+                const utterance = new SpeechSynthesisUtterance(content);
+                utterance.onstart = () => {
+                    window.__phonebotTtsSpeaking = true;
+                };
+                utterance.onend = () => {
+                    window.__phonebotTtsSpeaking = false;
+                    resolve();
+                };
+                utterance.onerror = () => {
+                    window.__phonebotTtsSpeaking = false;
+                    resolve();
+                };
+                window.speechSynthesis.speak(utterance);
+            } catch (err) {
+                window.__phonebotTtsSpeaking = false;
+                console.warn("TTS error:", err);
+                resolve();
+            }
+        });
+    }
+
+    _clearCameraCountdownOverlay() {
+        if (this._countdownOverlayEl && this._countdownOverlayEl.parentNode) {
+            this._countdownOverlayEl.parentNode.removeChild(this._countdownOverlayEl);
+        }
+        this._countdownOverlayEl = null;
+        this._countdownNumberEl = null;
+        this._countdownLabelEl = null;
+    }
+
+    /**
+     * @param {string} [label]
+     */
+    _ensureCameraCountdownOverlay(label = "Pose!") {
+        const labelText = String(label || "Pose!").trim() || "Pose!";
+        if (this._countdownOverlayEl && this._countdownOverlayEl.isConnected) {
+            if (this._countdownLabelEl) this._countdownLabelEl.textContent = labelText;
+            return this._countdownOverlayEl;
+        }
+        this._clearCameraCountdownOverlay();
+        const camera = this._getCameraSensor();
+        const frameEl = camera?.getFrameElement?.();
+        if (!frameEl) return null;
+        const overlay = document.createElement("div");
+        overlay.className = "sensor-camera-countdown-overlay";
+        overlay.setAttribute("aria-live", "polite");
+        const numberEl = document.createElement("div");
+        numberEl.className = "sensor-camera-countdown-number";
+        const labelEl = document.createElement("div");
+        labelEl.className = "sensor-camera-countdown-label";
+        labelEl.textContent = labelText;
+        overlay.appendChild(numberEl);
+        overlay.appendChild(labelEl);
+        frameEl.appendChild(overlay);
+        this._countdownOverlayEl = overlay;
+        this._countdownNumberEl = numberEl;
+        this._countdownLabelEl = labelEl;
+        return overlay;
+    }
+
+    /**
+     * Show a full-frame countdown on the camera (N…1), then clear.
+     * @param {number} seconds
+     * @param {number} generation Cancel if `_speakGeneration` changes
+     * @param {{ label?: string, statusPrefix?: string }} [options]
+     * @returns {Promise<boolean>} true if countdown completed for this generation
+     */
+    async _runCameraCountdown(seconds, generation, options = {}) {
+        const total = Math.max(1, Math.round(Number(seconds) || 5));
+        const label = String(options.label || "Pose!").trim() || "Pose!";
+        const statusPrefix = String(options.statusPrefix || "Pose photo in").trim() || "Pose photo in";
+        const overlay = this._ensureCameraCountdownOverlay(label);
+        if (!overlay) {
+            // No camera UI — still wait so pose timing stays consistent.
+            for (let n = total; n >= 1; n--) {
+                if (generation !== this._speakGeneration) return false;
+                await new Promise((r) => setTimeout(r, 1000));
+            }
+            return generation === this._speakGeneration;
+        }
         try {
-            window.speechSynthesis.cancel();
-            const utterance = new SpeechSynthesisUtterance(content);
-            utterance.onstart = () => {
-                window.__phonebotTtsSpeaking = true;
-            };
-            utterance.onend = () => {
-                window.__phonebotTtsSpeaking = false;
-            };
-            utterance.onerror = () => {
-                window.__phonebotTtsSpeaking = false;
-            };
-            window.speechSynthesis.speak(utterance);
+            for (let n = total; n >= 1; n--) {
+                if (generation !== this._speakGeneration) return false;
+                if (this._countdownNumberEl) this._countdownNumberEl.textContent = String(n);
+                if (this._statusEl) {
+                    this._statusEl.textContent = `${statusPrefix} ${n}…`;
+                    this._statusEl.className = "muted";
+                }
+                await new Promise((r) => setTimeout(r, 1000));
+            }
+            return generation === this._speakGeneration;
+        } finally {
+            this._clearCameraCountdownOverlay();
+        }
+    }
+
+    _pickRecorderMimeType() {
+        if (typeof MediaRecorder === "undefined") return "";
+        for (const t of ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg"]) {
+            if (MediaRecorder.isTypeSupported(t)) return t;
+        }
+        return "";
+    }
+
+    _extensionForRecorderMime(mime) {
+        const m = String(mime || "").toLowerCase();
+        if (m.includes("mp4") || m.includes("m4a") || m.includes("aac")) return "m4a";
+        if (m.includes("ogg")) return "ogg";
+        if (m.includes("mpeg") || m.includes("mp3")) return "mp3";
+        return "webm";
+    }
+
+    /**
+     * MoveNet image coords: x/y in 0–1, y=0 at top of frame (sky).
+     * Hand raised = either wrist y is smaller than nose y (closer to top).
+     * @returns {boolean}
+     */
+    _isHandRaisedAboveNose() {
+        const cv =
+            this.robot && typeof this.robot.getProcessingByType === "function"
+                ? this.robot.getProcessingByType("computervision")
+                : null;
+        if (!cv || String(cv.model || "").toLowerCase() !== "movenet") return false;
+        const poses = typeof cv.poses !== "undefined" ? cv.poses : null;
+        const keypoints = poses?.[0]?.keypoints;
+        if (!Array.isArray(keypoints) || !keypoints.length) return false;
+
+        const byName = (name) =>
+            keypoints.find((kp) => String(kp?.name || "").toLowerCase() === name) || null;
+        const minScore = 0.3;
+        const nose = byName("nose");
+        if (!nose || (nose.score || 0) < minScore || !Number.isFinite(Number(nose.y))) return false;
+        const noseY = Number(nose.y);
+
+        for (const handName of ["left_wrist", "right_wrist"]) {
+            const hand = byName(handName);
+            if (!hand || (hand.score || 0) < minScore || !Number.isFinite(Number(hand.y))) continue;
+            // Smaller y = higher in frame (toward sky).
+            if (Number(hand.y) < noseY) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Poll MoveNet until hand-raised matches `wantRaised` for a few stable samples.
+     * @param {boolean} wantRaised
+     * @param {number} generation
+     * @param {{ needed?: number, pollMs?: number, onTick?: function }} [options]
+     * @returns {Promise<boolean>}
+     */
+    async _waitForStableHandRaised(wantRaised, generation, options = {}) {
+        const needed = Math.max(1, Math.round(Number(options.needed) || 3));
+        const pollMs = Math.max(50, Math.round(Number(options.pollMs) || 100));
+        let streak = 0;
+        while (generation === this._speakGeneration) {
+            if (!this._agentEnabled || !this._isConversationMode()) return false;
+            if (typeof options.onTick === "function") options.onTick();
+            if (this._isHandRaisedAboveNose() === wantRaised) {
+                streak += 1;
+                if (streak >= needed) return true;
+            } else {
+                streak = 0;
+            }
+            await new Promise((r) => setTimeout(r, pollMs));
+        }
+        return false;
+    }
+
+    /**
+     * Conversation listen: wait for hand-up (wrist above nose), record until hand drops, return blob.
+     * Image y increases downward — "higher" means smaller y (top of frame).
+     * @param {number} generation
+     * @returns {Promise<Blob|null>}
+     */
+    async _recordMicrophoneWhileHandRaised(generation) {
+        if (typeof MediaRecorder === "undefined") {
+            throw new Error("MediaRecorder is not supported in this browser.");
+        }
+        if (!navigator.mediaDevices?.getUserMedia) {
+            throw new Error("Microphone capture is not available.");
+        }
+
+        const maxRecordMs = 60000;
+        let stream = null;
+        let mediaRecorder = null;
+        const chunks = [];
+
+        const stopTracks = () => {
+            if (!stream) return;
+            for (const track of stream.getTracks()) {
+                try {
+                    track.stop();
+                } catch (_) {}
+            }
+            stream = null;
+        };
+
+        const finishRecorder = (mimeType) =>
+            new Promise((resolve) => {
+                const finish = () => {
+                    const type = mediaRecorder?.mimeType || mimeType || "audio/webm";
+                    resolve(chunks.length ? new Blob(chunks, { type }) : null);
+                };
+                if (!mediaRecorder || mediaRecorder.state === "inactive") {
+                    finish();
+                    return;
+                }
+                mediaRecorder.addEventListener("stop", finish, { once: true });
+                try {
+                    mediaRecorder.stop();
+                } catch (_) {
+                    finish();
+                }
+            });
+
+        try {
+            // Rising edge: lower hand first (if already up), then raise to start.
+            this._ensureCameraCountdownOverlay("Hand up to talk");
+            if (this._countdownNumberEl) this._countdownNumberEl.textContent = "—";
+
+            const readyDown = await this._waitForStableHandRaised(false, generation, {
+                needed: 3,
+                onTick: () => {
+                    if (this._countdownLabelEl) this._countdownLabelEl.textContent = "Hand up to talk";
+                    if (this._countdownNumberEl) this._countdownNumberEl.textContent = "—";
+                    if (this._statusEl) {
+                        this._statusEl.textContent = this._isHandRaisedAboveNose()
+                            ? "Lower your hand to arm the mic…"
+                            : "Raise a hand above your nose to record…";
+                        this._statusEl.className = "muted";
+                    }
+                }
+            });
+            if (!readyDown) return null;
+
+            const raised = await this._waitForStableHandRaised(true, generation, {
+                needed: 2,
+                onTick: () => {
+                    if (this._countdownLabelEl) this._countdownLabelEl.textContent = "Hand up to talk";
+                    if (this._countdownNumberEl) this._countdownNumberEl.textContent = "—";
+                    if (this._statusEl) {
+                        this._statusEl.textContent = "Raise a hand above your nose to record…";
+                        this._statusEl.className = "muted";
+                    }
+                }
+            });
+            if (!raised || generation !== this._speakGeneration) return null;
+
+            stream = await navigator.mediaDevices.getUserMedia({
+                audio: {
+                    echoCancellation: true,
+                    noiseSuppression: true,
+                    autoGainControl: true
+                },
+                video: false
+            });
+            if (generation !== this._speakGeneration) {
+                stopTracks();
+                return null;
+            }
+
+            const mimeType = this._pickRecorderMimeType();
+            mediaRecorder = mimeType
+                ? new MediaRecorder(stream, { mimeType })
+                : new MediaRecorder(stream);
+            mediaRecorder.addEventListener("dataavailable", (e) => {
+                if (e.data && e.data.size > 0) chunks.push(e.data);
+            });
+            mediaRecorder.start(250);
+
+            const startedAt = Date.now();
+            this._ensureCameraCountdownOverlay("Recording");
+            if (this._statusEl) {
+                this._statusEl.textContent = "Recording — lower your hand when done…";
+                this._statusEl.className = "muted";
+            }
+
+            // Record until hand drops below nose, cancel, or max duration.
+            const pollMs = 100;
+            const neededDown = 2;
+            let downStreak = 0;
+            let hitMax = false;
+            while (generation === this._speakGeneration) {
+                if (!this._agentEnabled || !this._isConversationMode()) break;
+                const elapsedMs = Date.now() - startedAt;
+                const elapsedSec = Math.max(1, Math.round(elapsedMs / 1000));
+                if (this._countdownLabelEl) this._countdownLabelEl.textContent = "Recording";
+                if (this._countdownNumberEl) this._countdownNumberEl.textContent = String(elapsedSec);
+                if (this._statusEl) {
+                    this._statusEl.textContent = `Recording ${elapsedSec}s — lower your hand when done…`;
+                    this._statusEl.className = "muted";
+                }
+                if (elapsedMs >= maxRecordMs) {
+                    hitMax = true;
+                    break;
+                }
+                if (!this._isHandRaisedAboveNose()) {
+                    downStreak += 1;
+                    if (downStreak >= neededDown) break;
+                } else {
+                    downStreak = 0;
+                }
+                await new Promise((r) => setTimeout(r, pollMs));
+            }
+
+            if (generation !== this._speakGeneration) {
+                await finishRecorder(mimeType);
+                mediaRecorder = null;
+                return null;
+            }
+            if (hitMax && this._statusEl) {
+                this._statusEl.textContent = "Max recording length — transcribing…";
+                this._statusEl.className = "muted";
+            }
+
+            const blob = await finishRecorder(mimeType);
+            mediaRecorder = null;
+            return blob;
+        } finally {
+            if (mediaRecorder && mediaRecorder.state !== "inactive") {
+                try {
+                    mediaRecorder.stop();
+                } catch (_) {}
+            }
+            stopTracks();
+            this._clearCameraCountdownOverlay();
+        }
+    }
+
+    /**
+     * After TTS finishes: conversation mode starts hand-gesture listen; Simon Says queues pose capture.
+     * Queued (not nested) so the parent send can finish and new sends are not blocked forever.
+     * @param {string} spoken
+     */
+    async _afterAgentSpoke(spoken) {
+        const content = String(spoken || "").trim();
+        if (!content || !this._voiceOn) return;
+        const finished = await this._speakAsync(content);
+        if (!finished || !this._agentEnabled) return;
+        if (this._isConversationMode()) {
+            this._queueConversationListen(this._speakGeneration);
+            return;
+        }
+        if (!this._isSimonSaysMode()) return;
+        this._queueSimonSaysPoseCapture(this._speakGeneration);
+    }
+
+    /** Queue next conversation listen after the current send/TTS stack unwinds. */
+    _maybeQueueConversationListenAfterTurn() {
+        if (!this._agentEnabled || !this._isConversationMode()) return;
+        this._queueConversationListen(this._speakGeneration);
+    }
+
+    /**
+     * @param {number} generation Cancel if `_speakGeneration` changes
+     */
+    _queueConversationListen(generation) {
+        setTimeout(() => {
+            void this._runConversationListen(generation);
+        }, 0);
+    }
+
+    /**
+     * Conversation mode: hand-up mic record → Whisper → chat prompt.
+     * @param {number} generation
+     */
+    async _runConversationListen(generation) {
+        if (generation !== this._speakGeneration) return;
+        if (!this._isConversationMode() || !this._agentEnabled) return;
+        if (this._conversationListenRunning) return;
+        if (this._sendInProgress || this._simonPoseCycleRunning) {
+            setTimeout(() => {
+                void this._runConversationListen(generation);
+            }, 300);
+            return;
+        }
+
+        this._conversationListenRunning = true;
+        this._syncSendButtonState();
+        let shouldRetry = false;
+        try {
+            if (this._statusEl) {
+                this._statusEl.textContent = "Raise a hand above your nose to record…";
+                this._statusEl.className = "muted";
+            }
+
+            const blob = await this._recordMicrophoneWhileHandRaised(generation);
+            if (generation !== this._speakGeneration || !this._agentEnabled || !this._isConversationMode()) {
+                return;
+            }
+            if (!blob || blob.size < 32) {
+                if (this._statusEl) {
+                    this._statusEl.textContent = "No audio captured — listening again…";
+                    this._statusEl.className = "warn";
+                }
+                shouldRetry = true;
+                return;
+            }
+
+            this._apiKey = this._keyInput?.value?.trim() || "";
+            const agent = this.getSelectedAgent();
+            if (this._rememberInput) this._rememberKey = !!this._rememberInput.checked;
+            if (agent) this._persistKeyForAgent(agent.name, this._apiKey);
+
+            if (this._statusEl) {
+                this._statusEl.textContent = "Transcribing…";
+                this._statusEl.className = "muted";
+            }
+            const model = this.getTranscriptionModelLabel();
+            let text = "";
+            try {
+                text = await this.transcribeSpeechBlob(blob, {
+                    filename: `speech.${this._extensionForRecorderMime(blob.type)}`
+                });
+            } catch (err) {
+                console.error("Conversation transcription error:", err);
+                if (this._statusEl) {
+                    this._statusEl.textContent = err?.message || "Transcription failed";
+                    this._statusEl.className = "error";
+                }
+                shouldRetry = true;
+                return;
+            }
+            if (generation !== this._speakGeneration || !this._agentEnabled || !this._isConversationMode()) {
+                return;
+            }
+
+            text = String(text || "").trim();
+            if (!text) {
+                if (this._statusEl) {
+                    this._statusEl.textContent = "No speech heard — listening again…";
+                    this._statusEl.className = "warn";
+                }
+                shouldRetry = true;
+                return;
+            }
+
+            if (this._statusEl) {
+                this._statusEl.textContent = "Sending transcript…";
+                this._statusEl.className = "muted";
+            }
+            const sent = await this.submitPrompt(text, {
+                fromSpeech: true,
+                speechTranscriber: `API transcription (${model})`
+            });
+            if (!sent) shouldRetry = true;
         } catch (err) {
-            window.__phonebotTtsSpeaking = false;
-            console.warn("TTS error:", err);
+            console.error("Conversation listen error:", err);
+            if (this._statusEl) {
+                this._statusEl.textContent = err?.message || "Conversation listen failed";
+                this._statusEl.className = "error";
+            }
+            shouldRetry = true;
+        } finally {
+            this._conversationListenRunning = false;
+            this._syncSendButtonState();
+            if (
+                shouldRetry &&
+                generation === this._speakGeneration &&
+                this._agentEnabled &&
+                this._isConversationMode()
+            ) {
+                setTimeout(() => {
+                    if (
+                        generation === this._speakGeneration &&
+                        this._agentEnabled &&
+                        this._isConversationMode()
+                    ) {
+                        this._queueConversationListen(generation);
+                    }
+                }, 1500);
+            }
+        }
+    }
+
+    /**
+     * @param {number} generation Cancel if `_speakGeneration` changes
+     */
+    _queueSimonSaysPoseCapture(generation) {
+        setTimeout(() => {
+            void this._runSimonSaysPoseCapture(generation);
+        }, 0);
+    }
+
+    /**
+     * @param {number} generation
+     */
+    async _runSimonSaysPoseCapture(generation) {
+        if (generation !== this._speakGeneration) return;
+        if (!this._isSimonSaysMode() || !this._agentEnabled || !this._voiceOn) return;
+        if (this._simonPoseCycleRunning) return;
+        if (this._sendInProgress) {
+            // Manual/API send in flight — retry once it clears (same generation).
+            setTimeout(() => {
+                void this._runSimonSaysPoseCapture(generation);
+            }, 300);
+            return;
+        }
+
+        this._simonPoseCycleRunning = true;
+        this._syncSendButtonState();
+        try {
+            if (this._statusEl) {
+                this._statusEl.textContent = "Get ready — pose photo in 20…";
+                this._statusEl.className = "muted";
+            }
+            const countdownOk = await this._runCameraCountdown(20, generation);
+            if (!countdownOk || generation !== this._speakGeneration || !this._agentEnabled) return;
+
+            this._refreshCurrentCameraImageUrl();
+            if (!String(this.currentCameraImageUrl || "").startsWith("data:image")) {
+                if (this._statusEl) {
+                    this._statusEl.textContent = "Pose photo failed — start the camera first.";
+                    this._statusEl.className = "warn";
+                }
+                return;
+            }
+            if (this._sendInProgress) {
+                if (this._statusEl) {
+                    this._statusEl.textContent = "Pose photo skipped — another send is in progress.";
+                    this._statusEl.className = "warn";
+                }
+                return;
+            }
+            if (this._statusEl) {
+                this._statusEl.textContent = "Sending pose image…";
+                this._statusEl.className = "muted";
+            }
+            await this.submitPromptWithRobotState("here is the pose image", {
+                contextLabel: "User",
+                speechTranscriber: "simon pose",
+                forceCameraImage: true
+            });
+        } catch (err) {
+            console.error("Simon Says pose capture error:", err);
+            if (this._statusEl) {
+                this._statusEl.textContent = err?.message || "Pose capture failed";
+                this._statusEl.className = "error";
+            }
+        } finally {
+            this._simonPoseCycleRunning = false;
+            this._syncSendButtonState();
         }
     }
 
@@ -521,7 +1160,12 @@ class AgentInterface {
         this._captureCanvas.width = targetW;
         this._captureCanvas.height = targetH;
         this._captureCtx.drawImage(videoEl, 0, 0, targetW, targetH);
-        if (typeof PhonebotNormalizationGrid !== "undefined" && PhonebotNormalizationGrid.draw) {
+        // Rover-style cell grid burns tokens and is useless for Simon Says pose checks.
+        if (
+            !this._isSimonSaysMode() &&
+            typeof PhonebotNormalizationGrid !== "undefined" &&
+            PhonebotNormalizationGrid.draw
+        ) {
             PhonebotNormalizationGrid.draw(this._captureCtx, targetW, targetH);
         }
         return {
@@ -605,7 +1249,7 @@ class AgentInterface {
 
     /**
      * Template used for first-turn auto-merge and (when no selection yet) hydrate.
-     * Prefers the dropdown selection; otherwise only explicit introduction templates —
+     * Prefers the dropdown selection; otherwise mode `promptTemplate`, then introduction templates —
      * never “first template in the list”, which double-pastes game prompts.
      */
     _getIntroductionTemplateSpec() {
@@ -614,6 +1258,14 @@ class AgentInterface {
         if (selected && selected !== AgentInterface.TEMPLATE_VALUE_STATE) {
             const fromSelect = list.find((t) => String(t?.path || "").trim() === selected);
             if (fromSelect) return fromSelect;
+        }
+        const modeTpl = String(this.robot?._getActiveModeConfig?.()?.promptTemplate || "").trim();
+        if (modeTpl) {
+            const fromMode =
+                list.find((t) => String(t?.path || "").trim() === modeTpl) ||
+                list.find((t) => String(t?.name || "").trim().toLowerCase() === modeTpl.toLowerCase());
+            if (fromMode) return fromMode;
+            return { name: modeTpl, path: modeTpl };
         }
         return (
             list.find((t) => /introImagePrompt\.txt$/i.test(String(t?.path || "").trim())) ||
@@ -650,6 +1302,11 @@ class AgentInterface {
     }
 
     async _hydrateDefaultPromptFromIntroductionTemplate() {
+        const modeTpl = this.robot?._getActiveModeConfig?.()?.promptTemplate;
+        if (modeTpl != null && String(modeTpl).trim()) {
+            await this.applyPromptTemplate(modeTpl);
+            return;
+        }
         const spec = this._getDefaultHydrateTemplateSpec();
         const path = spec && String(spec.path || "").trim();
         if (!path || !this._promptInput || !this._templateSelect) return;
@@ -699,15 +1356,32 @@ class AgentInterface {
     }
 
     /**
-     * Text sent to the API for one stored history turn. User turns prefer `fullPrompt` when set
-     * (first message includes merged introduction + state + user text).
+     * Text sent to the API for one stored history turn.
+     * Only the first history turn replays `fullPrompt` (intro + initial state). Later user turns
+     * use short `text` so every request does not re-send stale state JSON (which grows fast with
+     * Simon Says pose loops and can stall/fail the API with no clear UI error).
+     * @param {object} m
+     * @param {{ isFirstHistoryTurn?: boolean }} [options]
      */
-    _historyTurnToChatContent(m) {
+    _historyTurnToChatContent(m, options = {}) {
         if (!m || (m.role !== "user" && m.role !== "assistant")) return "";
-        if (m.role === "user" && typeof m.fullPrompt === "string" && m.fullPrompt.trim()) {
-            return m.fullPrompt.trim();
-        }
-        return String(m.text || "");
+        if (m.role === "assistant") return String(m.text || "");
+        const full = typeof m.fullPrompt === "string" ? m.fullPrompt.trim() : "";
+        const short = String(m.text || "").trim();
+        if (options.isFirstHistoryTurn && full) return full;
+        if (short) return short;
+        return full;
+    }
+
+    /** Prior user/assistant turns for chat API (first user turn keeps intro fullPrompt). */
+    _buildPriorConversationMessages() {
+        const turns = this.messageHistory.filter(
+            (m) => m && (m.role === "user" || m.role === "assistant")
+        );
+        return turns.map((m, i) => ({
+            role: m.role,
+            content: this._historyTurnToChatContent(m, { isFirstHistoryTurn: i === 0 })
+        }));
     }
 
     _normalizePromptText(text) {
@@ -808,7 +1482,9 @@ class AgentInterface {
         }
 
         let sendCameraImage;
-        if (options.skipVisionAttachment === true) {
+        if (options.forceCameraImage === true) {
+            sendCameraImage = true;
+        } else if (options.skipVisionAttachment === true) {
             sendCameraImage = false;
         } else if (this._sendCameraImageInput) {
             sendCameraImage = !!this._sendCameraImageInput.checked;
@@ -859,11 +1535,31 @@ class AgentInterface {
             }
         }
 
-        const res = await fetch(url, {
-            method: String(agent.method || "POST").toUpperCase(),
-            headers,
-            body: JSON.stringify(body)
-        });
+        const controller = typeof AbortController === "function" ? new AbortController() : null;
+        const timeoutMs = 90000;
+        const timeoutId =
+            controller &&
+            setTimeout(() => {
+                try {
+                    controller.abort();
+                } catch (_) {}
+            }, timeoutMs);
+        let res;
+        try {
+            res = await fetch(url, {
+                method: String(agent.method || "POST").toUpperCase(),
+                headers,
+                body: JSON.stringify(body),
+                signal: controller?.signal
+            });
+        } catch (err) {
+            if (err?.name === "AbortError") {
+                throw new Error(`Request timed out after ${Math.round(timeoutMs / 1000)}s.`);
+            }
+            throw err;
+        } finally {
+            if (timeoutId) clearTimeout(timeoutId);
+        }
 
         const rawText = await res.text();
         if (!res.ok) {
@@ -1112,6 +1808,9 @@ class AgentInterface {
             }
             return false;
         }
+        if (this._simonPoseCycleRunning || this._conversationListenRunning) {
+            this._stopSpeaking();
+        }
 
         this._apiKey = this._keyInput?.value?.trim() || "";
         const agent = this.getSelectedAgent();
@@ -1124,15 +1823,12 @@ class AgentInterface {
             this._statusEl.textContent = "Sending…";
             this._statusEl.className = "muted";
         }
+        let spokenForFollowUp = "";
+        let ok = false;
         try {
             const stateBlock = this._buildCurrentStateForIntroductionPrompt();
             const fullUserContent = `Current state (json):\n${stateBlock || "[]"}\n\nUser said:\n${text}`;
-            const prior = this.messageHistory
-                .filter((m) => m && (m.role === "user" || m.role === "assistant"))
-                .map((m) => ({
-                    role: m.role,
-                    content: this._historyTurnToChatContent(m)
-                }));
+            const prior = this._buildPriorConversationMessages();
             const outboundUser = await this._mergeIntroductionIntoFirstUserMessage(fullUserContent, prior.length);
             const conversationMessages = [...prior, { role: "user", content: outboundUser }];
             this.messageHistory.push({
@@ -1151,29 +1847,38 @@ class AgentInterface {
             await this._maybeRunActionFromResponse(reply.contentText, reply.rawText);
             this._renderHistory();
             if (this._voiceOn) {
-                const spoken = this._extractSpokenText(reply.contentText, reply.rawText);
-                if (this._statusEl && speechTranscriber) {
+                spokenForFollowUp = this._extractSpokenText(reply.contentText, reply.rawText);
+                if (this._statusEl && speechTranscriber && spokenForFollowUp) {
                     this._statusEl.textContent = `Speaking… (input: ${speechTranscriber})`;
                     this._statusEl.className = "muted";
                 }
-                this._speak(spoken);
             }
-            if (this._statusEl) {
+            if (this._statusEl && !spokenForFollowUp) {
                 this._statusEl.textContent = speechTranscriber ? `Done. (heard you via ${speechTranscriber})` : "Done.";
                 this._statusEl.className = "ok";
             }
-            return true;
+            ok = true;
         } catch (err) {
             console.error("AgentInterface speech send error:", err);
             if (this._statusEl) {
                 this._statusEl.textContent = err?.message || "Request failed";
                 this._statusEl.className = "error";
             }
-            return false;
+            ok = false;
         } finally {
             this._sendInProgress = false;
             this._syncSendButtonState();
         }
+        if (ok && spokenForFollowUp) {
+            await this._afterAgentSpoke(spokenForFollowUp);
+            if (this._statusEl && this._agentEnabled) {
+                this._statusEl.textContent = speechTranscriber ? `Done. (heard you via ${speechTranscriber})` : "Done.";
+                this._statusEl.className = "ok";
+            }
+        } else if (ok) {
+            this._maybeQueueConversationListenAfterTurn();
+        }
+        return ok;
     }
 
     async _onSend() {
@@ -1184,6 +1889,17 @@ class AgentInterface {
                 this._statusEl.className = "warn";
             }
             return;
+        }
+        if (this._sendInProgress) {
+            if (this._statusEl) {
+                this._statusEl.textContent = "Already sending — wait for the current request to finish.";
+                this._statusEl.className = "warn";
+            }
+            return;
+        }
+        // Manual send wins over an in-progress Simon pose / conversation listen cycle.
+        if (this._simonPoseCycleRunning || this._conversationListenRunning) {
+            this._stopSpeaking();
         }
         const text = String(this._promptInput.value || "").trim();
         this._apiKey = this._keyInput?.value?.trim() || "";
@@ -1197,6 +1913,8 @@ class AgentInterface {
             this._statusEl.textContent = "Sending…";
             this._statusEl.className = "muted";
         }
+        let spokenForFollowUp = "";
+        let ok = false;
         try {
             if (!text) {
                 if (this._statusEl) {
@@ -1207,12 +1925,7 @@ class AgentInterface {
             }
             const stateBlock = this._buildCurrentStateForIntroductionPrompt();
             const fullUserContent = `Current state (json):\n${stateBlock || "[]"}\n\nUser:\n${text}`;
-            const prior = this.messageHistory
-                .filter((m) => m && (m.role === "user" || m.role === "assistant"))
-                .map((m) => ({
-                    role: m.role,
-                    content: this._historyTurnToChatContent(m)
-                }));
+            const prior = this._buildPriorConversationMessages();
             const outboundUser = await this._mergeIntroductionIntoFirstUserMessage(fullUserContent, prior.length);
             this.messageHistory.push({
                 role: "user",
@@ -1231,22 +1944,34 @@ class AgentInterface {
             await this._maybeRunActionFromResponse(reply.contentText, reply.rawText);
             this._renderHistory();
             if (this._voiceOn) {
-                this._speak(this._extractSpokenText(reply.contentText, reply.rawText));
+                spokenForFollowUp = this._extractSpokenText(reply.contentText, reply.rawText);
             }
             this._promptInput.value = "";
-            if (this._statusEl) {
+            if (this._statusEl && !spokenForFollowUp) {
                 this._statusEl.textContent = "Done.";
                 this._statusEl.className = "ok";
             }
+            ok = true;
         } catch (err) {
             console.error("AgentInterface send error:", err);
             if (this._statusEl) {
                 this._statusEl.textContent = err?.message || "Request failed";
                 this._statusEl.className = "error";
             }
+            spokenForFollowUp = "";
+            ok = false;
         } finally {
             this._sendInProgress = false;
             this._syncSendButtonState();
+        }
+        if (ok && spokenForFollowUp) {
+            await this._afterAgentSpoke(spokenForFollowUp);
+            if (this._statusEl && this._agentEnabled) {
+                this._statusEl.textContent = "Done.";
+                this._statusEl.className = "ok";
+            }
+        } else if (ok) {
+            this._maybeQueueConversationListenAfterTurn();
         }
     }
 
@@ -1275,7 +2000,7 @@ class AgentInterface {
      * Same request shape as voice prompts: prior user/assistant history plus one user message that starts with state machine JSON.
      * For proactive robot notices (e.g. strategies) so the model sees current state and conversation context.
      * @param {string} text Short text shown in the history bubble after the first turn (first turn may include merged introduction in the bubble).
-     * @param {{ contextLabel?: string, speechTranscriber?: string }} [options] contextLabel prefixes the payload block (default "Robot notice"). speechTranscriber labels status/TTS hints.
+     * @param {{ contextLabel?: string, speechTranscriber?: string, forceCameraImage?: boolean }} [options] contextLabel prefixes the payload block (default "Robot notice"). speechTranscriber labels status/TTS hints. forceCameraImage attaches the current camera frame even if the checkbox is off.
      * @returns {Promise<boolean>} false if agent off, empty text, send already in progress, or missing API key / agent
      */
     async submitPromptWithRobotState(text, options = {}) {
@@ -1284,7 +2009,17 @@ class AgentInterface {
         if (!this._agentEnabled) return false;
         if (this._sendInProgress) {
             console.warn("AgentInterface: send already in progress; skipped submitPromptWithRobotState.");
+            if (this._statusEl) {
+                this._statusEl.textContent = "Already sending — wait for the current request to finish.";
+                this._statusEl.className = "warn";
+            }
             return false;
+        }
+        if (
+            (this._simonPoseCycleRunning || this._conversationListenRunning) &&
+            options.speechTranscriber !== "simon pose"
+        ) {
+            this._stopSpeaking();
         }
 
         this._apiKey = this._keyInput?.value?.trim() || "";
@@ -1316,15 +2051,12 @@ class AgentInterface {
             this._statusEl.textContent = "Sending…";
             this._statusEl.className = "muted";
         }
+        let spokenForFollowUp = "";
+        let ok = false;
         try {
             const stateBlock = this._buildCurrentStateForIntroductionPrompt();
             const fullUserContent = `Current state (json):\n${stateBlock || "[]"}\n\n${label}:\n${transcript}`;
-            const prior = this.messageHistory
-                .filter((m) => m && (m.role === "user" || m.role === "assistant"))
-                .map((m) => ({
-                    role: m.role,
-                    content: this._historyTurnToChatContent(m)
-                }));
+            const prior = this._buildPriorConversationMessages();
             const outboundUser = await this._mergeIntroductionIntoFirstUserMessage(fullUserContent, prior.length);
             const conversationMessages = [...prior, { role: "user", content: outboundUser }];
             this.messageHistory.push({
@@ -1334,7 +2066,9 @@ class AgentInterface {
                 at: new Date().toISOString()
             });
             this._renderHistory();
-            const reply = await this.sendPrompt("", { messages: conversationMessages });
+            const sendOpts = { messages: conversationMessages };
+            if (options.forceCameraImage === true) sendOpts.forceCameraImage = true;
+            const reply = await this.sendPrompt("", sendOpts);
             this.messageHistory.push({
                 role: "assistant",
                 text: reply.contentText || "",
@@ -1343,18 +2077,17 @@ class AgentInterface {
             await this._maybeRunActionFromResponse(reply.contentText, reply.rawText);
             this._renderHistory();
             if (this._voiceOn) {
-                const spoken = this._extractSpokenText(reply.contentText, reply.rawText);
-                if (this._statusEl && speechTranscriber) {
+                spokenForFollowUp = this._extractSpokenText(reply.contentText, reply.rawText);
+                if (this._statusEl && speechTranscriber && spokenForFollowUp) {
                     this._statusEl.textContent = `Speaking… (${speechTranscriber})`;
                     this._statusEl.className = "muted";
                 }
-                this._speak(spoken);
             }
-            if (this._statusEl) {
+            if (this._statusEl && !spokenForFollowUp) {
                 this._statusEl.textContent = speechTranscriber ? `Done. (${speechTranscriber})` : "Done.";
                 this._statusEl.className = "ok";
             }
-            return true;
+            ok = true;
         } catch (err) {
             console.error("AgentInterface submitPromptWithRobotState error:", err);
             if (this._statusEl) {
@@ -1364,11 +2097,21 @@ class AgentInterface {
             if (this.messageHistory.length && this.messageHistory[this.messageHistory.length - 1]?.role === "user") {
                 this.messageHistory.pop();
             }
-            return false;
+            ok = false;
         } finally {
             this._sendInProgress = false;
             this._syncSendButtonState();
         }
+        if (ok && spokenForFollowUp) {
+            await this._afterAgentSpoke(spokenForFollowUp);
+            if (this._statusEl && this._agentEnabled) {
+                this._statusEl.textContent = speechTranscriber ? `Done. (${speechTranscriber})` : "Done.";
+                this._statusEl.className = "ok";
+            }
+        } else if (ok) {
+            this._maybeQueueConversationListenAfterTurn();
+        }
+        return ok;
     }
 
     _renderHistory() {

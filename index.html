@@ -234,6 +234,32 @@
       pointer-events: none;
       z-index: 4;
     }
+    .sensor-camera-countdown-overlay {
+      position: absolute;
+      inset: 0;
+      z-index: 8;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 0.25em;
+      pointer-events: none;
+      background: rgba(0, 0, 0, 0.35);
+      color: #fff;
+      text-shadow: 0 2px 8px rgba(0, 0, 0, 0.55);
+    }
+    .sensor-camera-countdown-number {
+      font-size: clamp(3.5rem, 18vw, 7rem);
+      font-weight: 700;
+      line-height: 1;
+      font-variant-numeric: tabular-nums;
+    }
+    .sensor-camera-countdown-label {
+      font-size: clamp(1rem, 4vw, 1.5rem);
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
     .sensor-camera-flow-box-size {
       margin-top: 8px;
     }

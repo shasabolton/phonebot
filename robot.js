@@ -469,6 +469,7 @@ class Robot {
 
     /**
      * Switch robot mode (sparse config overrides). Rebuilds actuator mixes; preserves mix on/off.
+     * Modes may set `promptTemplate` (path or template name) to load into the agent UI.
      * @param {string} id
      * @returns {boolean}
      */
@@ -485,7 +486,22 @@ class Robot {
         const wasEnabled = this.mixEnabled;
         this._rebuildActuatorMixes({ restoreEnabled: wasEnabled });
         if (this._modeSelect) this._modeSelect.value = this.mode;
+        this._applyActiveModePromptTemplate();
+        if (this.agentInterface && typeof this.agentInterface.onRobotModeChanged === "function") {
+            this.agentInterface.onRobotModeChanged(this.mode);
+        }
         return true;
+    }
+
+    /** If the active mode declares `promptTemplate`, select and insert it in the agent UI. */
+    _applyActiveModePromptTemplate() {
+        const modeConfig = this._getActiveModeConfig();
+        const spec = modeConfig?.promptTemplate;
+        if (spec == null || spec === "") return;
+        const agent = this.agentInterface;
+        if (agent && typeof agent.applyPromptTemplate === "function") {
+            void agent.applyPromptTemplate(spec);
+        }
     }
 
     _rebuildActuatorMixes({ restoreEnabled = null, startFromConfig = false } = {}) {
@@ -837,6 +853,10 @@ class Robot {
             agentDiv.className = "robot-agent-interfaces";
             this.agentInterface.buildGUI(agentDiv);
             this.container.appendChild(agentDiv);
+            this._applyActiveModePromptTemplate();
+            if (typeof this.agentInterface.onRobotModeChanged === "function") {
+                this.agentInterface.onRobotModeChanged(this.mode);
+            }
         }
 
         const filtersDiv = document.createElement('div');

@@ -18,10 +18,8 @@ window.ROBOTS_DATA = {
             name: "talking head",
             bodyPlan: "A face with one sevro for mouth and one for eye yaw",
             controlPlan:
-                "Modes: random eyes, or eyes track MoveNet nose x. Groq Orpheus TTS / Mp3 → audioPlayer → audioMouthFilter → mouth servo.",
-            //alt plan: Simon Says (needs local free pose Ai)
+                "Eyes track MoveNet nose x (random glances when no nose). Modes: Simon Says AI (pose countdown) / Conversation (hand above nose → record, lower → Whisper). Groq Orpheus TTS / Mp3 → audioPlayer → audioMouthFilter → mouth servo.",
             //Yes no game. Think of an animal and I will guess. Touch nose for yes (needs AI groq)
-            //conversation: Needs speech to text. (unreliable, costs money)
             actuators: [
                 {
                     type: "servo",
@@ -42,7 +40,29 @@ window.ROBOTS_DATA = {
                     minMicroseconds: 1000,
                     maxMicroseconds: 2000,
                     deadbandMicrosecondsMin: 1480,
-                    deadbandMicrosecondsMax: 1520
+                    deadbandMicrosecondsMax: 1520,
+                    mix: ({ processing, robot }) => {
+                        const poses = processing.computervision?.poses;
+                        const keypoints = poses?.[0]?.keypoints;
+                        const nose = Array.isArray(keypoints)
+                            ? keypoints.find((kp) => String(kp?.name || "").toLowerCase() === "nose")
+                            : null;
+                        if (nose && Number.isFinite(nose.x) && (nose.score || 0) >= 0.3) {
+                            const servo =
+                                robot?.actuators?.find(
+                                    (a) => String(a?.name || "").toLowerCase() === "eye yaw"
+                                ) || null;
+                            const minUs = Number.isFinite(servo?.minMicroseconds)
+                                ? servo.minMicroseconds
+                                : 1000;
+                            const maxUs = Number.isFinite(servo?.maxMicroseconds)
+                                ? servo.maxMicroseconds
+                                : 2000;
+                            const x = Math.max(0, Math.min(1, Number(nose.x)));
+                            return minUs + x * (maxUs - minUs);
+                        }
+                        if (Math.random() > 0.95) return Math.random() * 1000 + 1000;
+                    }
                 }
             ],
             sensors: ["microphone", "camera"],
@@ -57,51 +77,21 @@ window.ROBOTS_DATA = {
                     name: "Computer vision"
                 }
             ],
-            defaultMode: "randomEyes",
+            defaultMode: "simonSaysAi",
             modes: {
-                randomEyes: {
-                    label: "Random eyes",
-                    actuators: {
-                        "eye yaw": {
-                            mix: () => {
-                                if (Math.random() > 0.95) return Math.random() * 1000 + 1000;
-                            }
-                        }
-                    }
+                simonSaysAi: {
+                    label: "Simon Says AI",
+                    promptTemplate: "promptTemplates/simonSaysPrompt.txt"
                 },
-                trackNose: {
-                    label: "Track nose",
-                    actuators: {
-                        "eye yaw": {
-                            mix: ({ processing, robot }) => {
-                                const poses = processing.computervision?.poses;
-                                const keypoints = poses?.[0]?.keypoints;
-                                if (!Array.isArray(keypoints)) return;
-                                const nose = keypoints.find(
-                                    (kp) => String(kp?.name || "").toLowerCase() === "nose"
-                                );
-                                if (!nose || !Number.isFinite(nose.x) || (nose.score || 0) < 0.3) return;
-                                const servo =
-                                    robot?.actuators?.find(
-                                        (a) => String(a?.name || "").toLowerCase() === "eye yaw"
-                                    ) || null;
-                                const minUs = Number.isFinite(servo?.minMicroseconds)
-                                    ? servo.minMicroseconds
-                                    : 1000;
-                                const maxUs = Number.isFinite(servo?.maxMicroseconds)
-                                    ? servo.maxMicroseconds
-                                    : 2000;
-                                const x = Math.max(0, Math.min(1, Number(nose.x)));
-                                return minUs + x * (maxUs - minUs);
-                            }
-                        }
-                    }
+                conversation: {
+                    label: "Conversation",
+                    promptTemplate: "promptTemplates/shortConversation"
                 }
             },
             agentInterface: {
                 name: "Chat agents",
                 voiceOn: true,
-                sendCameraImage: true,
+                sendCameraImage: false,
                 shortTermMemory: "",
                 defaultBaseUrl: "https://api.groq.com/openai/v1",
                 transcriptionModel: "whisper-large-v3",
@@ -119,7 +109,7 @@ window.ROBOTS_DATA = {
                         model: "qwen/qwen3.6-27b",
                         transcriptionModel: "whisper-large-v3",
                         temperature: 0.3,
-                        maxTokens: 64,
+                        maxTokens: 96,
                         reasoningEffort: "none"
                     },
                     {
