@@ -16,7 +16,7 @@ class GroqVisionAiModel {
             GroqVisionAiModel.MIN_FREQUENCY_HZ,
             Math.min(GroqVisionAiModel.MAX_FREQUENCY_HZ, this.frequencyHz)
         );
-        this.model = String(config.model || "meta-llama/llama-4-scout-17b-16e-instruct");
+        this.model = String(config.model || "qwen/qwen3.6-27b");
         this.apiKey = "";
         this.rememberKey = false;
         this.captureMaxEdge = Number.isFinite(config.captureMaxEdge) ? Math.round(config.captureMaxEdge) : 960;
@@ -528,6 +528,7 @@ class GroqVisionAiModel {
                 model: this.model,
                 temperature: 0.2,
                 max_tokens: 700,
+                reasoning_effort: "none",
                 response_format: { type: "json_object" },
                 messages: [
                     {

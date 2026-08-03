@@ -444,7 +444,7 @@ class SpeechToTextAiModel {
             }
 
             const synth = window.speechSynthesis;
-            const ttsSpeaking = !!(synth && synth.speaking);
+            const ttsSpeaking = !!(synth && synth.speaking) || !!window.__phonebotTtsSpeaking;
             if (this.postTtsWakeGuardMs > 0) {
                 if (ttsSpeaking) {
                     this._postTtsWakeGuardUntil = now + this.postTtsWakeGuardMs;

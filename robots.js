@@ -18,7 +18,7 @@ window.ROBOTS_DATA = {
             name: "talking head",
             bodyPlan: "A face with one sevro for mouth and one for eye yaw",
             controlPlan:
-                "Modes: random eyes, or eyes track MoveNet nose x. Mp3 → audioMouthFilter → mouth servo.",
+                "Modes: random eyes, or eyes track MoveNet nose x. Groq Orpheus TTS / Mp3 → audioPlayer → audioMouthFilter → mouth servo.",
             //alt plan: Simon Says (needs local free pose Ai)
             //Yes no game. Think of an animal and I will guess. Touch nose for yes (needs AI groq)
             //conversation: Needs speech to text. (unreliable, costs money)
@@ -97,6 +97,40 @@ window.ROBOTS_DATA = {
                         }
                     }
                 }
+            },
+            agentInterface: {
+                name: "Chat agents",
+                voiceOn: true,
+                sendCameraImage: true,
+                shortTermMemory: "",
+                defaultBaseUrl: "https://api.groq.com/openai/v1",
+                transcriptionModel: "whisper-large-v3",
+                cameraCaptureMaxEdge: 960,
+                cameraCaptureJpegQuality: 0.85,
+                promptTemplates: [
+                    { name: "Simon Says", path: "promptTemplates/simonSaysPrompt.txt" },
+                    { name: "Short conversation", path: "promptTemplates/shortConversation" }
+                ],
+                agents: [
+                    {
+                        name: "Groq — Qwen 3.6 27B",
+                        baseUrl: "https://api.groq.com/openai/v1",
+                        chatPath: "/chat/completions",
+                        model: "qwen/qwen3.6-27b",
+                        transcriptionModel: "whisper-large-v3",
+                        temperature: 0.3,
+                        maxTokens: 64,
+                        reasoningEffort: "none"
+                    },
+                    {
+                        name: "OpenAI-compatible (example)",
+                        baseUrl: "https://api.openai.com/v1",
+                        chatPath: "/chat/completions",
+                        model: "gpt-4o-mini",
+                        transcriptionModel: "whisper-1",
+                        temperature: 0.7
+                    }
+                ]
             }
         },
 
@@ -148,7 +182,7 @@ window.ROBOTS_DATA = {
             ],
             sensors: ["camera", "microphone", "gyro"],
             processing: [
-                { type: "groqvision", frequencyHz: 0.2, model: "meta-llama/llama-4-scout-17b-16e-instruct" },
+                { type: "groqvision", frequencyHz: 0.2, model: "qwen/qwen3.6-27b" },
                 {
                     type: "computervision",
                     on: true,
@@ -262,6 +296,7 @@ window.ROBOTS_DATA = {
             agentInterface: {
                 name: "Chat agents",
                 voiceOn: true,
+                sendCameraImage: true,
                 shortTermMemory: "",
                 defaultBaseUrl: "https://api.groq.com/openai/v1",
                 transcriptionModel: "whisper-large-v3",
@@ -272,13 +307,14 @@ window.ROBOTS_DATA = {
                 ],
                 agents: [
                     {
-                        name: "Groq — Llama 4 Scout",
+                        name: "Groq — Qwen 3.6 27B",
                         baseUrl: "https://api.groq.com/openai/v1",
                         chatPath: "/chat/completions",
-                        model: "meta-llama/llama-4-scout-17b-16e-instruct",
+                        model: "qwen/qwen3.6-27b",
                         transcriptionModel: "whisper-large-v3",
                         temperature: 0.2,
                         maxTokens: 768,
+                        reasoningEffort: "none",
                         responseFormat: { type: "json_object" }
                     },
                     {

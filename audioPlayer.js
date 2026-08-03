@@ -45,6 +45,10 @@ class AudioPlayerAiModel {
         this._analyserNode = null;
         this._delayNode = null;
         this._levelData = null;
+
+        /** Object URL for programmatic playback (e.g. local TTS). */
+        this._ttsObjectUrl = "";
+        this._playEndedWaiters = [];
     }
 
     static _clampDelayMs(value) {
@@ -278,15 +282,77 @@ class AudioPlayerAiModel {
         audio.addEventListener("ended", () => {
             this._setStatus("Playback finished.");
             this._syncTransportButtons();
+            this._resolvePlayEndedWaiters();
         });
         audio.addEventListener("pause", () => this._syncTransportButtons());
         audio.addEventListener("play", () => this._syncTransportButtons());
         audio.addEventListener("error", () => {
             this._setStatus("Could not play this file.", true);
             this._syncTransportButtons();
+            this._resolvePlayEndedWaiters();
         });
         this._audio = audio;
         return audio;
+    }
+
+    _resolvePlayEndedWaiters() {
+        const waiters = this._playEndedWaiters.splice(0, this._playEndedWaiters.length);
+        for (const resolve of waiters) {
+            try {
+                resolve();
+            } catch (_) {}
+        }
+    }
+
+    _revokeTtsUrl() {
+        if (!this._ttsObjectUrl) return;
+        try {
+            URL.revokeObjectURL(this._ttsObjectUrl);
+        } catch (_) {}
+        this._ttsObjectUrl = "";
+    }
+
+    /**
+     * Play a Blob/File through the same Web Audio tap used by audioMouthFilter.
+     * @param {Blob|File} blob
+     * @param {string} [label]
+     * @returns {Promise<void>} Resolves when playback ends or is stopped.
+     */
+    async playBlob(blob, label = "TTS") {
+        if (!blob) throw new Error("No audio blob to play.");
+        const audio = this._ensureAudio();
+        this._resolvePlayEndedWaiters();
+        this._revokeTtsUrl();
+        this._ttsObjectUrl = URL.createObjectURL(blob);
+        audio.pause();
+        try {
+            audio.currentTime = 0;
+        } catch (_) {}
+        audio.src = this._ttsObjectUrl;
+        audio.load();
+        this._loadedId = `blob:${Date.now()}`;
+        this.ensurePlaybackTap();
+        if (this._audioContext && this._audioContext.state === "suspended") {
+            await this._audioContext.resume().catch(() => {});
+        }
+        const ended = new Promise((resolve) => {
+            this._playEndedWaiters.push(resolve);
+        });
+        try {
+            await audio.play();
+            this._setStatus(`Playing: ${label}`);
+            window.__phonebotTtsSpeaking = true;
+        } catch (err) {
+            this._resolvePlayEndedWaiters();
+            window.__phonebotTtsSpeaking = false;
+            console.error("Audio playBlob failed:", err);
+            this._setStatus(`Could not play: ${err?.message || "unknown"}`, true);
+            throw err;
+        }
+        this._syncTransportButtons();
+        await ended;
+        window.__phonebotTtsSpeaking = false;
+        this._syncTransportButtons();
     }
 
     _loadSelected() {
@@ -344,6 +410,7 @@ class AudioPlayerAiModel {
 
     stop() {
         if (!this._audio) {
+            this._resolvePlayEndedWaiters();
             this._syncTransportButtons();
             return;
         }
@@ -351,6 +418,8 @@ class AudioPlayerAiModel {
         try {
             this._audio.currentTime = 0;
         } catch (_) {}
+        window.__phonebotTtsSpeaking = false;
+        this._resolvePlayEndedWaiters();
         this._setStatus("Stopped.");
         this._syncTransportButtons();
     }
@@ -495,6 +564,7 @@ class AudioPlayerAiModel {
 
     destroy() {
         this.stop();
+        this._revokeTtsUrl();
         this._disconnectGraph();
         this._mediaSource = null;
         this._analyserNode = null;

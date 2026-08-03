@@ -163,8 +163,8 @@ class AudioMouthFilterAiModel {
         const inputSelect = document.createElement("select");
         inputSelect.className = "audio-mouth-filter-input";
         for (const opt of [
-            { value: "audioPlayer", label: "Audio player" }
-            // TTS / other sources can be added here later
+            { value: "audioPlayer", label: "Audio player (incl. agent TTS)" }
+            // Microphone / other sources can be added here later
         ]) {
             const option = document.createElement("option");
             option.value = opt.value;

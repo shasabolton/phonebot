@@ -37,11 +37,17 @@ class AgentInterface {
         this._apiKey = "";
         this._rememberKey = false;
         this._voiceOn = false;
+        this._ttsVoice = typeof window.GroqTts?.loadSavedVoice === "function"
+            ? window.GroqTts.loadSavedVoice()
+            : "autumn";
+        this._speakGeneration = 0;
         this._containerEl = null;
         this._agentSelect = null;
         this._keyInput = null;
         this._rememberInput = null;
         this._voiceInput = null;
+        this._voiceSelect = null;
+        this._voiceStatusEl = null;
         this._modelOverrideInput = null;
         this._templateSelect = null;
         this._insertTemplateBtn = null;
@@ -54,6 +60,9 @@ class AgentInterface {
         this._agentEnabled = true;
         this._sendInProgress = false;
         this._agentPowerBtn = null;
+        /** When true, attach current camera JPEG to the last user message on send. */
+        this._sendCameraImage = this.config.sendCameraImage !== false;
+        this._sendCameraImageInput = null;
         this._loadSavedKeyPreference();
         this._voiceOn = this._resolveVoiceDefault(null);
     }
@@ -63,8 +72,8 @@ class AgentInterface {
         if (this._agentPowerBtn) {
             this._agentPowerBtn.textContent = this._agentEnabled ? "Turn off agent" : "Turn on agent";
         }
-        if (!this._agentEnabled && window.speechSynthesis) {
-            window.speechSynthesis.cancel();
+        if (!this._agentEnabled) {
+            this._stopSpeaking();
         }
         this._syncSendButtonState();
     }
@@ -228,15 +237,177 @@ class AgentInterface {
         return false;
     }
 
+    _resolveSpeechUrl(agent) {
+        if (!agent) return null;
+        if (agent.speechUrl) return String(agent.speechUrl).trim();
+        const base = String(agent.baseUrl || this.defaultBaseUrl || "").replace(/\/$/, "");
+        const rawPath = agent.speechPath != null ? String(agent.speechPath) : "/audio/speech";
+        const path = rawPath.startsWith("/") ? rawPath : `/${rawPath}`;
+        if (!base) return null;
+        return `${base}${path}`;
+    }
+
+    _resolveSpeechModel(agent) {
+        const fromAgent = agent && String(agent.speechModel || "").trim();
+        if (fromAgent) return fromAgent;
+        const fromCfg = String(this.config.speechModel || "").trim();
+        return fromCfg || (window.GroqTts?.MODEL_ENGLISH || "canopylabs/orpheus-v1-english");
+    }
+
+    /**
+     * Groq / OpenAI-compatible TTS → WAV Blob.
+     * @param {string} text
+     * @param {{ voice?: string }} [options]
+     * @returns {Promise<Blob>}
+     */
+    async synthesizeSpeechBlob(text, options = {}) {
+        const agent = this.getSelectedAgent();
+        if (!agent) throw new Error("No agent selected.");
+        const url = this._resolveSpeechUrl(agent);
+        if (!url) throw new Error("Agent has no speech URL (set baseUrl or speechUrl).");
+        const apiKey = String(this._apiKey || this._keyInput?.value || "").trim();
+        if (!apiKey) throw new Error("Enter an API key for TTS.");
+        const voice = window.GroqTts?.isKnownVoice?.(options.voice)
+            ? options.voice
+            : window.GroqTts?.DEFAULT_VOICE || "autumn";
+        const input =
+            typeof window.GroqTts?.clampInput === "function"
+                ? window.GroqTts.clampInput(text)
+                : String(text || "").trim().slice(0, 200);
+        if (!input) throw new Error("Nothing to speak.");
+        const model = this._resolveSpeechModel(agent);
+        const authHeader = String(agent.authHeader || "Authorization").trim();
+        const authPrefix = agent.authPrefix !== undefined ? String(agent.authPrefix) : "Bearer ";
+        const headers = {
+            "Content-Type": "application/json",
+            [authHeader]: `${authPrefix}${apiKey}`
+        };
+        if (agent.extraHeaders && typeof agent.extraHeaders === "object") {
+            for (const [k, v] of Object.entries(agent.extraHeaders)) {
+                if (k && v != null) headers[k] = String(v);
+            }
+        }
+        const res = await fetch(url, {
+            method: "POST",
+            headers,
+            body: JSON.stringify({
+                model,
+                voice,
+                input,
+                response_format: "wav"
+            })
+        });
+        if (!res.ok) {
+            const errText = await res.text().catch(() => "");
+            throw new Error(`TTS HTTP ${res.status}: ${errText.slice(0, 400)}`);
+        }
+        const buf = await res.arrayBuffer();
+        if (!buf || buf.byteLength < 44) {
+            throw new Error("TTS returned empty audio.");
+        }
+        return new Blob([buf], { type: "audio/wav" });
+    }
+
+    _stopSpeaking() {
+        this._speakGeneration += 1;
+        window.__phonebotTtsSpeaking = false;
+        if (window.speechSynthesis) {
+            try {
+                window.speechSynthesis.cancel();
+            } catch (_) {}
+        }
+        const player = this._getAudioPlayer();
+        if (player && typeof player.stop === "function") {
+            player.stop();
+        }
+    }
+
+    _getAudioPlayer() {
+        if (!this.robot || typeof this.robot.getProcessingByType !== "function") return null;
+        return this.robot.getProcessingByType("audioPlayer");
+    }
+
+    _setVoiceStatus(text) {
+        if (this._voiceStatusEl) {
+            this._voiceStatusEl.textContent = text || "";
+        }
+    }
+
+    _onTtsVoiceChange() {
+        const id = this._voiceSelect ? this._voiceSelect.value : "";
+        if (typeof window.GroqTts?.saveVoice === "function") {
+            this._ttsVoice = window.GroqTts.saveVoice(id);
+        } else {
+            this._ttsVoice = id || "autumn";
+        }
+        if (this._voiceSelect) this._voiceSelect.value = this._ttsVoice;
+    }
+
+    /**
+     * Speak with Groq Orpheus TTS → audioPlayer (mouth filter can analyse it).
+     * Falls back to browser speechSynthesis if TTS or audioPlayer is unavailable.
+     */
     _speak(text) {
+        const content = String(text || "").trim();
+        if (!content) return;
+        this._stopSpeaking();
+        const generation = this._speakGeneration;
+        void this._speakGroqAsync(content, generation);
+    }
+
+    async _speakGroqAsync(content, generation) {
+        const player = this._getAudioPlayer();
+        const canPlay = player && typeof player.playBlob === "function";
+        if (!canPlay) {
+            this._speakBrowserFallback(content);
+            return;
+        }
+
+        let usedBrowserFallback = false;
+        try {
+            this._setVoiceStatus(`Groq TTS (${this._ttsVoice})…`);
+            // Keep key in sync if user typed it but didn't send chat yet.
+            this._apiKey = this._keyInput?.value?.trim() || this._apiKey;
+            const blob = await this.synthesizeSpeechBlob(content, { voice: this._ttsVoice });
+            if (generation !== this._speakGeneration) return;
+            this._setVoiceStatus(`Speaking (${this._ttsVoice})…`);
+            window.__phonebotTtsSpeaking = true;
+            await player.playBlob(blob, `Groq TTS (${this._ttsVoice})`);
+            if (generation === this._speakGeneration) {
+                this._setVoiceStatus("Groq Orpheus TTS (uses API credits).");
+            }
+        } catch (err) {
+            console.warn("Groq TTS error, falling back to browser speechSynthesis:", err);
+            if (generation !== this._speakGeneration) return;
+            this._setVoiceStatus(`Groq TTS failed — using browser voice. (${err?.message || err})`);
+            usedBrowserFallback = true;
+            this._speakBrowserFallback(content);
+        } finally {
+            if (generation === this._speakGeneration && !usedBrowserFallback) {
+                window.__phonebotTtsSpeaking = false;
+            }
+        }
+    }
+
+    _speakBrowserFallback(text) {
         const content = String(text || "").trim();
         if (!content) return;
         if (!window.speechSynthesis || typeof window.SpeechSynthesisUtterance !== "function") return;
         try {
             window.speechSynthesis.cancel();
             const utterance = new SpeechSynthesisUtterance(content);
+            utterance.onstart = () => {
+                window.__phonebotTtsSpeaking = true;
+            };
+            utterance.onend = () => {
+                window.__phonebotTtsSpeaking = false;
+            };
+            utterance.onerror = () => {
+                window.__phonebotTtsSpeaking = false;
+            };
             window.speechSynthesis.speak(utterance);
         } catch (err) {
+            window.__phonebotTtsSpeaking = false;
             console.warn("TTS error:", err);
         }
     }
@@ -244,12 +415,14 @@ class AgentInterface {
     _extractSpokenText(contentText, rawText) {
         const content = String(contentText || "").trim();
         if (!content) return "";
+        // Only inspect the model content — never the raw HTTP envelope (that is valid JSON
+        // with `choices`, and falling through yields "" so TTS stays silent).
         const payload =
-            this._tryParseJson(content) ||
-            this._extractJsonObjectFromModelText(content) ||
-            this._tryParseJson(rawText) ||
-            this._extractJsonObjectFromModelText(rawText);
-        if (!payload || typeof payload !== "object") {
+            this._tryParseJson(content) || this._extractJsonObjectFromModelText(content);
+        if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+            return content;
+        }
+        if (Array.isArray(payload.choices) || payload.object === "chat.completion") {
             return content;
         }
         if (typeof payload.message === "string" && payload.message.trim()) {
@@ -261,7 +434,11 @@ class AgentInterface {
         if (typeof payload.text === "string" && payload.text.trim()) {
             return payload.text.trim();
         }
-        return "";
+        // Agent JSON without a speakable field — don't speak the whole blob.
+        if (Object.prototype.hasOwnProperty.call(payload, "actions")) {
+            return "";
+        }
+        return content;
     }
 
     _buildBodyPlanFromRobotConfig() {
@@ -426,13 +603,33 @@ class AgentInterface {
             .replace(/\{\{ACTIONS-EXAMPLES\}\}/g, this._buildActionExamplesFromRobotConfig());
     }
 
+    /**
+     * Template used for first-turn auto-merge and (when no selection yet) hydrate.
+     * Prefers the dropdown selection; otherwise only explicit introduction templates —
+     * never “first template in the list”, which double-pastes game prompts.
+     */
     _getIntroductionTemplateSpec() {
         const list = Array.isArray(this.promptTemplates) ? this.promptTemplates : [];
+        const selected = String(this._templateSelect?.value || "").trim();
+        if (selected && selected !== AgentInterface.TEMPLATE_VALUE_STATE) {
+            const fromSelect = list.find((t) => String(t?.path || "").trim() === selected);
+            if (fromSelect) return fromSelect;
+        }
         return (
             list.find((t) => /introImagePrompt\.txt$/i.test(String(t?.path || "").trim())) ||
             list.find((t) => /introductionPrompt\.txt$/i.test(String(t?.path || "").trim())) ||
             list.find((t) => /introduction/i.test(String(t?.name || ""))) ||
-            list.find((t) => String(t?.path || "").trim()) ||
+            null
+        );
+    }
+
+    /** First listed file template — used only to pre-fill the textarea, not for silent merge. */
+    _getDefaultHydrateTemplateSpec() {
+        return (
+            this._getIntroductionTemplateSpec() ||
+            (Array.isArray(this.promptTemplates) ? this.promptTemplates : []).find((t) =>
+                String(t?.path || "").trim()
+            ) ||
             null
         );
     }
@@ -453,7 +650,7 @@ class AgentInterface {
     }
 
     async _hydrateDefaultPromptFromIntroductionTemplate() {
-        const spec = this._getIntroductionTemplateSpec();
+        const spec = this._getDefaultHydrateTemplateSpec();
         const path = spec && String(spec.path || "").trim();
         if (!path || !this._promptInput || !this._templateSelect) return;
         try {
@@ -513,16 +710,41 @@ class AgentInterface {
         return String(m.text || "");
     }
 
+    _normalizePromptText(text) {
+        return String(text || "")
+            .replace(/\r\n/g, "\n")
+            .replace(/\r/g, "\n")
+            .trim();
+    }
+
     /**
-     * On the first user message of a session, prefix the introduction template so it lives in history
-     * and is re-sent on every later turn via `_historyTurnToChatContent`.
+     * On the first user message of a session, prefix the selected/introduction template so it
+     * lives in history. If the User / User said section is already that template (hydrated or
+     * Insert template), keep a single copy — do not prepend again.
      */
     async _mergeIntroductionIntoFirstUserMessage(fullUserContent, priorLength) {
         const body = String(fullUserContent || "");
         if (priorLength > 0) return body;
         const intro = await this._fetchIntroductionPromptContent();
-        const head = intro != null ? String(intro).trim() : "";
+        const head = this._normalizePromptText(intro);
         if (!head) return body;
+        const bodyNorm = this._normalizePromptText(body);
+        if (!bodyNorm) return head;
+
+        const userMatch = body.match(/\n(?:User said|User|Robot notice):\n([\s\S]*)$/i);
+        const userPart = userMatch ? this._normalizePromptText(userMatch[1]) : "";
+        const userIsIntro =
+            !!userPart && (userPart === head || head.includes(userPart) || userPart.includes(head));
+
+        if (userIsIntro) {
+            const stateMatch = body.match(/Current state \(json\):\n[\s\S]*?(?=\n\n(?:User said|User|Robot notice):|$)/i);
+            const stateBlock = stateMatch ? stateMatch[0].trim() : "";
+            return stateBlock ? `${head}\n\n${stateBlock}` : head;
+        }
+
+        if (bodyNorm.includes(head)) return body;
+        const headPrefix = head.slice(0, Math.min(120, head.length)).trim();
+        if (headPrefix.length >= 24 && bodyNorm.includes(headPrefix)) return body;
         return `${head}\n\n${body}`;
     }
 
@@ -585,7 +807,16 @@ class AgentInterface {
             }
         }
 
-        if (!options.skipVisionAttachment) {
+        let sendCameraImage;
+        if (options.skipVisionAttachment === true) {
+            sendCameraImage = false;
+        } else if (this._sendCameraImageInput) {
+            sendCameraImage = !!this._sendCameraImageInput.checked;
+            this._sendCameraImage = sendCameraImage;
+        } else {
+            sendCameraImage = !!this._sendCameraImage;
+        }
+        if (sendCameraImage) {
             this._attachCurrentCameraToLastUserMessage(conversationMessages);
         }
 
@@ -609,6 +840,13 @@ class AgentInterface {
         };
         if (responseFormat) {
             body.response_format = responseFormat;
+        }
+        const reasoningEffort = String(agent.reasoningEffort || agent.reasoning_effort || "").trim();
+        if (reasoningEffort) {
+            body.reasoning_effort = reasoningEffort;
+        }
+        if (agent.extraBody && typeof agent.extraBody === "object") {
+            Object.assign(body, agent.extraBody);
         }
 
         const headers = {
@@ -643,12 +881,19 @@ class AgentInterface {
             json?.choices?.[0]?.text ??
             json?.message?.content ??
             "";
-        const contentText = String(content || "").trim();
+        const contentText = this._stripThinkingBlocks(String(content || "").trim());
         return {
             rawText,
             json,
             contentText: contentText || JSON.stringify(json, null, 2)
         };
+    }
+
+    /** Drop Qwen/Groq raw thinking (`<think>…</think>`) so history/TTS stay short. */
+    _stripThinkingBlocks(text) {
+        return String(text || "")
+            .replace(/<think\b[^>]*>[\s\S]*?<\/think>/gi, "")
+            .replace(/^\s+|\s+$/g, "");
     }
 
     _tryParseJson(text) {
@@ -1234,12 +1479,39 @@ class AgentInterface {
         voiceInput.checked = this._voiceOn;
         voiceInput.addEventListener("change", () => {
             this._voiceOn = !!voiceInput.checked;
-            if (!this._voiceOn && window.speechSynthesis) {
-                window.speechSynthesis.cancel();
+            if (!this._voiceOn) {
+                this._stopSpeaking();
             }
         });
         voiceWrap.appendChild(voiceInput);
         voiceWrap.appendChild(document.createTextNode("Speak agent replies"));
+
+        const voiceSelectLabel = document.createElement("label");
+        voiceSelectLabel.textContent = "Voice (Groq Orpheus TTS)";
+        const voiceSelect = document.createElement("select");
+        voiceSelect.id = "robotAgentTtsVoice";
+        const voiceList =
+            Array.isArray(window.GroqTts?.VOICES) && window.GroqTts.VOICES.length
+                ? window.GroqTts.VOICES
+                : [{ id: "autumn", label: "Autumn — ♀" }];
+        for (const v of voiceList) {
+            const opt = document.createElement("option");
+            opt.value = v.id;
+            opt.textContent = v.label || v.id;
+            voiceSelect.appendChild(opt);
+        }
+        voiceSelect.value = this._ttsVoice;
+        if (![...voiceSelect.options].some((o) => o.value === this._ttsVoice)) {
+            voiceSelect.value = voiceList[0].id;
+            this._ttsVoice = voiceSelect.value;
+        }
+        voiceSelect.addEventListener("change", () => this._onTtsVoiceChange());
+
+        const voiceStatus = document.createElement("p");
+        voiceStatus.className = "muted";
+        voiceStatus.style.margin = "4px 0 0";
+        voiceStatus.textContent =
+            "Groq Orpheus TTS (API credits). Max 200 chars. Plays via audio player for mouth sync.";
 
         const agentPowerBtn = document.createElement("button");
         agentPowerBtn.type = "button";
@@ -1301,6 +1573,20 @@ class AgentInterface {
         promptInput.style.boxSizing = "border-box";
         promptInput.style.marginTop = "4px";
 
+        const sendCameraWrap = document.createElement("label");
+        sendCameraWrap.style.display = "flex";
+        sendCameraWrap.style.alignItems = "center";
+        sendCameraWrap.style.gap = "8px";
+        sendCameraWrap.style.marginTop = "6px";
+        const sendCameraImageInput = document.createElement("input");
+        sendCameraImageInput.type = "checkbox";
+        sendCameraImageInput.checked = this._sendCameraImage;
+        sendCameraImageInput.addEventListener("change", () => {
+            this._sendCameraImage = !!sendCameraImageInput.checked;
+        });
+        sendCameraWrap.appendChild(sendCameraImageInput);
+        sendCameraWrap.appendChild(document.createTextNode("Send camera image"));
+
         const sendBtn = document.createElement("button");
         sendBtn.type = "button";
         sendBtn.textContent = "Send";
@@ -1325,12 +1611,16 @@ class AgentInterface {
         controls.appendChild(modelLabel);
         controls.appendChild(modelOverrideInput);
         controls.appendChild(voiceWrap);
+        controls.appendChild(voiceSelectLabel);
+        controls.appendChild(voiceSelect);
+        controls.appendChild(voiceStatus);
         controls.appendChild(agentPowerBtn);
         controls.appendChild(fullSpeechPromptWrap);
         controls.appendChild(historyLabel);
         controls.appendChild(historyEl);
         controls.appendChild(promptLabel);
         controls.appendChild(promptInput);
+        controls.appendChild(sendCameraWrap);
         controls.appendChild(sendBtn);
         controls.appendChild(templateLabel);
         controls.appendChild(templateSelect);
@@ -1346,11 +1636,14 @@ class AgentInterface {
         this._keyInput = keyInput;
         this._rememberInput = rememberInput;
         this._voiceInput = voiceInput;
+        this._voiceSelect = voiceSelect;
+        this._voiceStatusEl = voiceStatus;
         this._fullSpeechPromptInput = fullSpeechPromptInput;
         this._modelOverrideInput = modelOverrideInput;
         this._templateSelect = templateSelect;
         this._insertTemplateBtn = insertTemplateBtn;
         this._promptInput = promptInput;
+        this._sendCameraImageInput = sendCameraImageInput;
         this._sendBtn = sendBtn;
         this._agentPowerBtn = agentPowerBtn;
         this._statusEl = status;
@@ -1364,6 +1657,7 @@ class AgentInterface {
     }
 
     destroy() {
+        this._stopSpeaking();
         if (this._containerEl && this._containerEl.parentNode) {
             this._containerEl.parentNode.removeChild(this._containerEl);
         }
@@ -1372,18 +1666,18 @@ class AgentInterface {
         this._keyInput = null;
         this._rememberInput = null;
         this._voiceInput = null;
+        this._voiceSelect = null;
+        this._voiceStatusEl = null;
         this._fullSpeechPromptInput = null;
         this._modelOverrideInput = null;
         this._templateSelect = null;
         this._insertTemplateBtn = null;
         this._promptInput = null;
+        this._sendCameraImageInput = null;
         this._sendBtn = null;
         this._agentPowerBtn = null;
         this._statusEl = null;
         this._historyEl = null;
-        if (window.speechSynthesis) {
-            window.speechSynthesis.cancel();
-        }
         this.messageHistory = [];
     }
 }
