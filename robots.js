@@ -59,7 +59,7 @@ window.ROBOTS_DATA = {
                                 : 2000;
                             const xRaw = Math.max(0, Math.min(1, Number(nose.x)));
                             // Camera preview is mirrored; invert so eyes follow the person on screen.
-                            const x = 1 - xRaw;
+                            const x = xRaw;//1-xRaw
                             return minUs + x * (maxUs - minUs);
                         }
                         if (Math.random() > 0.95) return Math.random() * 1000 + 1000;
