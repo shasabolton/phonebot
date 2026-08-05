@@ -114,7 +114,7 @@ class AgentInterface {
         }
     }
 
-    /** Local MoveNet + browser-TTS Simon Says (no Groq). */
+    /** Local MoveNet + Groq-TTS Simon Says (no chat LLM). */
     _isSimonSaysPoseMatchMode() {
         return String(this.robot?.mode || "").trim().toLowerCase() === "simonsaysposematch";
     }

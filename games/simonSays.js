@@ -1,13 +1,25 @@
 /**
- * Simon Says Pose Match — local MoveNet + browser TTS (no Groq).
+ * Simon Says Pose Match — local MoveNet + Groq TTS (via agent audio player).
  * Command: bring two body keypoints together (within ~eye-spacing).
  */
 class SimonSaysPoseMatch {
     static OPENING_PHRASE = "Hello, Let's play a game of Simon Says!";
     static KEY_PHRASE = "Simon Says";
-    static WRONG_POSE_PHRASE = "Wrong pose. Try again.";
-    static SIMON_DID_NOT_SAY_PHRASE =
-        "Hey, Simon did not say to do it. Got you. That's a point for me";
+    /** Cycled when Simon said and the pose was wrong. */
+    static WRONG_POSE_PHRASES = Object.freeze([
+        "Wrong pose. Try again.",
+        "That doesn't look right. Try again.",
+        "Not quite. Give it another go.",
+        "Hmm, that's not it. Try once more.",
+        "Almost? Nope. Try again."
+    ]);
+    static SIMON_DID_NOT_SAY_PHRASES = Object.freeze([
+        "Hey, Simon did not say to do it. Got you. That's a point for me",
+        "Gotcha — Simon never said that. Point for me.",
+        "Nice try, but Simon didn't say. That's mine.",
+        "Ah ah ah — no Simon says. I score.",
+        "You moved and Simon didn't say. Point to Simon."
+    ]);
 
     /** At least one hand (MoveNet wrist) is always in the pair. */
     static HAND_JOINTS = Object.freeze(["left_wrist", "right_wrist"]);
@@ -63,6 +75,8 @@ class SimonSaysPoseMatch {
         this._currentA = null;
         this._currentB = null;
         this._simonSaid = false;
+        this._wrongPhraseIndex = 0;
+        this._gotchaPhraseIndex = 0;
     }
 
     start() {
@@ -108,7 +122,16 @@ class SimonSaysPoseMatch {
         });
     }
 
+    _getAgent() {
+        return this.robot?.agentInterface || null;
+    }
+
     _cancelSpeech() {
+        const agent = this._getAgent();
+        if (agent && typeof agent._stopSpeaking === "function") {
+            agent._stopSpeaking();
+            return;
+        }
         try {
             if (window.speechSynthesis) window.speechSynthesis.cancel();
         } catch (_) {}
@@ -116,42 +139,28 @@ class SimonSaysPoseMatch {
     }
 
     /**
+     * Speak via agent Groq Orpheus TTS (mouth servo can follow audioPlayer).
      * @param {string} text
      * @param {number} generation
      * @returns {Promise<boolean>} true if utterance finished while still active
      */
-    _speak(text, generation) {
+    async _speak(text, generation) {
         const content = String(text || "").trim();
-        if (!content) return Promise.resolve(this._isActive(generation));
-        if (!window.speechSynthesis || typeof window.SpeechSynthesisUtterance !== "function") {
-            return Promise.resolve(this._isActive(generation));
+        if (!content) return this._isActive(generation);
+        if (!this._isActive(generation)) return false;
+
+        const agent = this._getAgent();
+        if (agent && typeof agent._speakAsync === "function") {
+            // Sync API key from the UI before first TTS call.
+            if (agent._keyInput) {
+                agent._apiKey = agent._keyInput.value?.trim() || agent._apiKey;
+            }
+            const finished = await agent._speakAsync(content);
+            return finished && this._isActive(generation);
         }
-        this._cancelSpeech();
-        return new Promise((resolve) => {
-            if (!this._isActive(generation)) {
-                resolve(false);
-                return;
-            }
-            try {
-                const utterance = new SpeechSynthesisUtterance(content);
-                utterance.onstart = () => {
-                    window.__phonebotTtsSpeaking = true;
-                };
-                utterance.onend = () => {
-                    window.__phonebotTtsSpeaking = false;
-                    resolve(this._isActive(generation));
-                };
-                utterance.onerror = () => {
-                    window.__phonebotTtsSpeaking = false;
-                    resolve(this._isActive(generation));
-                };
-                window.speechSynthesis.speak(utterance);
-            } catch (err) {
-                window.__phonebotTtsSpeaking = false;
-                console.warn("Simon Says TTS error:", err);
-                resolve(this._isActive(generation));
-            }
-        });
+
+        this._setStatus("Groq TTS unavailable — is the agent panel loaded?", "error");
+        return this._isActive(generation);
     }
 
     _sleep(ms, generation) {
@@ -242,6 +251,26 @@ class SimonSaysPoseMatch {
 
     _commandPhrase(a, b) {
         return `touch your ${this._labelJoint(a)} to your ${this._labelJoint(b)}`;
+    }
+
+    /** Next wrong-pose line, cycling through {@link WRONG_POSE_PHRASES}. */
+    _nextWrongPosePhrase() {
+        const list = SimonSaysPoseMatch.WRONG_POSE_PHRASES;
+        if (!list.length) return "Wrong pose. Try again.";
+        const phrase = list[this._wrongPhraseIndex % list.length];
+        this._wrongPhraseIndex = (this._wrongPhraseIndex + 1) % list.length;
+        return phrase;
+    }
+
+    /** Next trap-gotcha line, cycling through {@link SIMON_DID_NOT_SAY_PHRASES}. */
+    _nextSimonDidNotSayPhrase() {
+        const list = SimonSaysPoseMatch.SIMON_DID_NOT_SAY_PHRASES;
+        if (!list.length) {
+            return "Hey, Simon did not say to do it. Got you. That's a point for me";
+        }
+        const phrase = list[this._gotchaPhraseIndex % list.length];
+        this._gotchaPhraseIndex = (this._gotchaPhraseIndex + 1) % list.length;
+        return phrase;
     }
 
     _jointSide(name) {
@@ -434,19 +463,13 @@ class SimonSaysPoseMatch {
                         // Correct — silent, next round (step 2).
                         this._setStatus("Correct — next round…", "ok");
                     } else {
-                        const said = await this._speak(
-                            SimonSaysPoseMatch.WRONG_POSE_PHRASE,
-                            generation
-                        );
+                        const said = await this._speak(this._nextWrongPosePhrase(), generation);
                         if (!said) return;
                         // Retry same command from step 4 (re-say Simon Says + command).
                         needAnnounce = true;
                     }
                 } else if (correct) {
-                    const said = await this._speak(
-                        SimonSaysPoseMatch.SIMON_DID_NOT_SAY_PHRASE,
-                        generation
-                    );
+                    const said = await this._speak(this._nextSimonDidNotSayPhrase(), generation);
                     if (!said) return;
                     this._setStatus("Gotcha — next round…", "warn");
                 } else {

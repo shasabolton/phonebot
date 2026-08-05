@@ -489,7 +489,7 @@ class Robot {
         this._rebuildActuatorMixes({ restoreEnabled: wasEnabled });
         if (this._modeSelect) this._modeSelect.value = this.mode;
         this._applyActiveModePromptTemplate();
-        // Stop agent TTS / listen before starting a local game (game owns browser TTS).
+        // Stop agent TTS / listen before starting a local game (game uses agent Groq TTS).
         if (this.agentInterface && typeof this.agentInterface.onRobotModeChanged === "function") {
             this.agentInterface.onRobotModeChanged(this.mode);
         }
