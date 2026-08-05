@@ -128,6 +128,11 @@
       height: 100%;
       object-fit: contain;
     }
+    /* Selfie mirror: flip video + pose overlay only (countdown stays readable). */
+    .sensor-camera-frame--mirrored .sensor-camera-video,
+    .sensor-camera-frame--mirrored .sensor-camera-overlay {
+      transform: scaleX(-1);
+    }
     .sensor-camera-status {
       margin: 6px 0 0 0;
       font-size: 0.9em;
@@ -549,6 +554,7 @@
     "strategies.js",
     "objectFilter.js",
     "pid.js",
+    "games/simonSays.js",
     "agentInterface.js",
     "robots.js",
     "robot.js",

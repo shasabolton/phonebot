@@ -206,6 +206,11 @@ class ComputerVisionAiModel {
         this._frameHeight = 0;
         this._detections = [];
         this._poses = [];
+        /**
+         * Simon Says / pose-match overlay: target keypoints in red + match-distance bubbles.
+         * @type {{ names: Set<string>, eyeTolerance: number, fallbackEyeSpacing: number }|null}
+         */
+        this._poseMatchHighlight = null;
 
         this._toggleBtn = null;
         this._modelSelect = null;
@@ -1031,7 +1036,12 @@ class ComputerVisionAiModel {
         if (px < rect.left || py < rect.top || px > rect.right || py > rect.bottom) return;
         const localX = px - rect.left;
         const localY = py - rect.top;
-        const mapped = ComputerVisionAiModel.videoElementLocalToIntrinsicPx(videoEl, localX, localY);
+        // Mirrored preview: visual x is flipped vs intrinsic video pixels.
+        const mappedLocalX =
+            camera && typeof camera.isMirrored === "function" && camera.isMirrored()
+                ? rect.width - localX
+                : localX;
+        const mapped = ComputerVisionAiModel.videoElementLocalToIntrinsicPx(videoEl, mappedLocalX, localY);
         if (!mapped) return;
         const vx = mapped.vx;
         const vy = mapped.vy;
@@ -1540,12 +1550,74 @@ class ComputerVisionAiModel {
     }
 
     /**
+     * Highlight MoveNet joints for pose-match games (red nodes + match-distance bubbles).
+     * Pass null to clear. `eyeTolerance` / `fallbackEyeSpacing` match Simon Says scoring:
+     * bubble diameter (px) = inter-eye pixel distance × eyeTolerance (default 3).
+     * @param {{ names?: string[], eyeTolerance?: number, fallbackEyeSpacing?: number }|null} spec
+     */
+    setPoseMatchHighlight(spec) {
+        if (!spec || typeof spec !== "object") {
+            this._poseMatchHighlight = null;
+            return;
+        }
+        const names = new Set(
+            (Array.isArray(spec.names) ? spec.names : [])
+                .map((n) => String(n || "").trim().toLowerCase())
+                .filter(Boolean)
+        );
+        if (!names.size) {
+            this._poseMatchHighlight = null;
+            return;
+        }
+        const eyeTolerance = Number(spec.eyeTolerance);
+        const fallbackEyeSpacing = Number(spec.fallbackEyeSpacing);
+        this._poseMatchHighlight = {
+            names,
+            eyeTolerance: Number.isFinite(eyeTolerance) && eyeTolerance > 0 ? eyeTolerance : 3,
+            fallbackEyeSpacing:
+                Number.isFinite(fallbackEyeSpacing) && fallbackEyeSpacing > 0
+                    ? fallbackEyeSpacing
+                    : 0.06
+        };
+    }
+
+    /**
+     * Match-threshold diameter in MoveNet intrinsic pixels (eyeSpacingPx × eyeTolerance).
+     * Same visual rule as Simon Says: bubble diameter = 3× inter-eye distance by default.
+     * @param {Map<string, { x: number, y: number, score: number }>} byName pixel keypoints
+     * @param {number} fw
+     * @param {number} fh
+     * @param {{ eyeTolerance: number, fallbackEyeSpacing: number }} highlight
+     */
+    _poseMatchDiameterPx(byName, fw, fh, highlight) {
+        const width = Math.max(1, fw || 1);
+        const height = Math.max(1, fh || 1);
+        const left = byName.get("left_eye");
+        const right = byName.get("right_eye");
+        const minKp = Math.max(0.1, this.minScore * 0.5);
+        let eyePx = highlight.fallbackEyeSpacing * Math.min(width, height);
+        if (
+            left &&
+            right &&
+            (left.score || 0) >= minKp &&
+            (right.score || 0) >= minKp
+        ) {
+            const d = Math.hypot(Number(left.x) - Number(right.x), Number(left.y) - Number(right.y));
+            if (d > 1) eyePx = d;
+        }
+        return eyePx * highlight.eyeTolerance;
+    }
+
+    /**
      * @param {CanvasRenderingContext2D} ctx
      * @param {{ scale: number, offsetX: number, offsetY: number }} t
      * @param {Array<{ score: number, keypoints: Array<{ name: string, x: number, y: number, score: number }> }>} poses
      */
     _drawPoses(ctx, t, poses) {
         const minKp = Math.max(0.1, this.minScore * 0.5);
+        const highlight = this._poseMatchHighlight;
+        const fw = Math.max(1, this._frameWidth || 1);
+        const fh = Math.max(1, this._frameHeight || 1);
         for (const pose of poses || []) {
             const byName = new Map();
             for (const kp of pose.keypoints || []) {
@@ -1567,14 +1639,39 @@ class ComputerVisionAiModel {
                 ctx.stroke();
             }
 
+            const matchDiameterPx =
+                highlight && highlight.names.size
+                    ? this._poseMatchDiameterPx(byName, fw, fh, highlight)
+                    : 0;
+            // Radius so drawn diameter === match threshold in the same pixel space as keypoints.
+            const bubbleR = (matchDiameterPx / 2) * t.scale;
+
             for (const kp of pose.keypoints || []) {
                 if ((kp.score || 0) < minKp) continue;
+                const name = String(kp?.name || "").trim().toLowerCase();
+                const isTarget = !!(highlight && name && highlight.names.has(name));
                 const px = t.offsetX + kp.x * t.scale;
                 const py = t.offsetY + kp.y * t.scale;
-                ctx.fillStyle = "#ffcc33";
+
+                if (isTarget && bubbleR > 1) {
+                    ctx.beginPath();
+                    ctx.arc(px, py, bubbleR, 0, Math.PI * 2);
+                    ctx.fillStyle = "rgba(255, 48, 48, 0.15)";
+                    ctx.fill();
+                    ctx.strokeStyle = "rgba(255, 48, 48, 0.95)";
+                    ctx.lineWidth = 2;
+                    ctx.stroke();
+                }
+
+                ctx.fillStyle = isTarget ? "#ff3030" : "#ffcc33";
                 ctx.beginPath();
-                ctx.arc(px, py, 4, 0, Math.PI * 2);
+                ctx.arc(px, py, isTarget ? 6 : 4, 0, Math.PI * 2);
                 ctx.fill();
+                if (isTarget) {
+                    ctx.strokeStyle = "#ffffff";
+                    ctx.lineWidth = 1.5;
+                    ctx.stroke();
+                }
             }
 
             const nose = byName.get("nose");

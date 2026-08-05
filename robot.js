@@ -26,6 +26,7 @@ class Robot {
         this.goal="";
         this._goalInputEl = null;
         this._modeSelect = null;
+        this._localGame = null;
         this.stateMachine = null;
         this.strategies = null;
         // PID controllers read targets/sensors and may set control inputs.
@@ -38,6 +39,7 @@ class Robot {
     }
 
     destroy() {
+        this._stopLocalGame();
         this.teardownJoysticks();
         this.stopMixClock();
         this.teardownStrategies();
@@ -487,9 +489,11 @@ class Robot {
         this._rebuildActuatorMixes({ restoreEnabled: wasEnabled });
         if (this._modeSelect) this._modeSelect.value = this.mode;
         this._applyActiveModePromptTemplate();
+        // Stop agent TTS / listen before starting a local game (game owns browser TTS).
         if (this.agentInterface && typeof this.agentInterface.onRobotModeChanged === "function") {
             this.agentInterface.onRobotModeChanged(this.mode);
         }
+        this._syncLocalGameForMode();
         return true;
     }
 
@@ -501,6 +505,35 @@ class Robot {
         const agent = this.agentInterface;
         if (agent && typeof agent.applyPromptTemplate === "function") {
             void agent.applyPromptTemplate(spec);
+        }
+    }
+
+    _stopLocalGame() {
+        if (this._localGame && typeof this._localGame.stop === "function") {
+            try {
+                this._localGame.stop();
+            } catch (err) {
+                console.warn("Local game stop failed:", err);
+            }
+        }
+        this._localGame = null;
+    }
+
+    /**
+     * Start/stop local (non-LLM) games declared on the active mode via `game`.
+     */
+    _syncLocalGameForMode() {
+        this._stopLocalGame();
+        const gameId = String(this._getActiveModeConfig()?.game || "").trim();
+        if (!gameId) return;
+        if (gameId === "simonSaysPoseMatch") {
+            const GameClass = window.SimonSaysPoseMatch;
+            if (typeof GameClass !== "function") {
+                console.error("SimonSaysPoseMatch is unavailable. Check games/simonSays.js loading.");
+                return;
+            }
+            this._localGame = new GameClass(this);
+            this._localGame.start();
         }
     }
 
@@ -857,6 +890,9 @@ class Robot {
             if (typeof this.agentInterface.onRobotModeChanged === "function") {
                 this.agentInterface.onRobotModeChanged(this.mode);
             }
+            this._syncLocalGameForMode();
+        } else {
+            this._syncLocalGameForMode();
         }
 
         const filtersDiv = document.createElement('div');

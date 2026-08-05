@@ -18,7 +18,7 @@ window.ROBOTS_DATA = {
             name: "talking head",
             bodyPlan: "A face with one sevro for mouth and one for eye yaw",
             controlPlan:
-                "Eyes track MoveNet nose x (random glances when no nose). Modes: Simon Says AI (pose countdown) / Conversation / 20 Questions. Groq Orpheus TTS / Mp3 → audioPlayer → audioMouthFilter → mouth servo.",
+                "Eyes track MoveNet nose x (random glances when no nose). Modes: Simon Says Pose Match (local MoveNet + browser TTS) / Simon Says AI (pose countdown) / Conversation / 20 Questions / Linking Word. Groq Orpheus TTS / Mp3 → audioPlayer → audioMouthFilter → mouth servo.",
             actuators: [
                 {
                     type: "servo",
@@ -57,14 +57,19 @@ window.ROBOTS_DATA = {
                             const maxUs = Number.isFinite(servo?.maxMicroseconds)
                                 ? servo.maxMicroseconds
                                 : 2000;
-                            const x = Math.max(0, Math.min(1, Number(nose.x)));
+                            const xRaw = Math.max(0, Math.min(1, Number(nose.x)));
+                            // Camera preview is mirrored; invert so eyes follow the person on screen.
+                            const x = 1 - xRaw;
                             return minUs + x * (maxUs - minUs);
                         }
                         if (Math.random() > 0.95) return Math.random() * 1000 + 1000;
                     }
                 }
             ],
-            sensors: ["microphone", "camera"],
+            sensors: [
+                "microphone",
+                { type: "camera", mirror: true }
+            ],
             processing: [
                 { type: "audioPlayer", delayMs: 200},
                 { type: "audioMouthFilter", input: "audioPlayer", threshold: 0.01, gain: 20 },
@@ -76,8 +81,12 @@ window.ROBOTS_DATA = {
                     name: "Computer vision"
                 }
             ],
-            defaultMode: "simonSaysAi",
+            defaultMode: "simonSaysPoseMatch",
             modes: {
+                simonSaysPoseMatch: {
+                    label: "Simon Says Pose Match",
+                    game: "simonSaysPoseMatch"
+                },
                 simonSaysAi: {
                     label: "Simon Says AI",
                     promptTemplate: "promptTemplates/simonSaysPrompt.txt"
@@ -89,6 +98,10 @@ window.ROBOTS_DATA = {
                 twentyQuestions: {
                     label: "20 Questions",
                     promptTemplate: "promptTemplates/20QuestionsPrompt.txt"
+                },
+                linkingWord: {
+                    label: "Linking Word",
+                    promptTemplate: "promptTemplates/linkingWord.txt"
                 }
             },
             agentInterface: {
@@ -103,7 +116,8 @@ window.ROBOTS_DATA = {
                 promptTemplates: [
                     { name: "Simon Says", path: "promptTemplates/simonSaysPrompt.txt" },
                     { name: "Short conversation", path: "promptTemplates/shortConversation" },
-                    { name: "20 Questions", path: "promptTemplates/20QuestionsPrompt.txt" }
+                    { name: "20 Questions", path: "promptTemplates/20QuestionsPrompt.txt" },
+                    { name: "Linking Word", path: "promptTemplates/linkingWord.txt" }
                 ],
                 agents: [
                     {

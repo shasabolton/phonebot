@@ -75,17 +75,19 @@ class AgentInterface {
         this._voiceOn = this._resolveVoiceDefault(null);
     }
 
-    /** True when a hand-up-to-talk mode is active (Conversation, 20 Questions). */
+    /** True when a hand-up-to-talk mode is active (Conversation, 20 Questions, Linking Word). */
     _isConversationMode() {
         const mode = String(this.robot?.mode || "").trim().toLowerCase();
-        return mode === "conversation" || mode === "twentyquestions";
+        return mode === "conversation" || mode === "twentyquestions" || mode === "linkingword";
     }
 
-    /** True when Simon Says is the active robot mode, template, or already in this chat. */
+    /** True when Groq Simon Says AI is active (not the local pose-match game). */
     _isSimonSaysMode() {
-        if (/simonSays/i.test(String(this.robot?.mode || ""))) return true;
+        const mode = String(this.robot?.mode || "").trim().toLowerCase();
+        if (mode === "simonsaysai") return true;
+        if (mode === "simonsaysposematch") return false;
         const selected = String(this._templateSelect?.value || "").trim();
-        if (/simonSays/i.test(selected)) return true;
+        if (/simonSaysPrompt/i.test(selected)) return true;
         const list = Array.isArray(this.promptTemplates) ? this.promptTemplates : [];
         const tpl = list.find((t) => String(t?.path || "").trim() === selected);
         if (/simon\s*says/i.test(String(tpl?.name || ""))) return true;
@@ -106,9 +108,15 @@ class AgentInterface {
      */
     onRobotModeChanged(_modeId) {
         this._stopSpeaking();
+        if (this._isSimonSaysPoseMatchMode()) return;
         if (this._agentEnabled && this._isConversationMode()) {
             this._queueConversationListen(this._speakGeneration);
         }
+    }
+
+    /** Local MoveNet + browser-TTS Simon Says (no Groq). */
+    _isSimonSaysPoseMatchMode() {
+        return String(this.robot?.mode || "").trim().toLowerCase() === "simonsaysposematch";
     }
 
     /**

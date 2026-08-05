@@ -6,6 +6,8 @@ class Camera extends Sensor {
         this.name = config?.name || "Camera";
         /** @type {"user" | "environment"} user = front, environment = back */
         this._facingMode = "user";
+        /** Selfie-style preview mirror when front-facing (see {@link #isMirrored}). */
+        this.mirror = !!config?.mirror;
         this._stream = null;
         this._videoEl = null;
         this._frameEl = null;
@@ -56,6 +58,17 @@ class Camera extends Sensor {
             this._backBtn.classList.toggle("active", !isFront);
             this._backBtn.setAttribute("aria-pressed", !isFront ? "true" : "false");
         }
+        this._syncMirrorClass();
+    }
+
+    /** True when the preview is horizontally mirrored (front + mirror config). */
+    isMirrored() {
+        return !!(this.mirror && this._facingMode === "user");
+    }
+
+    _syncMirrorClass() {
+        if (!this._frameEl) return;
+        this._frameEl.classList.toggle("sensor-camera-frame--mirrored", this.isMirrored());
     }
 
     /**
@@ -304,6 +317,7 @@ class Camera extends Sensor {
         this._frameEl = frame;
         this._statusEl = status;
         this._startBtn = startBtn;
+        this._syncMirrorClass();
 
         this._onVideoLayout = () => this._layoutVideoFrameToStreamAspect();
         video.addEventListener("loadedmetadata", this._onVideoLayout);
