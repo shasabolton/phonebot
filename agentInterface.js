@@ -1,6 +1,7 @@
 /**
  * Manages LLM chat agents (configurable base URL, path, model, API key).
- * Independent from Groq vision model — uses same-style OpenAI-compatible POST only.
+ * Independent from Groq vision model. Groq/OpenAI-compatible chat stays on
+ * /chat/completions; Gemini agents use native generativelanguage REST.
  */
 class AgentInterface {
     static STORAGE_KEY_PREFIX = "phonebot.agent.";
@@ -47,6 +48,7 @@ class AgentInterface {
         this._rememberInput = null;
         this._voiceInput = null;
         this._voiceSelect = null;
+        this._voiceSelectLabel = null;
         this._voiceStatusEl = null;
         this._modelOverrideInput = null;
         this._templateSelect = null;
@@ -114,7 +116,7 @@ class AgentInterface {
         }
     }
 
-    /** Local MoveNet + Groq-TTS Simon Says (no chat LLM). */
+    /** Local MoveNet + agent-TTS Simon Says (no chat LLM). */
     _isSimonSaysPoseMatchMode() {
         return String(this.robot?.mode || "").trim().toLowerCase() === "simonsaysposematch";
     }
@@ -227,6 +229,20 @@ class AgentInterface {
         return this.agents[idx] || null;
     }
 
+    _isGeminiProvider(agent = this.getSelectedAgent()) {
+        if (typeof window.GeminiAudioTurn?.isGeminiAgent === "function") {
+            return !!window.GeminiAudioTurn.isGeminiAgent(agent);
+        }
+        return String(agent?.provider || "").trim().toLowerCase() === "gemini";
+    }
+
+    _isGeminiAudioTurn(agent = this.getSelectedAgent()) {
+        if (typeof window.GeminiAudioTurn?.isAudioTurnAgent === "function") {
+            return !!window.GeminiAudioTurn.isAudioTurnAgent(agent);
+        }
+        return this._isGeminiProvider(agent);
+    }
+
     _resolveChatUrl(agent) {
         if (!agent) return null;
         if (agent.chatUrl) return String(agent.chatUrl).trim();
@@ -257,7 +273,11 @@ class AgentInterface {
 
     /** Label for speech UI: which model the API uses for `transcribeSpeechBlob`. */
     getTranscriptionModelLabel() {
-        return this._resolveTranscriptionModel(this.getSelectedAgent());
+        const agent = this.getSelectedAgent();
+        if (this._isGeminiProvider(agent)) {
+            return this._resolveModel(agent) || window.GeminiAudioTurn?.DEFAULT_MODEL || "gemini-3.6-flash";
+        }
+        return this._resolveTranscriptionModel(agent);
     }
 
     /**
@@ -273,6 +293,19 @@ class AgentInterface {
         const agent = this.getSelectedAgent();
         if (!agent) {
             throw new Error("No agent selected.");
+        }
+        if (this._isGeminiProvider(agent)) {
+            const apiKey = String(this._apiKey || this._keyInput?.value || "").trim();
+            if (!apiKey) throw new Error("Enter a Gemini API key (AI Studio, starts with AIza…).");
+            if (typeof window.GeminiAudioTurn?.transcribeOnly !== "function") {
+                throw new Error("Gemini audio helper is not loaded.");
+            }
+            return window.GeminiAudioTurn.transcribeOnly({
+                apiKey,
+                baseUrl: window.GeminiAudioTurn.resolveBaseUrl(agent, this.defaultBaseUrl),
+                model: this._resolveModel(agent) || window.GeminiAudioTurn.DEFAULT_MODEL,
+                audioBlob: blob
+            });
         }
         const url = this._resolveTranscribeUrl(agent);
         if (!url) {
@@ -349,7 +382,11 @@ class AgentInterface {
         const fromAgent = agent && String(agent.speechModel || "").trim();
         if (fromAgent) return fromAgent;
         const fromCfg = String(this.config.speechModel || "").trim();
-        return fromCfg || (window.GroqTts?.MODEL_ENGLISH || "canopylabs/orpheus-v1-english");
+        if (fromCfg) return fromCfg;
+        if (this._isGeminiProvider(agent)) {
+            return window.GeminiAudioTurn?.DEFAULT_SPEECH_MODEL || "gemini-3.1-flash-tts-preview";
+        }
+        return window.GroqTts?.MODEL_ENGLISH || "canopylabs/orpheus-v1-english";
     }
 
     /**
@@ -361,6 +398,23 @@ class AgentInterface {
     async synthesizeSpeechBlob(text, options = {}) {
         const agent = this.getSelectedAgent();
         if (!agent) throw new Error("No agent selected.");
+        if (this._isGeminiProvider(agent)) {
+            const apiKey = String(this._apiKey || this._keyInput?.value || "").trim();
+            if (!apiKey) throw new Error("Enter a Gemini API key for TTS.");
+            if (typeof window.GeminiAudioTurn?.synthesizeSpeech !== "function") {
+                throw new Error("Gemini audio helper is not loaded.");
+            }
+            const voice = window.GeminiAudioTurn.isKnownVoice?.(options.voice)
+                ? options.voice
+                : window.GeminiAudioTurn.DEFAULT_VOICE || "Kore";
+            return window.GeminiAudioTurn.synthesizeSpeech({
+                apiKey,
+                baseUrl: window.GeminiAudioTurn.resolveBaseUrl(agent, this.defaultBaseUrl),
+                speechModel: this._resolveSpeechModel(agent),
+                text,
+                voice
+            });
+        }
         const url = this._resolveSpeechUrl(agent);
         if (!url) throw new Error("Agent has no speech URL (set baseUrl or speechUrl).");
         const apiKey = String(this._apiKey || this._keyInput?.value || "").trim();
@@ -434,7 +488,12 @@ class AgentInterface {
 
     _onTtsVoiceChange() {
         const id = this._voiceSelect ? this._voiceSelect.value : "";
-        if (typeof window.GroqTts?.saveVoice === "function") {
+        if (this._isGeminiProvider()) {
+            this._ttsVoice =
+                typeof window.GeminiAudioTurn?.saveVoice === "function"
+                    ? window.GeminiAudioTurn.saveVoice(id)
+                    : id || "Kore";
+        } else if (typeof window.GroqTts?.saveVoice === "function") {
             this._ttsVoice = window.GroqTts.saveVoice(id);
         } else {
             this._ttsVoice = id || "autumn";
@@ -442,8 +501,52 @@ class AgentInterface {
         if (this._voiceSelect) this._voiceSelect.value = this._ttsVoice;
     }
 
+    _syncVoiceUiForSelectedAgent() {
+        const gemini = this._isGeminiProvider();
+        const voiceList = gemini
+            ? Array.isArray(window.GeminiAudioTurn?.VOICES) && window.GeminiAudioTurn.VOICES.length
+                ? window.GeminiAudioTurn.VOICES
+                : [{ id: "Kore", label: "Kore — firm" }]
+            : Array.isArray(window.GroqTts?.VOICES) && window.GroqTts.VOICES.length
+              ? window.GroqTts.VOICES
+              : [{ id: "autumn", label: "Autumn — ♀" }];
+        this._ttsVoice = gemini
+            ? typeof window.GeminiAudioTurn?.loadSavedVoice === "function"
+                ? window.GeminiAudioTurn.loadSavedVoice()
+                : "Kore"
+            : typeof window.GroqTts?.loadSavedVoice === "function"
+              ? window.GroqTts.loadSavedVoice()
+              : "autumn";
+        if (this._voiceSelectLabel) {
+            this._voiceSelectLabel.textContent = gemini
+                ? "Voice (Gemini TTS)"
+                : "Voice (Groq Orpheus TTS)";
+        }
+        if (this._keyInput) {
+            this._keyInput.placeholder = gemini ? "AIza… (Google AI Studio)" : "sk-… or gsk_…";
+        }
+        if (this._voiceSelect) {
+            this._voiceSelect.replaceChildren();
+            for (const v of voiceList) {
+                const opt = document.createElement("option");
+                opt.value = v.id;
+                opt.textContent = v.label || v.id;
+                this._voiceSelect.appendChild(opt);
+            }
+            if (![...this._voiceSelect.options].some((o) => o.value === this._ttsVoice)) {
+                this._ttsVoice = voiceList[0].id;
+            }
+            this._voiceSelect.value = this._ttsVoice;
+        }
+        this._setVoiceStatus(
+            gemini
+                ? "Gemini audio turn + TTS (AI Studio). Text history only — no Groq Whisper/Orpheus."
+                : "Groq Orpheus TTS (API credits). Max 200 chars. Plays via audio player for mouth sync."
+        );
+    }
+
     /**
-     * Speak with Groq Orpheus TTS → audioPlayer (mouth filter can analyse it).
+     * Speak with provider TTS → audioPlayer (mouth filter can analyse it).
      * Falls back to browser speechSynthesis if TTS or audioPlayer is unavailable.
      */
     _speak(text) {
@@ -459,44 +562,91 @@ class AgentInterface {
         if (!content) return false;
         this._stopSpeaking();
         const generation = this._speakGeneration;
-        await this._speakGroqAsync(content, generation);
+        await this._speakSynthesizedAsync(content, generation);
         return generation === this._speakGeneration;
     }
 
-    async _speakGroqAsync(content, generation) {
+    async _speakSynthesizedAsync(content, generation) {
         const player = this._getAudioPlayer();
         const canPlay = player && typeof player.playBlob === "function";
         if (!canPlay) {
             await this._speakBrowserFallback(content);
             return;
         }
-
+        const gemini = this._isGeminiProvider();
         let usedBrowserFallback = false;
         try {
-            this._setVoiceStatus(`Groq TTS (${this._ttsVoice})…`);
-            // Keep key in sync if user typed it but didn't send chat yet.
+            this._setVoiceStatus(gemini ? `Gemini TTS (${this._ttsVoice})…` : `Groq TTS (${this._ttsVoice})…`);
             this._apiKey = this._keyInput?.value?.trim() || this._apiKey;
             const blob = await this.synthesizeSpeechBlob(content, { voice: this._ttsVoice });
             if (generation !== this._speakGeneration) return;
-            this._setVoiceStatus(`Speaking (${this._ttsVoice})…`);
-            window.__phonebotTtsSpeaking = true;
-            const playTimeoutMs = 60000;
-            await Promise.race([
-                player.playBlob(blob, `Groq TTS (${this._ttsVoice})`),
-                new Promise((_, reject) =>
-                    setTimeout(
-                        () => reject(new Error(`TTS playback timed out after ${playTimeoutMs / 1000}s.`)),
-                        playTimeoutMs
-                    )
-                )
-            ]);
-            if (generation === this._speakGeneration) {
-                this._setVoiceStatus("Groq Orpheus TTS (uses API credits).");
-            }
+            await this._playSpeechBlob(blob, content, generation, {
+                speakingLabel: gemini ? `Speaking (Gemini ${this._ttsVoice})…` : `Speaking (${this._ttsVoice})…`,
+                idleLabel: gemini
+                    ? "Gemini TTS (AI Studio)."
+                    : "Groq Orpheus TTS (uses API credits).",
+                playLabel: gemini ? `Gemini TTS (${this._ttsVoice})` : `Groq TTS (${this._ttsVoice})`
+            });
         } catch (err) {
-            console.warn("Groq TTS error, falling back to browser speechSynthesis:", err);
+            console.warn("TTS error, falling back to browser speechSynthesis:", err);
             if (generation !== this._speakGeneration) return;
-            this._setVoiceStatus(`Groq TTS failed — using browser voice. (${err?.message || err})`);
+            this._setVoiceStatus(
+                `${gemini ? "Gemini" : "Groq"} TTS failed — using browser voice. (${err?.message || err})`
+            );
+            usedBrowserFallback = true;
+            await this._speakBrowserFallback(content);
+        } finally {
+            if (generation === this._speakGeneration && !usedBrowserFallback) {
+                window.__phonebotTtsSpeaking = false;
+            }
+        }
+    }
+
+    async _playSpeechBlob(blob, fallbackText, generation, labels) {
+        const player = this._getAudioPlayer();
+        if (!player || typeof player.playBlob !== "function") {
+            throw new Error("Audio player unavailable.");
+        }
+        this._setVoiceStatus(labels.speakingLabel);
+        window.__phonebotTtsSpeaking = true;
+        const playTimeoutMs = 60000;
+        await Promise.race([
+            player.playBlob(blob, labels.playLabel),
+            new Promise((_, reject) =>
+                setTimeout(
+                    () => reject(new Error(`TTS playback timed out after ${playTimeoutMs / 1000}s.`)),
+                    playTimeoutMs
+                )
+            )
+        ]);
+        if (generation === this._speakGeneration) {
+            this._setVoiceStatus(labels.idleLabel);
+        }
+    }
+
+    async _speakProvidedAudioBlob(audioBlob, spokenText, generation) {
+        const content = String(spokenText || "").trim();
+        const player = this._getAudioPlayer();
+        const canPlay = player && typeof player.playBlob === "function";
+        if (!canPlay) {
+            await this._speakBrowserFallback(content);
+            return;
+        }
+        if (!audioBlob || audioBlob.size < 44) {
+            if (content) await this._speakSynthesizedAsync(content, generation);
+            return;
+        }
+        let usedBrowserFallback = false;
+        try {
+            await this._playSpeechBlob(audioBlob, content, generation, {
+                speakingLabel: `Speaking (Gemini ${this._ttsVoice})…`,
+                idleLabel: "Gemini audio turn (AI Studio).",
+                playLabel: `Gemini (${this._ttsVoice})`
+            });
+        } catch (err) {
+            console.warn("Gemini audio playback error, falling back to browser speechSynthesis:", err);
+            if (generation !== this._speakGeneration) return;
+            this._setVoiceStatus(`Gemini audio failed — using browser voice. (${err?.message || err})`);
             usedBrowserFallback = true;
             await this._speakBrowserFallback(content);
         } finally {
@@ -878,7 +1028,7 @@ class AgentInterface {
     }
 
     /**
-     * Conversation mode: hand-up mic record → Whisper → chat prompt.
+     * Conversation mode: hand-up mic record → Whisper+chat (Groq) or Gemini audio turn.
      * @param {number} generation
      */
     async _runConversationListen(generation) {
@@ -918,6 +1068,14 @@ class AgentInterface {
             const agent = this.getSelectedAgent();
             if (this._rememberInput) this._rememberKey = !!this._rememberInput.checked;
             if (agent) this._persistKeyForAgent(agent.name, this._apiKey);
+
+            if (this._isGeminiAudioTurn(agent)) {
+                const sent = await this._submitGeminiAudioTurnFromBlob(blob, {
+                    speechTranscriber: "Gemini audio turn"
+                });
+                if (!sent) shouldRetry = true;
+                return;
+            }
 
             if (this._statusEl) {
                 this._statusEl.textContent = "Transcribing…";
@@ -1443,8 +1601,9 @@ class AgentInterface {
         if (!agent) {
             throw new Error("No agent selected.");
         }
-        const url = this._resolveChatUrl(agent);
-        if (!url) {
+        const gemini = this._isGeminiProvider(agent);
+        const url = gemini ? "" : this._resolveChatUrl(agent);
+        if (!gemini && !url) {
             throw new Error("Agent has no chatUrl and no baseUrl+chatPath.");
         }
         const model = this._resolveModel(agent);
@@ -1503,6 +1662,10 @@ class AgentInterface {
         }
         if (sendCameraImage) {
             this._attachCurrentCameraToLastUserMessage(conversationMessages);
+        }
+
+        if (gemini) {
+            return await this._sendGeminiChat(agent, conversationMessages, apiKey, model);
         }
 
         const temperature = Number.isFinite(agent.temperature)
@@ -1591,6 +1754,44 @@ class AgentInterface {
             rawText,
             json,
             contentText: contentText || JSON.stringify(json, null, 2)
+        };
+    }
+
+    async _sendGeminiChat(agent, conversationMessages, apiKey, model) {
+        if (typeof window.GeminiAudioTurn?.generateContent !== "function") {
+            throw new Error("Gemini audio helper is not loaded.");
+        }
+        const temperature = Number.isFinite(agent.temperature)
+            ? agent.temperature
+            : Number.isFinite(this.config.defaultChatTemperature)
+              ? this.config.defaultChatTemperature
+              : 0.35;
+        const responseFormat =
+            agent.responseFormat && typeof agent.responseFormat === "object"
+                ? agent.responseFormat
+                : this.config.chatResponseFormat && typeof this.config.chatResponseFormat === "object"
+                  ? this.config.chatResponseFormat
+                  : null;
+        const generationConfig = {
+            temperature,
+            maxOutputTokens: Number.isFinite(agent.maxTokens) ? Math.round(agent.maxTokens) : 1024,
+            thinkingConfig: { thinkingLevel: "minimal" }
+        };
+        if (responseFormat?.type === "json_object") {
+            generationConfig.responseMimeType = "application/json";
+        }
+        const result = await window.GeminiAudioTurn.generateContent({
+            apiKey,
+            baseUrl: window.GeminiAudioTurn.resolveBaseUrl(agent, this.defaultBaseUrl),
+            model: model || window.GeminiAudioTurn.DEFAULT_MODEL,
+            contents: window.GeminiAudioTurn.chatMessagesToContents(conversationMessages),
+            generationConfig
+        });
+        const contentText = this._stripThinkingBlocks(String(result.text || "").trim());
+        return {
+            rawText: result.rawText,
+            json: result.json,
+            contentText: contentText || JSON.stringify(result.json, null, 2)
         };
     }
 
@@ -1794,6 +1995,167 @@ class AgentInterface {
             text: `Actions run: ${summaries.join(" | ")}`,
             at: new Date().toISOString()
         });
+    }
+
+    /**
+     * One Gemini audio-turn: this clip (or typed text) + compact text history → transcripts + reply audio.
+     * @param {{ audioBlob?: Blob, typedUserText?: string, textHistory?: Array, systemOrIntro?: string, stateJson?: string, voice?: string }} args
+     * @returns {Promise<{ userTranscript: string, assistantTranscript: string, audioBlob: Blob|null }>}
+     */
+    async sendGeminiAudioTurn({
+        audioBlob = null,
+        typedUserText = "",
+        textHistory = null,
+        systemOrIntro = "",
+        stateJson = "",
+        voice = ""
+    } = {}) {
+        const agent = this.getSelectedAgent();
+        if (!agent) throw new Error("No agent selected.");
+        if (!this._isGeminiProvider(agent)) {
+            throw new Error("Selected agent is not a Gemini provider.");
+        }
+        if (typeof window.GeminiAudioTurn?.sendAudioTurn !== "function") {
+            throw new Error("Gemini audio helper is not loaded.");
+        }
+        const apiKey = String(this._apiKey || this._keyInput?.value || "").trim();
+        if (!apiKey) throw new Error("Enter a Gemini API key (AI Studio, starts with AIza…).");
+        return window.GeminiAudioTurn.sendAudioTurn({
+            apiKey,
+            baseUrl: window.GeminiAudioTurn.resolveBaseUrl(agent, this.defaultBaseUrl),
+            model: this._resolveModel(agent) || window.GeminiAudioTurn.DEFAULT_MODEL,
+            speechModel: this._resolveSpeechModel(agent),
+            audioBlob,
+            typedUserText,
+            textHistory: Array.isArray(textHistory) ? textHistory : this._buildPriorConversationMessages(),
+            systemOrIntro,
+            stateJson,
+            voice: voice || this._ttsVoice,
+            temperature: Number.isFinite(agent.temperature) ? agent.temperature : 0.3,
+            maxTokens: Number.isFinite(agent.maxTokens) ? agent.maxTokens : 256
+        });
+    }
+
+    /**
+     * Conversation / wake-fallback path: Gemini audio turn, then play returned audio (no Groq).
+     * @returns {Promise<boolean>}
+     */
+    async _submitGeminiAudioTurnFromBlob(blob, options = {}) {
+        const speechTranscriber = String(options.speechTranscriber || "Gemini audio turn").trim();
+        if (!this._agentEnabled) {
+            if (this._statusEl) {
+                this._statusEl.textContent = "Agent is off. Turn the agent on to send voice prompts.";
+                this._statusEl.className = "warn";
+            }
+            return false;
+        }
+        if (this._sendInProgress) {
+            if (this._statusEl) {
+                this._statusEl.textContent = "Already sending — wait for the current request to finish.";
+                this._statusEl.className = "warn";
+            }
+            return false;
+        }
+
+        this._apiKey = this._keyInput?.value?.trim() || "";
+        const agent = this.getSelectedAgent();
+        if (this._rememberInput) this._rememberKey = !!this._rememberInput.checked;
+        if (agent) this._persistKeyForAgent(agent.name, this._apiKey);
+
+        this._sendInProgress = true;
+        this._syncSendButtonState();
+        if (this._statusEl) {
+            this._statusEl.textContent = "Gemini audio turn…";
+            this._statusEl.className = "muted";
+        }
+        let spokenForFollowUp = "";
+        let replyAudio = null;
+        let ok = false;
+        try {
+            const stateBlock = this._buildCurrentStateForIntroductionPrompt();
+            const intro = await this._fetchIntroductionPromptContent();
+            const prior = this._buildPriorConversationMessages();
+            const result = await this.sendGeminiAudioTurn({
+                audioBlob: blob,
+                textHistory: prior,
+                systemOrIntro: intro,
+                stateJson: stateBlock,
+                voice: this._ttsVoice
+            });
+            const userTranscript = String(result?.userTranscript || "").trim();
+            const assistantTranscript = String(result?.assistantTranscript || "").trim();
+            if (!userTranscript) {
+                if (this._statusEl) {
+                    this._statusEl.textContent = "No speech heard — listening again…";
+                    this._statusEl.className = "warn";
+                }
+                return false;
+            }
+            if (!assistantTranscript && !(result?.audioBlob && result.audioBlob.size >= 44)) {
+                if (this._statusEl) {
+                    this._statusEl.textContent = "Gemini returned no reply — listening again…";
+                    this._statusEl.className = "error";
+                }
+                return false;
+            }
+            const fullUserContent = `Current state (json):\n${stateBlock || "[]"}\n\nUser said:\n${userTranscript}`;
+            const outboundUser = await this._mergeIntroductionIntoFirstUserMessage(fullUserContent, prior.length);
+            this.messageHistory.push({
+                role: "user",
+                text: prior.length ? userTranscript : outboundUser,
+                fullPrompt: outboundUser,
+                at: new Date().toISOString()
+            });
+            this.messageHistory.push({
+                role: "assistant",
+                text: assistantTranscript,
+                at: new Date().toISOString()
+            });
+            if (assistantTranscript) {
+                await this._maybeRunActionFromResponse(assistantTranscript, assistantTranscript);
+            }
+            this._renderHistory();
+            spokenForFollowUp = assistantTranscript;
+            replyAudio = result?.audioBlob || null;
+            if (this._statusEl && !this._voiceOn) {
+                this._statusEl.textContent = `Done. (heard you via ${speechTranscriber})`;
+                this._statusEl.className = "ok";
+            }
+            ok = true;
+        } catch (err) {
+            console.error("Gemini audio turn error:", err);
+            if (this._statusEl) {
+                this._statusEl.textContent = err?.message || "Gemini audio turn failed";
+                this._statusEl.className = "error";
+            }
+            ok = false;
+        } finally {
+            this._sendInProgress = false;
+            this._syncSendButtonState();
+        }
+        if (ok && this._voiceOn && (spokenForFollowUp || replyAudio)) {
+            this._stopSpeaking();
+            const generation = this._speakGeneration;
+            if (replyAudio && replyAudio.size >= 44) {
+                await this._speakProvidedAudioBlob(replyAudio, spokenForFollowUp, generation);
+            } else if (spokenForFollowUp) {
+                await this._speakSynthesizedAsync(spokenForFollowUp, generation);
+            }
+            if (generation === this._speakGeneration && this._agentEnabled) {
+                if (this._isConversationMode()) {
+                    this._queueConversationListen(this._speakGeneration);
+                } else if (this._isSimonSaysMode()) {
+                    this._queueSimonSaysPoseCapture(this._speakGeneration);
+                }
+            }
+            if (this._statusEl && this._agentEnabled) {
+                this._statusEl.textContent = `Done. (heard you via ${speechTranscriber})`;
+                this._statusEl.className = "ok";
+            }
+        } else if (ok) {
+            this._maybeQueueConversationListenAfterTurn();
+        }
+        return ok;
     }
 
     /**
@@ -2163,6 +2525,7 @@ class AgentInterface {
         if (this._voiceInput) {
             this._voiceInput.checked = this._voiceOn;
         }
+        this._syncVoiceUiForSelectedAgent();
     }
 
     buildGUI(container) {
@@ -2200,7 +2563,7 @@ class AgentInterface {
         keyLabel.textContent = "API key (this provider)";
         const keyInput = document.createElement("input");
         keyInput.type = "password";
-        keyInput.placeholder = "sk-… or gsk_…";
+        keyInput.placeholder = "sk-… / gsk_… / AIza…";
         keyInput.autocomplete = "off";
 
         const rememberWrap = document.createElement("label");
@@ -2242,21 +2605,6 @@ class AgentInterface {
         voiceSelectLabel.textContent = "Voice (Groq Orpheus TTS)";
         const voiceSelect = document.createElement("select");
         voiceSelect.id = "robotAgentTtsVoice";
-        const voiceList =
-            Array.isArray(window.GroqTts?.VOICES) && window.GroqTts.VOICES.length
-                ? window.GroqTts.VOICES
-                : [{ id: "autumn", label: "Autumn — ♀" }];
-        for (const v of voiceList) {
-            const opt = document.createElement("option");
-            opt.value = v.id;
-            opt.textContent = v.label || v.id;
-            voiceSelect.appendChild(opt);
-        }
-        voiceSelect.value = this._ttsVoice;
-        if (![...voiceSelect.options].some((o) => o.value === this._ttsVoice)) {
-            voiceSelect.value = voiceList[0].id;
-            this._ttsVoice = voiceSelect.value;
-        }
         voiceSelect.addEventListener("change", () => this._onTtsVoiceChange());
 
         const voiceStatus = document.createElement("p");
@@ -2389,6 +2737,7 @@ class AgentInterface {
         this._rememberInput = rememberInput;
         this._voiceInput = voiceInput;
         this._voiceSelect = voiceSelect;
+        this._voiceSelectLabel = voiceSelectLabel;
         this._voiceStatusEl = voiceStatus;
         this._fullSpeechPromptInput = fullSpeechPromptInput;
         this._modelOverrideInput = modelOverrideInput;
@@ -2404,6 +2753,7 @@ class AgentInterface {
         this._voiceOn = this._resolveVoiceDefault(this.getSelectedAgent());
         this._voiceInput.checked = this._voiceOn;
         this._syncKeyFromSelection();
+        this._syncVoiceUiForSelectedAgent();
         this._syncSendButtonState();
         void this._hydrateDefaultPromptFromIntroductionTemplate();
     }
@@ -2419,6 +2769,7 @@ class AgentInterface {
         this._rememberInput = null;
         this._voiceInput = null;
         this._voiceSelect = null;
+        this._voiceSelectLabel = null;
         this._voiceStatusEl = null;
         this._fullSpeechPromptInput = null;
         this._modelOverrideInput = null;

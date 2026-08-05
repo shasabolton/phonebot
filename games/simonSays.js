@@ -139,7 +139,7 @@ class SimonSaysPoseMatch {
     }
 
     /**
-     * Speak via agent Groq Orpheus TTS (mouth servo can follow audioPlayer).
+     * Speak via agent TTS (Groq Orpheus or Gemini; mouth servo can follow audioPlayer).
      * @param {string} text
      * @param {number} generation
      * @returns {Promise<boolean>} true if utterance finished while still active
@@ -159,7 +159,7 @@ class SimonSaysPoseMatch {
             return finished && this._isActive(generation);
         }
 
-        this._setStatus("Groq TTS unavailable — is the agent panel loaded?", "error");
+        this._setStatus("Agent TTS unavailable — is the agent panel loaded?", "error");
         return this._isActive(generation);
     }
 

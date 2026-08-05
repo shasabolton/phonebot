@@ -18,7 +18,7 @@ window.ROBOTS_DATA = {
             name: "talking head",
             bodyPlan: "A face with one sevro for mouth and one for eye yaw",
             controlPlan:
-                "Eyes track MoveNet nose x (random glances when no nose). Modes: Simon Says Pose Match (local MoveNet + Groq TTS) / Simon Says AI (pose countdown) / Conversation / 20 Questions / Linking Word. Groq Orpheus TTS / Mp3 → audioPlayer → audioMouthFilter → mouth servo.",
+                "Eyes track MoveNet nose x (random glances when no nose). Modes: Simon Says Pose Match (local MoveNet + agent TTS) / Simon Says AI (pose countdown) / Conversation / 20 Questions / Linking Word. Groq Orpheus or Gemini TTS / Mp3 → audioPlayer → audioMouthFilter → mouth servo.",
             actuators: [
                 {
                     type: "servo",
@@ -129,6 +129,16 @@ window.ROBOTS_DATA = {
                         temperature: 0.3,
                         maxTokens: 96,
                         reasoningEffort: "none"
+                    },
+                    {
+                        name: "Gemini — audio turn (AI Studio)",
+                        provider: "gemini",
+                        voiceMode: "geminiAudioTurn",
+                        baseUrl: "https://generativelanguage.googleapis.com/v1beta",
+                        model: "gemini-3.6-flash",
+                        speechModel: "gemini-3.1-flash-tts-preview",
+                        temperature: 0.3,
+                        maxTokens: 256
                     },
                     {
                         name: "OpenAI-compatible (example)",
@@ -323,6 +333,17 @@ window.ROBOTS_DATA = {
                         temperature: 0.2,
                         maxTokens: 768,
                         reasoningEffort: "none",
+                        responseFormat: { type: "json_object" }
+                    },
+                    {
+                        name: "Gemini — audio turn (AI Studio)",
+                        provider: "gemini",
+                        voiceMode: "geminiAudioTurn",
+                        baseUrl: "https://generativelanguage.googleapis.com/v1beta",
+                        model: "gemini-3.6-flash",
+                        speechModel: "gemini-3.1-flash-tts-preview",
+                        temperature: 0.2,
+                        maxTokens: 768,
                         responseFormat: { type: "json_object" }
                     },
                     {

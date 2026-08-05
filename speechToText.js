@@ -732,16 +732,40 @@ class SpeechToTextAiModel {
         }
 
         const agent = this.robot.agentInterface;
-        if (!agent || typeof agent.transcribeSpeechBlob !== "function") {
-            this._setStatus("Agent interface cannot transcribe audio.", "error");
-            this._logEvent("transcribeSpeechBlob missing on agent interface.");
+        if (!this._recordedBlob || this._recordedBlob.size < 32) {
+            this._setStatus("No recorded audio for API transcription.", "warn");
+            this._logEvent("Recorded blob missing or too small.");
             this._cooldownUntil = Date.now() + 1000;
             return;
         }
 
-        if (!this._recordedBlob || this._recordedBlob.size < 32) {
-            this._setStatus("No recorded audio for API transcription.", "warn");
-            this._logEvent("Recorded blob missing or too small.");
+        if (agent && typeof agent._isGeminiAudioTurn === "function" && agent._isGeminiAudioTurn()) {
+            this._setStatus("Gemini audio turn…", "muted");
+            this._logEvent("Wake fallback: Gemini audio turn (no Groq Whisper).");
+            try {
+                if (agent._keyInput) agent._apiKey = agent._keyInput.value?.trim() || agent._apiKey;
+                const ok = await agent._submitGeminiAudioTurnFromBlob(this._recordedBlob, {
+                    speechTranscriber: "Gemini audio turn"
+                });
+                if (!ok) {
+                    this._setStatus("Gemini audio turn did not send. Check key / try again.", "warn");
+                    this._cooldownUntil = Date.now() + 1500;
+                    return;
+                }
+                this._setTranscriberLine("Last transcriber: Gemini audio turn");
+                this._setStatus(`Sent. Listening for "${this.wakePhrase}"`, "ok");
+                this._cooldownUntil = Date.now() + 1500;
+            } catch (err) {
+                this._setStatus(`Gemini audio turn failed: ${err?.message || "unknown"}`, "error");
+                this._logEvent(`Gemini audio turn failed: ${err?.message || err}`);
+                this._cooldownUntil = Date.now() + 1500;
+            }
+            return;
+        }
+
+        if (!agent || typeof agent.transcribeSpeechBlob !== "function") {
+            this._setStatus("Agent interface cannot transcribe audio.", "error");
+            this._logEvent("transcribeSpeechBlob missing on agent interface.");
             this._cooldownUntil = Date.now() + 1000;
             return;
         }
