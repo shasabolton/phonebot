@@ -7,7 +7,7 @@
 
 // ===== CONFIG =====
 /** Bump this when releasing firmware; keep version.json in the repo in sync (manual for now). */
-#define FW_VERSION "1.2.0"
+#define FW_VERSION "1.2.1"
 
 const char* AP_PASS = "12345678";
 
@@ -133,6 +133,44 @@ void updateServosFromLight() {
     int us = millivoltsToServoUs(mv);
     servos[idx].writeMicroseconds(us);
   }
+}
+
+/** Sensor label for UI (VP/VN or GPIO number). */
+String lightSensorLabel(int sensorPin) {
+  if (sensorPin == 36) return String("VP");
+  if (sensorPin == 39) return String("VN");
+  return String(sensorPin);
+}
+
+void handleLightSensors() {
+  sendCORSHeaders();
+  String json = "{";
+  json += "\"ok\":true,";
+  json += "\"controlSource\":\"" + String(controlSourceName()) + "\",";
+  json += "\"fwVersion\":\"" + jsonEscape(String(FW_VERSION)) + "\",";
+  json += "\"channels\":[";
+  for (int i = 0; i < LIGHT_CHANNEL_COUNT; i++) {
+    if (i > 0) json += ",";
+    const int servoPin = LIGHT_CHANNELS[i].servoPin;
+    const int sensorPin = LIGHT_CHANNELS[i].sensorPin;
+    int raw = analogRead(sensorPin);
+    int mv = analogReadMilliVolts(sensorPin);
+    int us = millivoltsToServoUs(mv);
+    int idx = findServoIndexByPin(servoPin);
+    bool attached = idx >= 0 && servoAttached[idx];
+    json += "{";
+    json += "\"index\":" + String(i) + ",";
+    json += "\"servoPin\":" + String(servoPin) + ",";
+    json += "\"sensorPin\":" + String(sensorPin) + ",";
+    json += "\"sensor\":\"" + jsonEscape(lightSensorLabel(sensorPin)) + "\",";
+    json += "\"raw\":" + String(raw) + ",";
+    json += "\"mv\":" + String(mv) + ",";
+    json += "\"us\":" + String(us) + ",";
+    json += "\"attached\":" + String(attached ? "true" : "false");
+    json += "}";
+  }
+  json += "]}";
+  server.send(200, "application/json", json);
 }
 
 void sendCORSHeaders() {
@@ -561,6 +599,7 @@ void setup() {
   server.on("/pin-setup", HTTP_OPTIONS, handleOptions);
   server.on("/action", HTTP_OPTIONS, handleOptions);
   server.on("/control-source", HTTP_OPTIONS, handleOptions);
+  server.on("/light-sensors", HTTP_OPTIONS, handleOptions);
   server.on("/config", HTTP_POST, handleConfig);
   server.on("/update", HTTP_POST, handleUpdate, handleUpdateUpload);
   server.on("/pin-setup", HTTP_POST, handlePinSetup);
@@ -570,6 +609,7 @@ void setup() {
   server.on("/scan", HTTP_GET, handleScan);
   server.on("/status", HTTP_GET, handleStatus);
   server.on("/version", HTTP_GET, handleVersion);
+  server.on("/light-sensors", HTTP_GET, handleLightSensors);
 
   server.begin();
 }

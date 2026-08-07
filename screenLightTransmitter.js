@@ -7,6 +7,7 @@
  *
  * Optical path does not POST /action. If the ESP is still on station WiFi, we notify
  * it via POST /control-source (body "light") so it reads phototransistors instead.
+ * Live ADC/µs readings are polled from GET /light-sensors when a robot IP is known.
  */
 class ScreenLightTransmitter {
   static PATCH_ROWS = 3;
@@ -17,6 +18,7 @@ class ScreenLightTransmitter {
   /** Black border thickness included in PATCH_HEIGHT_MM. */
   static BORDER_MM = 1;
   static KNOWN_ROBOTS_KEY = "phonebot_known_robots";
+  static SENSOR_POLL_MS = 250;
 
   constructor(container) {
     /** @type {HTMLElement} */
@@ -33,11 +35,20 @@ class ScreenLightTransmitter {
     this._styleEl = null;
     /** @type {HTMLElement|null} */
     this._espNotifyEl = null;
+    /** @type {HTMLElement|null} */
+    this._sensorStatusEl = null;
+    /** @type {HTMLElement|null} */
+    this._sensorTableBodyEl = null;
+    /** @type {string|null} */
+    this._robotBaseUrl = null;
+    /** @type {ReturnType<typeof setInterval>|null} */
+    this._sensorPollId = null;
+    this._sensorPollInFlight = false;
 
     this.buildDom();
     this._mountStrip();
     this.setReady(true);
-    void this.notifyEspLightMode();
+    void this.notifyEspLightMode().then(() => this.startSensorPoll());
   }
 
   setReadyChangeHandler(handler) {
@@ -56,6 +67,7 @@ class ScreenLightTransmitter {
   }
 
   destroy() {
+    this.stopSensorPoll();
     this._unmountStrip();
     if (this.container) this.container.innerHTML = "";
   }
@@ -145,8 +157,9 @@ class ScreenLightTransmitter {
   async notifyEspLightMode() {
     const urls = this._candidateRobotBaseUrls();
     if (!urls.length) {
+      this._robotBaseUrl = null;
       this._setEspNotifyStatus(
-        "No known robot IP — ESP uses light mode when WiFi is down. Connect via WiFi transmitter once to store an IP for handoff.",
+        "No known robot IP — ESP uses light mode when WiFi is down. Connect via WiFi transmitter once to store an IP for handoff + sensor readout.",
         "muted"
       );
       return { ok: false, body: "no known robot IP" };
@@ -162,6 +175,7 @@ class ScreenLightTransmitter {
         });
         const body = await res.text();
         if (res.ok) {
+          this._robotBaseUrl = base;
           this._setEspNotifyStatus(
             "ESP control source → light (" + base + ").",
             "ok"
@@ -172,8 +186,13 @@ class ScreenLightTransmitter {
         /* try next */
       }
     }
+    // Still try polling the first URL for diagnostics even if control-source failed
+    // (e.g. old firmware without that route).
+    this._robotBaseUrl = urls[0];
     this._setEspNotifyStatus(
-      "Could not reach ESP on known IPs — if WiFi is down, firmware already defaults to light mode.",
+      "Could not set control-source on ESP — polling " +
+        urls[0] +
+        " for sensor readout anyway. Update firmware if /light-sensors is missing.",
       "warn"
     );
     return { ok: false, body: "unreachable" };
@@ -185,21 +204,154 @@ class ScreenLightTransmitter {
     this._espNotifyEl.textContent = text;
   }
 
+  startSensorPoll() {
+    this.stopSensorPoll();
+    void this.pollLightSensors();
+    this._sensorPollId = setInterval(
+      () => void this.pollLightSensors(),
+      ScreenLightTransmitter.SENSOR_POLL_MS
+    );
+  }
+
+  stopSensorPoll() {
+    if (this._sensorPollId != null) {
+      clearInterval(this._sensorPollId);
+      this._sensorPollId = null;
+    }
+  }
+
+  async pollLightSensors() {
+    if (this._sensorPollInFlight) return;
+    const urls = [];
+    if (this._robotBaseUrl) urls.push(this._robotBaseUrl);
+    for (const u of this._candidateRobotBaseUrls()) {
+      if (urls.indexOf(u) === -1) urls.push(u);
+    }
+    if (!urls.length) {
+      this._renderSensorStatus(
+        "No robot IP — cannot read sensors over WiFi.",
+        "muted"
+      );
+      return;
+    }
+
+    this._sensorPollInFlight = true;
+    try {
+      for (const base of urls) {
+        try {
+          const res = await fetch(base + "/light-sensors", {
+            method: "GET",
+            cache: "no-store"
+          });
+          if (!res.ok) continue;
+          const data = await res.json();
+          this._robotBaseUrl = base;
+          this._renderSensorReadout(data, base);
+          return;
+        } catch (e) {
+          /* try next */
+        }
+      }
+      this._renderSensorStatus(
+        "ESP not reachable for /light-sensors (need STA WiFi + firmware ≥ 1.2.1).",
+        "warn"
+      );
+    } finally {
+      this._sensorPollInFlight = false;
+    }
+  }
+
+  _renderSensorStatus(text, cls) {
+    if (this._sensorStatusEl) {
+      this._sensorStatusEl.className = cls || "muted";
+      this._sensorStatusEl.textContent = text;
+    }
+  }
+
+  _renderSensorReadout(data, base) {
+    const src = data && data.controlSource != null ? String(data.controlSource) : "?";
+    const fw = data && data.fwVersion != null ? String(data.fwVersion) : "?";
+    const channels = Array.isArray(data && data.channels) ? data.channels : [];
+    this._renderSensorStatus(
+      "Live from " + base + " · controlSource=" + src + " · fw=" + fw,
+      src === "light" ? "ok" : "warn"
+    );
+    if (!this._sensorTableBodyEl) return;
+    if (!channels.length) {
+      this._sensorTableBodyEl.innerHTML =
+        '<tr><td colspan="6" class="muted">No channels in response.</td></tr>';
+      return;
+    }
+    this._sensorTableBodyEl.innerHTML = channels
+      .map((ch) => {
+        const i = ch.index != null ? ch.index : "";
+        const servo = ch.servoPin != null ? ch.servoPin : "";
+        const sens =
+          ch.sensor != null
+            ? ch.sensor
+            : ch.sensorPin != null
+              ? ch.sensorPin
+              : "";
+        const mv = ch.mv != null ? ch.mv : "—";
+        const us = ch.us != null ? ch.us : "—";
+        const raw = ch.raw != null ? ch.raw : "—";
+        const att = ch.attached === false ? " no" : " yes";
+        return (
+          "<tr>" +
+          "<td>" +
+          i +
+          "</td><td>" +
+          servo +
+          "</td><td>" +
+          sens +
+          "</td><td>" +
+          mv +
+          "</td><td>" +
+          us +
+          "</td><td>" +
+          raw +
+          att +
+          "</td></tr>"
+        );
+      })
+      .join("");
+  }
+
   buildDom() {
     const h = ScreenLightTransmitter.PATCH_HEIGHT_MM;
     const rows = ScreenLightTransmitter.PATCH_ROWS;
     this.container.innerHTML = `
-<p class="muted">Optical TX: a fixed <b>2×3</b> light strip sits at the bottom of the phone screen.
-Each cell is <b>${h}&nbsp;mm</b> tall (borders included) and <b>half the screen</b> wide.
-Place phototransistors on these patches. UI scrolls above the strip.</p>
-<p class="muted">Brightness encodes servo pulse: <b>1000&nbsp;µs = black</b>, <b>2000&nbsp;µs = full white</b>.
-Actuator order from pin-setup maps to patches left→right, top→bottom.</p>
-<p class="muted">Firmware maps sensors 23:VP(36), 22:VN(39), 21:34, 19:35, 18:32, 25:33 — 0&nbsp;V→1000&nbsp;µs, 3.3&nbsp;V→2000&nbsp;µs.</p>
-<p class="ok">Ready — patches are local. Start the robot to drive brightness.</p>
+<div id="screenLightSensorMonitor" class="box" style="margin-top:0;padding:10px;">
+  <div style="font-weight:bold;margin-bottom:6px;">ESP light sensors (live)</div>
+  <p id="screenLightSensorStatus" class="muted" style="margin:0 0 8px 0;">Connecting…</p>
+  <div style="overflow-x:auto;">
+    <table id="screenLightSensorTable" style="width:100%;border-collapse:collapse;font-size:0.85em;">
+      <thead>
+        <tr>
+          <th style="text-align:left;border-bottom:1px solid #ccc;padding:2px 4px;">#</th>
+          <th style="text-align:left;border-bottom:1px solid #ccc;padding:2px 4px;">servo</th>
+          <th style="text-align:left;border-bottom:1px solid #ccc;padding:2px 4px;">sensor</th>
+          <th style="text-align:left;border-bottom:1px solid #ccc;padding:2px 4px;">mV</th>
+          <th style="text-align:left;border-bottom:1px solid #ccc;padding:2px 4px;">µs</th>
+          <th style="text-align:left;border-bottom:1px solid #ccc;padding:2px 4px;">raw/att</th>
+        </tr>
+      </thead>
+      <tbody id="screenLightSensorTableBody">
+        <tr><td colspan="6" class="muted">Waiting for ESP…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
 <p id="screenLightEspNotify" class="muted">Checking whether to notify ESP over WiFi…</p>
-<p class="muted">Strip height reserved: ${rows * h}&nbsp;mm.</p>
+<p class="muted">Optical TX: fixed <b>2×3</b> strip at bottom of screen.
+Each cell <b>${h}&nbsp;mm</b> tall (borders included), half screen wide.
+<b>1000&nbsp;µs = black</b>, <b>2000&nbsp;µs = full white</b>.</p>
+<p class="muted">Map: 23:VP(36), 22:VN(39), 21:34, 19:35, 18:32, 25:33 — 0&nbsp;V→1000&nbsp;µs, 3.3&nbsp;V→2000&nbsp;µs.
+Strip height reserved: ${rows * h}&nbsp;mm.</p>
 `;
     this._espNotifyEl = this.container.querySelector("#screenLightEspNotify");
+    this._sensorStatusEl = this.container.querySelector("#screenLightSensorStatus");
+    this._sensorTableBodyEl = this.container.querySelector("#screenLightSensorTableBody");
   }
 
   _mountStrip() {
@@ -232,7 +384,6 @@ body.screen-light-tx-active {
   padding: 0;
   background: #000;
   pointer-events: none;
-  /* Break out of body max-width centering */
   transform: translateZ(0);
 }
 #screenLightStrip .screen-light-patch {
@@ -243,6 +394,11 @@ body.screen-light-tx-active {
   padding: 0;
   border: ${b}mm solid #000;
   background: #000;
+}
+#screenLightSensorTable td {
+  border-bottom: 1px solid #eee;
+  padding: 2px 4px;
+  font-variant-numeric: tabular-nums;
 }
 `;
     document.head.appendChild(style);
