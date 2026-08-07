@@ -158,11 +158,20 @@ class App {
         this.stopLoop();
         if (this.stopBtn) this.stopBtn.disabled = true;
         if (!this.transmitterGuiMount || !this.transmitterListEl) return;
+        if (
+            this.transmitterInstance &&
+            typeof this.transmitterInstance.destroy === 'function'
+        ) {
+            this.transmitterInstance.destroy();
+        }
         this.transmitterGuiMount.innerHTML = '';
         this.transmitterInstance = null;
         const v = this.transmitterListEl.value;
         if (v === "wifi") {
             this.transmitterInstance = new WifiTransmitter(this.transmitterGuiMount);
+            this.transmitterInstance.setReadyChangeHandler(() => this.updateStartButtonState());
+        } else if (v === "screen light") {
+            this.transmitterInstance = new ScreenLightTransmitter(this.transmitterGuiMount);
             this.transmitterInstance.setReadyChangeHandler(() => this.updateStartButtonState());
         }
         if (this.startBtn) this.startBtn.textContent = 'Start';
