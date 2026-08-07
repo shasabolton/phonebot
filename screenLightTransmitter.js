@@ -4,6 +4,9 @@
  *
  * Layout: 2 columns × 3 rows. Each cell is half the viewport wide and 21mm tall
  * (CSS mm), including black borders (box-sizing: border-box).
+ *
+ * Optical path does not POST /action. If the ESP is still on station WiFi, we notify
+ * it via POST /control-source (body "light") so it reads phototransistors instead.
  */
 class ScreenLightTransmitter {
   static PATCH_ROWS = 3;
@@ -13,6 +16,7 @@ class ScreenLightTransmitter {
   static PATCH_HEIGHT_MM = 21;
   /** Black border thickness included in PATCH_HEIGHT_MM. */
   static BORDER_MM = 1;
+  static KNOWN_ROBOTS_KEY = "phonebot_known_robots";
 
   constructor(container) {
     /** @type {HTMLElement} */
@@ -27,10 +31,13 @@ class ScreenLightTransmitter {
     this._strip = null;
     /** @type {HTMLElement|null} */
     this._styleEl = null;
+    /** @type {HTMLElement|null} */
+    this._espNotifyEl = null;
 
     this.buildDom();
     this._mountStrip();
     this.setReady(true);
+    void this.notifyEspLightMode();
   }
 
   setReadyChangeHandler(handler) {
@@ -65,6 +72,7 @@ class ScreenLightTransmitter {
     }
     // Idle black until the first action frame.
     this._setAllBrightness(0);
+    void this.notifyEspLightMode();
     return {
       ok: true,
       status: 200,
@@ -110,6 +118,73 @@ class ScreenLightTransmitter {
     return Math.round(((clamped - 1000) / 1000) * 255);
   }
 
+  /** Candidate station base URLs from known-robot localStorage (same key as WiFi TX). */
+  _candidateRobotBaseUrls() {
+    const urls = [];
+    const add = (u) => {
+      if (u && urls.indexOf(u) === -1) urls.push(u);
+    };
+    try {
+      const raw = localStorage.getItem(ScreenLightTransmitter.KNOWN_ROBOTS_KEY);
+      const list = raw ? JSON.parse(raw) : [];
+      if (Array.isArray(list)) {
+        for (const r of list) {
+          if (r && r.lastIp) add("http://" + String(r.lastIp).replace(/^https?:\/\//, ""));
+        }
+      }
+    } catch (e) {
+      /* ignore */
+    }
+    return urls;
+  }
+
+  /**
+   * Tell ESP to drive servos from phototransistors (even if STA WiFi is up).
+   * No-op if no known robot IP — offline light mode on the ESP still works by default.
+   */
+  async notifyEspLightMode() {
+    const urls = this._candidateRobotBaseUrls();
+    if (!urls.length) {
+      this._setEspNotifyStatus(
+        "No known robot IP — ESP uses light mode when WiFi is down. Connect via WiFi transmitter once to store an IP for handoff.",
+        "muted"
+      );
+      return { ok: false, body: "no known robot IP" };
+    }
+
+    this._setEspNotifyStatus("Notifying ESP to use light sensors…", "muted");
+    for (const base of urls) {
+      try {
+        const res = await fetch(base + "/control-source", {
+          method: "POST",
+          headers: { "Content-Type": "text/plain" },
+          body: "light"
+        });
+        const body = await res.text();
+        if (res.ok) {
+          this._setEspNotifyStatus(
+            "ESP control source → light (" + base + ").",
+            "ok"
+          );
+          return { ok: true, status: res.status, body };
+        }
+      } catch (e) {
+        /* try next */
+      }
+    }
+    this._setEspNotifyStatus(
+      "Could not reach ESP on known IPs — if WiFi is down, firmware already defaults to light mode.",
+      "warn"
+    );
+    return { ok: false, body: "unreachable" };
+  }
+
+  _setEspNotifyStatus(text, cls) {
+    if (!this._espNotifyEl) return;
+    this._espNotifyEl.className = cls || "muted";
+    this._espNotifyEl.textContent = text;
+  }
+
   buildDom() {
     const h = ScreenLightTransmitter.PATCH_HEIGHT_MM;
     const rows = ScreenLightTransmitter.PATCH_ROWS;
@@ -119,9 +194,12 @@ Each cell is <b>${h}&nbsp;mm</b> tall (borders included) and <b>half the screen<
 Place phototransistors on these patches. UI scrolls above the strip.</p>
 <p class="muted">Brightness encodes servo pulse: <b>1000&nbsp;µs = black</b>, <b>2000&nbsp;µs = full white</b>.
 Actuator order from pin-setup maps to patches left→right, top→bottom.</p>
-<p class="ok">Ready — no WiFi. Start the robot to drive patch brightness.</p>
+<p class="muted">Firmware maps sensors 23:VP(36), 22:VN(39), 21:34, 19:35, 18:32, 25:33 — 0&nbsp;V→1000&nbsp;µs, 3.3&nbsp;V→2000&nbsp;µs.</p>
+<p class="ok">Ready — patches are local. Start the robot to drive brightness.</p>
+<p id="screenLightEspNotify" class="muted">Checking whether to notify ESP over WiFi…</p>
 <p class="muted">Strip height reserved: ${rows * h}&nbsp;mm.</p>
 `;
+    this._espNotifyEl = this.container.querySelector("#screenLightEspNotify");
   }
 
   _mountStrip() {

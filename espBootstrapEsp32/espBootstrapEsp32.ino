@@ -7,7 +7,7 @@
 
 // ===== CONFIG =====
 /** Bump this when releasing firmware; keep version.json in the repo in sync (manual for now). */
-#define FW_VERSION "1.1.1"
+#define FW_VERSION "1.2.0"
 
 const char* AP_PASS = "12345678";
 
@@ -25,6 +25,37 @@ const int MAX_SERVO_CHANNELS = 8;
 Servo servos[MAX_SERVO_CHANNELS];
 bool servoAttached[MAX_SERVO_CHANNELS] = {false};
 int servoPins[MAX_SERVO_CHANNELS] = {-1, -1, -1, -1, -1, -1, -1, -1};
+
+/**
+ * Control source: WiFi/Bluetooth action stream vs screen-light phototransistors.
+ * Default is LIGHT when no WiFi (and no BT) link is up; WiFi /action or /pin-setup
+ * switches to WIFI. POST /control-source with body "light" forces optical mode
+ * even while station WiFi stays connected (phone sends patches, not /action).
+ */
+enum ControlSource : uint8_t {
+  CONTROL_LIGHT = 0,
+  CONTROL_WIFI = 1
+};
+ControlSource controlSource = CONTROL_LIGHT;
+bool staWasConnected = false;
+uint32_t lastLightUpdateMs = 0;
+const uint32_t LIGHT_UPDATE_INTERVAL_MS = 20;
+
+/** Servo GPIO → ADC1 phototransistor GPIO (VP=36, VN=39). ADC1 avoids WiFi/ADC2 conflict. */
+struct LightChannel {
+  int servoPin;
+  int sensorPin;
+};
+const LightChannel LIGHT_CHANNELS[] = {
+  {23, 36}, // VP
+  {22, 39}, // VN
+  {21, 34},
+  {19, 35},
+  {18, 32},
+  {25, 33}
+};
+const int LIGHT_CHANNEL_COUNT = sizeof(LIGHT_CHANNELS) / sizeof(LIGHT_CHANNELS[0]);
+const int LIGHT_MV_MAX = 3300; // 0 V → 1000 µs, 3.3 V → 2000 µs
 
 uint32_t deviceId24() {
   return (uint32_t)(ESP.getEfuseMac() & 0xFFFFFF);
@@ -55,6 +86,55 @@ bool parseIntField(const String& s, int& value) {
   return true;
 }
 
+const char* controlSourceName() {
+  return controlSource == CONTROL_LIGHT ? "light" : "wifi";
+}
+
+int millivoltsToServoUs(int mv) {
+  if (mv < 0) mv = 0;
+  if (mv > LIGHT_MV_MAX) mv = LIGHT_MV_MAX;
+  return 1000 + (mv * 1000) / LIGHT_MV_MAX;
+}
+
+bool ensureServoAttached(int pin, int minUs = 1000, int maxUs = 2000) {
+  int idx = findServoIndexByPin(pin);
+  if (idx >= 0 && servoAttached[idx]) return true;
+  idx = findFreeServoIndex();
+  if (idx < 0) return false;
+  servos[idx].attach(pin, minUs, maxUs);
+  servoAttached[idx] = true;
+  servoPins[idx] = pin;
+  return true;
+}
+
+void ensureLightChannelServosAttached() {
+  for (int i = 0; i < LIGHT_CHANNEL_COUNT; i++) {
+    ensureServoAttached(LIGHT_CHANNELS[i].servoPin);
+  }
+}
+
+void setControlSource(ControlSource src) {
+  if (controlSource == src) return;
+  controlSource = src;
+  Serial.print("Control source → ");
+  Serial.println(controlSourceName());
+  if (controlSource == CONTROL_LIGHT) {
+    ensureLightChannelServosAttached();
+  }
+}
+
+void updateServosFromLight() {
+  for (int i = 0; i < LIGHT_CHANNEL_COUNT; i++) {
+    const int servoPin = LIGHT_CHANNELS[i].servoPin;
+    const int sensorPin = LIGHT_CHANNELS[i].sensorPin;
+    int idx = findServoIndexByPin(servoPin);
+    if (idx < 0 || !servoAttached[idx]) continue;
+    int mv = analogReadMilliVolts(sensorPin);
+    int us = millivoltsToServoUs(mv);
+    servos[idx].writeMicroseconds(us);
+  }
+}
+
 void sendCORSHeaders() {
   server.sendHeader("Access-Control-Allow-Origin", "*");
   server.sendHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
@@ -64,6 +144,30 @@ void sendCORSHeaders() {
 void handleOptions() {
   sendCORSHeaders();
   server.send(204);
+}
+
+void handleControlSource() {
+  sendCORSHeaders();
+  if (!server.hasArg("plain")) {
+    server.send(400, "text/plain", "Missing payload");
+    return;
+  }
+  String body = server.arg("plain");
+  body.trim();
+  body.toLowerCase();
+  if (body == "light" || body == "screen" || body == "screen-light" || body == "screen light") {
+    setControlSource(CONTROL_LIGHT);
+    String json = "{\"ok\":true,\"controlSource\":\"light\"}";
+    server.send(200, "application/json", json);
+    return;
+  }
+  if (body == "wifi" || body == "action" || body == "bt" || body == "bluetooth") {
+    setControlSource(CONTROL_WIFI);
+    String json = "{\"ok\":true,\"controlSource\":\"wifi\"}";
+    server.send(200, "application/json", json);
+    return;
+  }
+  server.send(400, "text/plain", "Expected body: light | wifi");
 }
 
 void handlePinSetup() {
@@ -79,6 +183,8 @@ void handlePinSetup() {
     server.send(400, "text/plain", "Empty payload");
     return;
   }
+
+  setControlSource(CONTROL_WIFI);
 
   int attachedCount = 0;
   int start = 0;
@@ -150,6 +256,8 @@ void handleAction() {
     server.send(400, "text/plain", "Empty payload");
     return;
   }
+
+  setControlSource(CONTROL_WIFI);
 
   int appliedCount = 0;
   int start = 0;
@@ -294,7 +402,8 @@ void handleStatus() {
   json += "\"mdnsHost\":\"" + jsonEscape(mdnsFull) + "\",";
   json += "\"connected\":" + String(connected ? "true" : "false") + ",";
   json += "\"ip\":\"" + ip + "\",";
-  json += "\"fwVersion\":\"" + jsonEscape(String(FW_VERSION)) + "\"";
+  json += "\"fwVersion\":\"" + jsonEscape(String(FW_VERSION)) + "\",";
+  json += "\"controlSource\":\"" + String(controlSourceName()) + "\"";
   json += "}";
   server.send(200, "application/json", json);
 }
@@ -414,17 +523,32 @@ void setup() {
 
   buildRobotIdentity();
 
+  // ADC1 full-scale ~3.3 V for phototransistor → µs mapping
+  analogSetAttenuation(ADC_11db);
+  ensureLightChannelServosAttached();
+
   bool hasCreds = loadCredentials();
   startAP();
 
   WiFi.setHostname(robotHostname.c_str());
 
+  bool staConnected = false;
   if (hasCreds) {
     if (connectToWiFi()) {
       Serial.println("Running in AP+STA mode (connected)");
+      staConnected = true;
     } else {
       Serial.println("Running in AP+STA mode (STA connect failed)");
     }
+  }
+
+  // No WiFi (and no Bluetooth yet) → optical default. STA up → wait for /action
+  // or an explicit POST /control-source light from the phone screen-light TX.
+  staWasConnected = staConnected;
+  if (staConnected) {
+    setControlSource(CONTROL_WIFI);
+  } else {
+    setControlSource(CONTROL_LIGHT);
   }
 
   // Routes
@@ -436,10 +560,12 @@ void setup() {
   server.on("/version", HTTP_OPTIONS, handleOptions);
   server.on("/pin-setup", HTTP_OPTIONS, handleOptions);
   server.on("/action", HTTP_OPTIONS, handleOptions);
+  server.on("/control-source", HTTP_OPTIONS, handleOptions);
   server.on("/config", HTTP_POST, handleConfig);
   server.on("/update", HTTP_POST, handleUpdate, handleUpdateUpload);
   server.on("/pin-setup", HTTP_POST, handlePinSetup);
   server.on("/action", HTTP_POST, handleAction);
+  server.on("/control-source", HTTP_POST, handleControlSource);
   server.on("/ping", HTTP_GET, handlePing);
   server.on("/scan", HTTP_GET, handleScan);
   server.on("/status", HTTP_GET, handleStatus);
@@ -452,4 +578,19 @@ void setup() {
 
 void loop() {
   server.handleClient();
+
+  bool staConnected = WiFi.status() == WL_CONNECTED;
+  if (staWasConnected && !staConnected) {
+    // Lost station WiFi (Bluetooth not implemented) → fall back to light patches.
+    setControlSource(CONTROL_LIGHT);
+  }
+  staWasConnected = staConnected;
+
+  if (controlSource == CONTROL_LIGHT) {
+    uint32_t now = millis();
+    if (now - lastLightUpdateMs >= LIGHT_UPDATE_INTERVAL_MS) {
+      lastLightUpdateMs = now;
+      updateServosFromLight();
+    }
+  }
 }

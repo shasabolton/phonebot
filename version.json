@@ -2,11 +2,11 @@
 
 
 
-  "fwVersion": "1.1.1",
+  "fwVersion": "1.2.0",
 
 
 
-  "appBuildVersion": "138: screen light transmitter (2x3 optical TX)"
+  "appBuildVersion": "139: ESP light control-source + screen-light notify"
 
 
 
