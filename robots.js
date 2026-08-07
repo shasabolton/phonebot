@@ -2,6 +2,76 @@
 window.ROBOTS_DATA = {
     robots: [
         {
+            name: "6 servos",
+            actuators: [
+                {
+                    type: "servo",
+                    name: "H1",
+                    pin: 23,
+                    homeMicroseconds: 1500,
+                    minMicroseconds: 1000,
+                    maxMicroseconds: 2000,
+                    deadbandMicrosecondsMin: 1480,
+                    deadbandMicrosecondsMax: 1520
+                },
+                {
+                    type: "servo",
+                    name: "H2",
+                    pin: 22,
+                    homeMicroseconds: 1500,
+                    minMicroseconds: 1000,
+                    maxMicroseconds: 2000,
+                    deadbandMicrosecondsMin: 1480,
+                    deadbandMicrosecondsMax: 1520
+                },
+                {
+                    type: "servo",
+                    name: "H3",
+                    pin: 21,
+                    homeMicroseconds: 1500,
+                    minMicroseconds: 1000,
+                    maxMicroseconds: 2000,
+                    deadbandMicrosecondsMin: 1480,
+                    deadbandMicrosecondsMax: 1520
+                },
+                {
+                    type: "servo",
+                    name: "H4",
+                    pin: 19,
+                    homeMicroseconds: 1500,
+                    minMicroseconds: 1000,
+                    maxMicroseconds: 2000,
+                    deadbandMicrosecondsMin: 1480,
+                    deadbandMicrosecondsMax: 1520
+                },
+                {
+                    type: "servo",
+                    name: "H5",
+                    pin: 18,
+                    homeMicroseconds: 1500,
+                    minMicroseconds: 1000,
+                    maxMicroseconds: 2000,
+                    deadbandMicrosecondsMin: 1480,
+                    deadbandMicrosecondsMax: 1520
+                },
+                {
+                    type: "servo",
+                    name: "H6",
+                    pin: 25,
+                    homeMicroseconds: 1500,
+                    minMicroseconds: 1000,
+                    maxMicroseconds: 2000,
+                    deadbandMicrosecondsMin: 1480,
+                    deadbandMicrosecondsMax: 1520
+                }
+            ],
+            controlInputs: {},
+            sensors: [],
+            targets: [],
+            pidControllers: []
+        },
+
+        {
             name: "new unnamed robot",
             actuators: [],
             controlInputs: {},
@@ -81,7 +151,7 @@ window.ROBOTS_DATA = {
                     name: "Computer vision"
                 }
             ],
-            defaultMode: "simonSaysPoseMatch",
+            defaultMode: "conversation",
             modes: {
                 simonSaysPoseMatch: {
                     label: "Simon Says Pose Match",

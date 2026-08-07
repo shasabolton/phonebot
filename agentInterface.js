@@ -888,7 +888,8 @@ class AgentInterface {
             const readyDown = await this._waitForStableHandRaised(false, generation, {
                 needed: 3,
                 onTick: () => {
-                    if (this._countdownLabelEl) this._countdownLabelEl.textContent = "Hand up to talk";
+                    // Re-attach if the camera frame was not ready on first try, or was rebuilt.
+                    this._ensureCameraCountdownOverlay("Hand up to talk");
                     if (this._countdownNumberEl) this._countdownNumberEl.textContent = "—";
                     if (this._statusEl) {
                         this._statusEl.textContent = this._isHandRaisedAboveNose()
@@ -903,7 +904,7 @@ class AgentInterface {
             const raised = await this._waitForStableHandRaised(true, generation, {
                 needed: 2,
                 onTick: () => {
-                    if (this._countdownLabelEl) this._countdownLabelEl.textContent = "Hand up to talk";
+                    this._ensureCameraCountdownOverlay("Hand up to talk");
                     if (this._countdownNumberEl) this._countdownNumberEl.textContent = "—";
                     if (this._statusEl) {
                         this._statusEl.textContent = "Raise a hand above your nose to record…";
@@ -1047,7 +1048,8 @@ class AgentInterface {
         let shouldRetry = false;
         try {
             if (this._statusEl) {
-                this._statusEl.textContent = "Raise a hand above your nose to record…";
+                this._statusEl.textContent =
+                    "Raise a hand above your nose to talk — nothing is sent to the AI until you speak.";
                 this._statusEl.className = "muted";
             }
 
@@ -1327,9 +1329,9 @@ class AgentInterface {
         this._captureCanvas.width = targetW;
         this._captureCanvas.height = targetH;
         this._captureCtx.drawImage(videoEl, 0, 0, targetW, targetH);
-        // Rover-style cell grid burns tokens and is useless for Simon Says pose checks.
+        const camera = this._getCameraSensor();
         if (
-            !this._isSimonSaysMode() &&
+            camera?.wantsNormalizationGrid?.() &&
             typeof PhonebotNormalizationGrid !== "undefined" &&
             PhonebotNormalizationGrid.draw
         ) {
@@ -1560,8 +1562,9 @@ class AgentInterface {
 
     /**
      * On the first user message of a session, prefix the selected/introduction template so it
-     * lives in history. If the User / User said section is already that template (hydrated or
-     * Insert template), keep a single copy — do not prepend again.
+     * lives in history. If the User / User said section is already that exact template (hydrated
+     * Send), keep a single copy — do not prepend again. Never treat short speech as "intro"
+     * just because the template happens to contain those words.
      */
     async _mergeIntroductionIntoFirstUserMessage(fullUserContent, priorLength) {
         const body = String(fullUserContent || "");
@@ -1570,15 +1573,15 @@ class AgentInterface {
         const head = this._normalizePromptText(intro);
         if (!head) return body;
         const bodyNorm = this._normalizePromptText(body);
-        if (!bodyNorm) return head;
+        if (!bodyNorm) return body;
 
         const userMatch = body.match(/\n(?:User said|User|Robot notice):\n([\s\S]*)$/i);
         const userPart = userMatch ? this._normalizePromptText(userMatch[1]) : "";
-        const userIsIntro =
-            !!userPart && (userPart === head || head.includes(userPart) || userPart.includes(head));
-
-        if (userIsIntro) {
-            const stateMatch = body.match(/Current state \(json\):\n[\s\S]*?(?=\n\n(?:User said|User|Robot notice):|$)/i);
+        // Exact template-only send (textarea still holds the start prompt).
+        if (userPart && userPart === head) {
+            const stateMatch = body.match(
+                /Current state \(json\):\n[\s\S]*?(?=\n\n(?:User said|User|Robot notice):|$)/i
+            );
             const stateBlock = stateMatch ? stateMatch[0].trim() : "";
             return stateBlock ? `${head}\n\n${stateBlock}` : head;
         }
@@ -1587,6 +1590,39 @@ class AgentInterface {
         const headPrefix = head.slice(0, Math.min(120, head.length)).trim();
         if (headPrefix.length >= 24 && bodyNorm.includes(headPrefix)) return body;
         return `${head}\n\n${body}`;
+    }
+
+    /** True once any user/assistant turn is in history (first hand-raise send completed). */
+    _hasConversationHistory() {
+        return (this.messageHistory || []).some(
+            (m) => m && (m.role === "user" || m.role === "assistant")
+        );
+    }
+
+    /**
+     * Hand-up modes must not call the LLM until the person raises a hand and speaks.
+     * Blocks Send / robot notices that would otherwise fire the start prompt alone.
+     * @param {string} userText
+     * @param {{ fromSpeech?: boolean }} [options]
+     * @returns {Promise<boolean>} true if the send may proceed
+     */
+    async _allowConversationOutbound(userText, options = {}) {
+        if (!this._isConversationMode()) return true;
+        if (this._hasConversationHistory()) return true;
+        if (options.fromSpeech) return true;
+
+        const textNorm = this._normalizePromptText(userText);
+        const introNorm = this._normalizePromptText(await this._fetchIntroductionPromptContent());
+        const isIntroOnly = !textNorm || (!!introNorm && textNorm === introNorm);
+        if (isIntroOnly) {
+            if (this._statusEl) {
+                this._statusEl.textContent =
+                    "Raise a hand and speak first — your words are sent with the start prompt.";
+                this._statusEl.className = "warn";
+            }
+            return false;
+        }
+        return true;
     }
 
     /**
@@ -2049,6 +2085,10 @@ class AgentInterface {
             }
             return false;
         }
+        // Gemini audio turn is always driven by a hand-raised mic clip.
+        if (!(await this._allowConversationOutbound("(speech)", { fromSpeech: true }))) {
+            return false;
+        }
         if (this._sendInProgress) {
             if (this._statusEl) {
                 this._statusEl.textContent = "Already sending — wait for the current request to finish.";
@@ -2172,6 +2212,9 @@ class AgentInterface {
             }
             return false;
         }
+        if (!(await this._allowConversationOutbound(text, { fromSpeech: true }))) {
+            return false;
+        }
         if (this._sendInProgress) {
             if (this._statusEl) {
                 this._statusEl.textContent = "Already sending — wait for the current request to finish.";
@@ -2273,6 +2316,13 @@ class AgentInterface {
             this._stopSpeaking();
         }
         const text = String(this._promptInput.value || "").trim();
+        if (!(await this._allowConversationOutbound(text, { fromSpeech: false }))) {
+            // _stopSpeaking may have cancelled hand-up listen — resume waiting for speech.
+            if (this._agentEnabled && this._isConversationMode()) {
+                this._queueConversationListen(this._speakGeneration);
+            }
+            return;
+        }
         this._apiKey = this._keyInput?.value?.trim() || "";
         const agent = this.getSelectedAgent();
         if (this._rememberInput) this._rememberKey = !!this._rememberInput.checked;
@@ -2378,6 +2428,9 @@ class AgentInterface {
         const transcript = String(text || "").trim();
         if (!transcript) return false;
         if (!this._agentEnabled) return false;
+        if (!(await this._allowConversationOutbound(transcript, { fromSpeech: false }))) {
+            return false;
+        }
         if (this._sendInProgress) {
             console.warn("AgentInterface: send already in progress; skipped submitPromptWithRobotState.");
             if (this._statusEl) {

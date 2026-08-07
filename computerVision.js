@@ -1500,7 +1500,12 @@ class ComputerVisionAiModel {
         const ctx = this._overlayCtx;
         const ow = this._overlayCanvas.width | 0;
         const oh = this._overlayCanvas.height | 0;
-        if (typeof PhonebotNormalizationGrid !== "undefined" && PhonebotNormalizationGrid.draw) {
+        const camera = this._getCameraSensor();
+        if (
+            camera?.wantsNormalizationGrid?.() &&
+            typeof PhonebotNormalizationGrid !== "undefined" &&
+            PhonebotNormalizationGrid.draw
+        ) {
             PhonebotNormalizationGrid.draw(ctx, ow, oh);
         }
         const t = ComputerVisionAiModel.objectFitContainVideoTransform(videoEl);

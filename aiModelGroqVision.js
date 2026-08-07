@@ -120,7 +120,12 @@ class GroqVisionAiModel {
         const ctx = this._overlayCtx;
         const ow = this._overlayCanvas.width | 0;
         const oh = this._overlayCanvas.height | 0;
-        if (typeof PhonebotNormalizationGrid !== "undefined" && PhonebotNormalizationGrid.draw) {
+        const camera = this._getCameraSensor?.() || null;
+        if (
+            camera?.wantsNormalizationGrid?.() &&
+            typeof PhonebotNormalizationGrid !== "undefined" &&
+            PhonebotNormalizationGrid.draw
+        ) {
             PhonebotNormalizationGrid.draw(ctx, ow, oh);
         }
         const Vision = typeof window !== "undefined" ? window.ComputerVisionAiModel : null;
@@ -408,7 +413,12 @@ class GroqVisionAiModel {
         this._captureCanvas.width = targetW;
         this._captureCanvas.height = targetH;
         this._captureCtx.drawImage(videoEl, 0, 0, targetW, targetH);
-        if (typeof PhonebotNormalizationGrid !== "undefined" && PhonebotNormalizationGrid.draw) {
+        const camera = this._getCameraSensor?.() || null;
+        if (
+            camera?.wantsNormalizationGrid?.() &&
+            typeof PhonebotNormalizationGrid !== "undefined" &&
+            PhonebotNormalizationGrid.draw
+        ) {
             PhonebotNormalizationGrid.draw(this._captureCtx, targetW, targetH);
         }
         return {

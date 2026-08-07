@@ -488,6 +488,9 @@ class Robot {
         const wasEnabled = this.mixEnabled;
         this._rebuildActuatorMixes({ restoreEnabled: wasEnabled });
         if (this._modeSelect) this._modeSelect.value = this.mode;
+        // Stop any local game first — game.stop() calls agent._stopSpeaking(), which would
+        // cancel a conversation listen queued in onRobotModeChanged if we did this after.
+        this._stopLocalGame();
         this._applyActiveModePromptTemplate();
         // Stop agent TTS / listen before starting a local game (game uses agent Groq TTS).
         if (this.agentInterface && typeof this.agentInterface.onRobotModeChanged === "function") {
@@ -886,6 +889,8 @@ class Robot {
             agentDiv.className = "robot-agent-interfaces";
             this.agentInterface.buildGUI(agentDiv);
             this.container.appendChild(agentDiv);
+            // Same order as setMode: stop local game before agent mode hooks queue listen.
+            this._stopLocalGame();
             this._applyActiveModePromptTemplate();
             if (typeof this.agentInterface.onRobotModeChanged === "function") {
                 this.agentInterface.onRobotModeChanged(this.mode);

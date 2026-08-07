@@ -8,7 +8,10 @@ class Camera extends Sensor {
         this._facingMode = "user";
         /** Selfie-style preview mirror when front-facing (see {@link #isMirrored}). */
         this.mirror = !!config?.mirror;
+        /** When true, draw Decile 11–99 labels on the live preview / captured frames. */
+        this.showNormalizationGrid = !!config?.showNormalizationGrid;
         this._stream = null;
+        this._gridCheckbox = null;
         this._videoEl = null;
         this._frameEl = null;
         this._statusEl = null;
@@ -64,6 +67,16 @@ class Camera extends Sensor {
     /** True when the preview is horizontally mirrored (front + mirror config). */
     isMirrored() {
         return !!(this.mirror && this._facingMode === "user");
+    }
+
+    /** True when Decile grid labels should be drawn on the camera overlay / captures. */
+    wantsNormalizationGrid() {
+        return !!this.showNormalizationGrid;
+    }
+
+    setShowNormalizationGrid(on) {
+        this.showNormalizationGrid = !!on;
+        if (this._gridCheckbox) this._gridCheckbox.checked = this.showNormalizationGrid;
     }
 
     _syncMirrorClass() {
@@ -289,6 +302,21 @@ class Camera extends Sensor {
         flowBoxSizeWrap.appendChild(flowBoxSizeLabel);
         flowRow.appendChild(flowBoxSizeWrap);
 
+        const gridWrap = document.createElement("label");
+        gridWrap.className = "sensor-camera-grid-toggle";
+        gridWrap.style.display = "flex";
+        gridWrap.style.alignItems = "center";
+        gridWrap.style.gap = "8px";
+        gridWrap.style.marginTop = "8px";
+        const gridCheckbox = document.createElement("input");
+        gridCheckbox.type = "checkbox";
+        gridCheckbox.checked = this.showNormalizationGrid;
+        gridCheckbox.addEventListener("change", () => {
+            this.showNormalizationGrid = !!gridCheckbox.checked;
+        });
+        gridWrap.appendChild(gridCheckbox);
+        gridWrap.appendChild(document.createTextNode("Show grid labels (11–99)"));
+
         const status = document.createElement("p");
         status.className = "muted sensor-camera-status";
         const startBtn = document.createElement("button");
@@ -309,6 +337,7 @@ class Camera extends Sensor {
         wrap.appendChild(faceRow);
         wrap.appendChild(frame);
         wrap.appendChild(flowRow);
+        wrap.appendChild(gridWrap);
         wrap.appendChild(status);
         wrap.appendChild(startBtn);
         container.appendChild(wrap);
@@ -317,6 +346,7 @@ class Camera extends Sensor {
         this._frameEl = frame;
         this._statusEl = status;
         this._startBtn = startBtn;
+        this._gridCheckbox = gridCheckbox;
         this._syncMirrorClass();
 
         this._onVideoLayout = () => this._layoutVideoFrameToStreamAspect();
