@@ -5,6 +5,8 @@ const ROBOTS_KEY = "phonebot_known_robots";
 
 /** Tried in order when loading firmware from the page origin (serve project root over HTTP). */
 const FIRMWARE_RELATIVE_PATHS = [
+  "espBootstrapEsp32/build/esp32.esp32.esp32/espBootstrapEsp32.ino.bin",
+  "espBootstrapEsp32/build/esp32.esp32.esp32/firmware.bin",
   "espBootstrap/build/esp8266.esp8266.nodemcuv2/espBootstrap.ino.bin",
   "espBootstrap/build/esp8266.esp8266.nodemcuv2/firmware.bin",
   "espBootstrap/build/esp8266.esp8266.d1_mini/espBootstrap.ino.bin",
@@ -152,8 +154,8 @@ class WifiTransmitter {
   <h3>Firmware</h3>
   <div id="firmwareVersionInfo" class="muted" style="margin-bottom:10px;"></div>
   <p class="muted">
-    OTA loads the sketch’s Arduino build output under <code>espBootstrap/build/</code> (same repo you serve with this HTML).
-    After compile or “Export compiled Binary”, use the <code>.bin</code> under the board-specific folder (for example <code>nodemcuv2/espBootstrap.ino.bin</code>). Serve the project root over HTTP.
+    OTA loads the sketch’s Arduino build output under <code>espBootstrap/build/</code> or <code>espBootstrapEsp32/build/</code> (same repo you serve with this HTML).
+    After compile or “Export compiled Binary”, use the <code>.bin</code> under the board-specific folder (for example <code>nodemcuv2/espBootstrap.ino.bin</code> or <code>esp32/espBootstrapEsp32.ino.bin</code>). Serve the project root over HTTP.
   </p>
   <input type="file" id="firmwareFile" accept=".bin" style="display:none;">
   <button type="button" id="firmwareBtn" style="display:none;">Update firmware</button>
