@@ -7,7 +7,7 @@
 
 // ===== CONFIG =====
 /** Bump this when releasing firmware; keep version.json in the repo in sync (manual for now). */
-#define FW_VERSION "1.2.1"
+#define FW_VERSION "1.2.2"
 
 const char* AP_PASS = "12345678";
 
@@ -55,7 +55,16 @@ const LightChannel LIGHT_CHANNELS[] = {
   {25, 33}
 };
 const int LIGHT_CHANNEL_COUNT = sizeof(LIGHT_CHANNELS) / sizeof(LIGHT_CHANNELS[0]);
-const int LIGHT_MV_MAX = 3300; // 0 V → 1000 µs, 3.3 V → 2000 µs
+
+/**
+ * Optical ADC → servo µs calibration (100 kΩ load, phone screen).
+ * Defaults from bench: ~142 mV (floor) → 1000 µs, ~182 mV (full white) → 2000 µs.
+ * Later: POST /light-calibrate with body "mVMin:usMin,mVMax:usMax" (e.g. "142:1000,182:2000").
+ */
+int lightMvMin = 142;
+int lightUsMin = 1000;
+int lightMvMax = 182;
+int lightUsMax = 2000;
 
 uint32_t deviceId24() {
   return (uint32_t)(ESP.getEfuseMac() & 0xFFFFFF);
@@ -91,9 +100,17 @@ const char* controlSourceName() {
 }
 
 int millivoltsToServoUs(int mv) {
-  if (mv < 0) mv = 0;
-  if (mv > LIGHT_MV_MAX) mv = LIGHT_MV_MAX;
-  return 1000 + (mv * 1000) / LIGHT_MV_MAX;
+  int mv0 = lightMvMin;
+  int mv1 = lightMvMax;
+  int us0 = lightUsMin;
+  int us1 = lightUsMax;
+  if (mv1 <= mv0) {
+    // Degenerate cal — fall back to mid.
+    return (us0 + us1) / 2;
+  }
+  if (mv <= mv0) return us0;
+  if (mv >= mv1) return us1;
+  return us0 + (int)(((long)(mv - mv0) * (us1 - us0)) / (mv1 - mv0));
 }
 
 bool ensureServoAttached(int pin, int minUs = 1000, int maxUs = 2000) {
@@ -148,6 +165,12 @@ void handleLightSensors() {
   json += "\"ok\":true,";
   json += "\"controlSource\":\"" + String(controlSourceName()) + "\",";
   json += "\"fwVersion\":\"" + jsonEscape(String(FW_VERSION)) + "\",";
+  json += "\"cal\":{";
+  json += "\"mvMin\":" + String(lightMvMin) + ",";
+  json += "\"usMin\":" + String(lightUsMin) + ",";
+  json += "\"mvMax\":" + String(lightMvMax) + ",";
+  json += "\"usMax\":" + String(lightUsMax);
+  json += "},";
   json += "\"channels\":[";
   for (int i = 0; i < LIGHT_CHANNEL_COUNT; i++) {
     if (i > 0) json += ",";
@@ -170,6 +193,61 @@ void handleLightSensors() {
     json += "}";
   }
   json += "]}";
+  server.send(200, "application/json", json);
+}
+
+/**
+ * POST body: "mVMin:usMin,mVMax:usMax" e.g. "142:1000,182:2000"
+ * Updates runtime optical calibration (not persisted yet).
+ */
+void handleLightCalibrate() {
+  sendCORSHeaders();
+  if (!server.hasArg("plain")) {
+    server.send(400, "text/plain", "Missing payload");
+    return;
+  }
+  String body = server.arg("plain");
+  body.trim();
+  int comma = body.indexOf(',');
+  if (comma < 0) {
+    server.send(400, "text/plain", "Expected mVMin:usMin,mVMax:usMax");
+    return;
+  }
+  String a = body.substring(0, comma);
+  String b = body.substring(comma + 1);
+  a.trim();
+  b.trim();
+  int c1 = a.indexOf(':');
+  int c2 = b.indexOf(':');
+  if (c1 < 0 || c2 < 0) {
+    server.send(400, "text/plain", "Expected mVMin:usMin,mVMax:usMax");
+    return;
+  }
+  int mvMin = -1, usMin = -1, mvMax = -1, usMax = -1;
+  if (!parseIntField(a.substring(0, c1), mvMin) ||
+      !parseIntField(a.substring(c1 + 1), usMin) ||
+      !parseIntField(b.substring(0, c2), mvMax) ||
+      !parseIntField(b.substring(c2 + 1), usMax)) {
+    server.send(400, "text/plain", "Bad numeric calibrate values");
+    return;
+  }
+  if (mvMax <= mvMin) {
+    server.send(400, "text/plain", "mVMax must be > mVMin");
+    return;
+  }
+  lightMvMin = mvMin;
+  lightUsMin = usMin;
+  lightMvMax = mvMax;
+  lightUsMax = usMax;
+  Serial.printf("Light cal → %d mV:%d us … %d mV:%d us\n",
+                lightMvMin, lightUsMin, lightMvMax, lightUsMax);
+  String json = "{";
+  json += "\"ok\":true,";
+  json += "\"mvMin\":" + String(lightMvMin) + ",";
+  json += "\"usMin\":" + String(lightUsMin) + ",";
+  json += "\"mvMax\":" + String(lightMvMax) + ",";
+  json += "\"usMax\":" + String(lightUsMax);
+  json += "}";
   server.send(200, "application/json", json);
 }
 
@@ -600,11 +678,13 @@ void setup() {
   server.on("/action", HTTP_OPTIONS, handleOptions);
   server.on("/control-source", HTTP_OPTIONS, handleOptions);
   server.on("/light-sensors", HTTP_OPTIONS, handleOptions);
+  server.on("/light-calibrate", HTTP_OPTIONS, handleOptions);
   server.on("/config", HTTP_POST, handleConfig);
   server.on("/update", HTTP_POST, handleUpdate, handleUpdateUpload);
   server.on("/pin-setup", HTTP_POST, handlePinSetup);
   server.on("/action", HTTP_POST, handleAction);
   server.on("/control-source", HTTP_POST, handleControlSource);
+  server.on("/light-calibrate", HTTP_POST, handleLightCalibrate);
   server.on("/ping", HTTP_GET, handlePing);
   server.on("/scan", HTTP_GET, handleScan);
   server.on("/status", HTTP_GET, handleStatus);

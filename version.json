@@ -2,11 +2,11 @@
 
 
 
-  "fwVersion": "1.2.1",
+  "fwVersion": "1.2.2",
 
 
 
-  "appBuildVersion": "140: live ESP light-sensor readout"
+  "appBuildVersion": "141: optical cal 142-182mV + bright patch band"
 
 
 

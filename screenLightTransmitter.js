@@ -20,6 +20,22 @@ class ScreenLightTransmitter {
   static KNOWN_ROBOTS_KEY = "phonebot_known_robots";
   static SENSOR_POLL_MS = 250;
 
+  /**
+   * Logical servo command range (robot mix / UI sliders).
+   * Patches only use the bright band that the PT can resolve (bench: signal from ~1850).
+   */
+  static COMMAND_US_MIN = 1000;
+  static COMMAND_US_MAX = 2000;
+  /** Patch encode: command 1000 → this brightness level; command 2000 → full white. */
+  static PATCH_US_MIN = 1850;
+  static PATCH_US_MAX = 2000;
+
+  /** Matches firmware defaults / POST /light-calibrate body. */
+  static CAL_MV_MIN = 142;
+  static CAL_US_MIN = 1000;
+  static CAL_MV_MAX = 182;
+  static CAL_US_MAX = 2000;
+
   constructor(container) {
     /** @type {HTMLElement} */
     this.container = container;
@@ -122,12 +138,40 @@ class ScreenLightTransmitter {
     return { ok: true, status: 200, body: "ok" };
   }
 
-  /** Map servo µs (1000–2000) → 0–255 channel. */
+  /** Map logical servo µs → patch RGB (compresses into PATCH_US_MIN…MAX brightness band). */
   static usToBrightness(us) {
     const n = Number(us);
-    if (!Number.isFinite(n)) return 0;
-    const clamped = Math.max(1000, Math.min(2000, n));
+    if (!Number.isFinite(n)) {
+      return ScreenLightTransmitter.usToBrightnessFromEncodeUs(
+        ScreenLightTransmitter.PATCH_US_MIN
+      );
+    }
+    const c0 = ScreenLightTransmitter.COMMAND_US_MIN;
+    const c1 = ScreenLightTransmitter.COMMAND_US_MAX;
+    const p0 = ScreenLightTransmitter.PATCH_US_MIN;
+    const p1 = ScreenLightTransmitter.PATCH_US_MAX;
+    const clamped = Math.max(c0, Math.min(c1, n));
+    const t = c1 > c0 ? (clamped - c0) / (c1 - c0) : 0;
+    const encodeUs = p0 + t * (p1 - p0);
+    return ScreenLightTransmitter.usToBrightnessFromEncodeUs(encodeUs);
+  }
+
+  /** Linear 1000–2000 encode-µs → 0–255 channel (legacy full-scale brightness curve). */
+  static usToBrightnessFromEncodeUs(encodeUs) {
+    const clamped = Math.max(1000, Math.min(2000, Number(encodeUs) || 1000));
     return Math.round(((clamped - 1000) / 1000) * 255);
+  }
+
+  static lightCalibrateBody() {
+    return (
+      ScreenLightTransmitter.CAL_MV_MIN +
+      ":" +
+      ScreenLightTransmitter.CAL_US_MIN +
+      "," +
+      ScreenLightTransmitter.CAL_MV_MAX +
+      ":" +
+      ScreenLightTransmitter.CAL_US_MAX
+    );
   }
 
   /** Candidate station base URLs from known-robot localStorage (same key as WiFi TX). */
@@ -152,7 +196,7 @@ class ScreenLightTransmitter {
 
   /**
    * Tell ESP to drive servos from phototransistors (even if STA WiFi is up).
-   * No-op if no known robot IP — offline light mode on the ESP still works by default.
+   * Also pushes fixed mV↔µs calibration (POST /light-calibrate).
    */
   async notifyEspLightMode() {
     const urls = this._candidateRobotBaseUrls();
@@ -166,6 +210,7 @@ class ScreenLightTransmitter {
     }
 
     this._setEspNotifyStatus("Notifying ESP to use light sensors…", "muted");
+    const calBody = ScreenLightTransmitter.lightCalibrateBody();
     for (const base of urls) {
       try {
         const res = await fetch(base + "/control-source", {
@@ -176,8 +221,17 @@ class ScreenLightTransmitter {
         const body = await res.text();
         if (res.ok) {
           this._robotBaseUrl = base;
+          try {
+            await fetch(base + "/light-calibrate", {
+              method: "POST",
+              headers: { "Content-Type": "text/plain" },
+              body: calBody
+            });
+          } catch (e) {
+            /* older firmware may lack route */
+          }
           this._setEspNotifyStatus(
-            "ESP control source → light (" + base + ").",
+            "ESP control source → light; cal " + calBody + " (" + base + ").",
             "ok"
           );
           return { ok: true, status: res.status, body };
@@ -186,13 +240,11 @@ class ScreenLightTransmitter {
         /* try next */
       }
     }
-    // Still try polling the first URL for diagnostics even if control-source failed
-    // (e.g. old firmware without that route).
     this._robotBaseUrl = urls[0];
     this._setEspNotifyStatus(
       "Could not set control-source on ESP — polling " +
         urls[0] +
-        " for sensor readout anyway. Update firmware if /light-sensors is missing.",
+        " for sensor readout anyway. Update firmware if routes are missing.",
       "warn"
     );
     return { ok: false, body: "unreachable" };
@@ -272,8 +324,12 @@ class ScreenLightTransmitter {
     const src = data && data.controlSource != null ? String(data.controlSource) : "?";
     const fw = data && data.fwVersion != null ? String(data.fwVersion) : "?";
     const channels = Array.isArray(data && data.channels) ? data.channels : [];
+    const cal = data && data.cal ? data.cal : null;
+    const calTxt = cal
+      ? ` · cal ${cal.mvMin}mV→${cal.usMin}µs … ${cal.mvMax}mV→${cal.usMax}µs`
+      : "";
     this._renderSensorStatus(
-      "Live from " + base + " · controlSource=" + src + " · fw=" + fw,
+      "Live from " + base + " · controlSource=" + src + " · fw=" + fw + calTxt,
       src === "light" ? "ok" : "warn"
     );
     if (!this._sensorTableBodyEl) return;
@@ -343,10 +399,12 @@ class ScreenLightTransmitter {
   </div>
 </div>
 <p id="screenLightEspNotify" class="muted">Checking whether to notify ESP over WiFi…</p>
-<p class="muted">Optical TX: fixed <b>2×3</b> strip at bottom of screen.
-Each cell <b>${h}&nbsp;mm</b> tall (borders included), half screen wide.
-<b>1000&nbsp;µs = black</b>, <b>2000&nbsp;µs = full white</b>.</p>
-<p class="muted">Map: 23:VP(36), 22:VN(39), 21:34, 19:35, 18:32, 25:33 — 0&nbsp;V→1000&nbsp;µs, 3.3&nbsp;V→2000&nbsp;µs.
+<p class="muted">Optical TX: fixed <b>2×3</b> strip. Command <b>1000–2000&nbsp;µs</b> maps to patch brightness
+band <b>${ScreenLightTransmitter.PATCH_US_MIN}–${ScreenLightTransmitter.PATCH_US_MAX}</b>
+(so 1000 is already fairly bright). ESP maps
+<b>${ScreenLightTransmitter.CAL_MV_MIN}–${ScreenLightTransmitter.CAL_MV_MAX}&nbsp;mV</b> →
+<b>${ScreenLightTransmitter.CAL_US_MIN}–${ScreenLightTransmitter.CAL_US_MAX}&nbsp;µs</b>.</p>
+<p class="muted">Map: 23:VP(36), 22:VN(39), 21:34, 19:35, 18:32, 25:33.
 Strip height reserved: ${rows * h}&nbsp;mm.</p>
 `;
     this._espNotifyEl = this.container.querySelector("#screenLightEspNotify");
