@@ -331,11 +331,14 @@ class SpeechToTextAiModel {
         const text = String(this.confirmationText || "").trim();
         if (!text) return;
         if (!window.speechSynthesis || typeof window.SpeechSynthesisUtterance !== "function") return;
-        await new Promise((resolve) => {
-            try {
-                window.speechSynthesis.cancel();
-                const utter = new SpeechSynthesisUtterance(text);
-                utter.rate = 1.05;
+        try {
+            window.speechSynthesis.cancel();
+            const utter = new SpeechSynthesisUtterance(text);
+            utter.rate = 1.05;
+            if (window.BrowserTts && typeof window.BrowserTts.applyMaleVoice === "function") {
+                await window.BrowserTts.applyMaleVoice(utter);
+            }
+            await new Promise((resolve) => {
                 let done = false;
                 const finish = () => {
                     if (done) return;
@@ -348,10 +351,10 @@ class SpeechToTextAiModel {
                 const timeoutMs = Math.max(600, Math.round(text.length * 130));
                 setTimeout(finish, timeoutMs);
                 window.speechSynthesis.speak(utter);
-            } catch (_) {
-                resolve();
-            }
-        });
+            });
+        } catch (_) {
+            /* ignore cue failures */
+        }
     }
 
     async _ensureMicReady() {

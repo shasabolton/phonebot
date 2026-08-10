@@ -661,16 +661,19 @@ class AgentInterface {
         }
     }
 
-    _speakBrowserFallback(text) {
+    async _speakBrowserFallback(text) {
         const content = String(text || "").trim();
-        if (!content) return Promise.resolve();
+        if (!content) return;
         if (!window.speechSynthesis || typeof window.SpeechSynthesisUtterance !== "function") {
-            return Promise.resolve();
+            return;
         }
-        return new Promise((resolve) => {
-            try {
-                window.speechSynthesis.cancel();
-                const utterance = new SpeechSynthesisUtterance(content);
+        try {
+            window.speechSynthesis.cancel();
+            const utterance = new SpeechSynthesisUtterance(content);
+            if (window.BrowserTts && typeof window.BrowserTts.applyMaleVoice === "function") {
+                await window.BrowserTts.applyMaleVoice(utterance);
+            }
+            await new Promise((resolve) => {
                 utterance.onstart = () => {
                     window.__phonebotTtsSpeaking = true;
                 };
@@ -683,12 +686,11 @@ class AgentInterface {
                     resolve();
                 };
                 window.speechSynthesis.speak(utterance);
-            } catch (err) {
-                window.__phonebotTtsSpeaking = false;
-                console.warn("TTS error:", err);
-                resolve();
-            }
-        });
+            });
+        } catch (err) {
+            window.__phonebotTtsSpeaking = false;
+            console.warn("TTS error:", err);
+        }
     }
 
     _clearCameraCountdownOverlay() {

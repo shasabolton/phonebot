@@ -1,0 +1,158 @@
+{
+  "voice": "austin",
+  "model": "canopylabs/orpheus-v1-english",
+  "files": [
+    {
+      "file": "opening.wav",
+      "text": "Hello, Let's play a game of Simon Says! First to three wins."
+    },
+    {
+      "file": "simon-says.wav",
+      "text": "Simon Says"
+    },
+    {
+      "file": "put-your.wav",
+      "text": "Put your"
+    },
+    {
+      "file": "on-your.wav",
+      "text": "on your"
+    },
+    {
+      "file": "left-hand.wav",
+      "text": "left hand"
+    },
+    {
+      "file": "right-hand.wav",
+      "text": "right hand."
+    },
+    {
+      "file": "nose.wav",
+      "text": "nose"
+    },
+    {
+      "file": "left-ear.wav",
+      "text": "left ear!"
+    },
+    {
+      "file": "right-ear.wav",
+      "text": "right ear"
+    },
+    {
+      "file": "left-shoulder.wav",
+      "text": "left shoulder"
+    },
+    {
+      "file": "right-shoulder.wav",
+      "text": "right shoulder"
+    },
+    {
+      "file": "left-elbow.wav",
+      "text": "left elbow"
+    },
+    {
+      "file": "right-elbow.wav",
+      "text": "right elbow"
+    },
+    {
+      "file": "left-hip.wav",
+      "text": "left hip"
+    },
+    {
+      "file": "right-hip.wav",
+      "text": "right hip"
+    },
+    {
+      "file": "left-foot.wav",
+      "text": "left foot"
+    },
+    {
+      "file": "right-foot.wav",
+      "text": "Right foot!"
+    },
+    {
+      "file": "wrong-pose-0.wav",
+      "text": "Wrong pose. Try again."
+    },
+    {
+      "file": "wrong-pose-1.wav",
+      "text": "That doesn't look right. Try again."
+    },
+    {
+      "file": "wrong-pose-2.wav",
+      "text": "Not quite. Give it another go."
+    },
+    {
+      "file": "wrong-pose-3.wav",
+      "text": "Hmm, that's not it. Try once more."
+    },
+    {
+      "file": "wrong-pose-4.wav",
+      "text": "Almost? Nope. Try again."
+    },
+    {
+      "file": "gotcha-0.wav",
+      "text": "Hey, Simon did not say to do it. Got you. That's a point for me"
+    },
+    {
+      "file": "gotcha-1.wav",
+      "text": "Gotcha — Simon never said that. Point for me."
+    },
+    {
+      "file": "gotcha-2.wav",
+      "text": "Nice try, but Simon didn't say. That's mine."
+    },
+    {
+      "file": "gotcha-3.wav",
+      "text": "Ah ah ah — no Simon says. I score."
+    },
+    {
+      "file": "gotcha-4.wav",
+      "text": "You moved and Simon didn't say. Point to Simon."
+    },
+    {
+      "file": "point-to-you.wav",
+      "text": "A point to you."
+    },
+    {
+      "file": "score-simon.wav",
+      "text": "Simon"
+    },
+    {
+      "file": "score-you.wav",
+      "text": "you"
+    },
+    {
+      "file": "num-0.wav",
+      "text": "zero"
+    },
+    {
+      "file": "num-1.wav",
+      "text": "one"
+    },
+    {
+      "file": "num-2.wav",
+      "text": "two."
+    },
+    {
+      "file": "num-3.wav",
+      "text": "three"
+    },
+    {
+      "file": "num-4.wav",
+      "text": "four"
+    },
+    {
+      "file": "num-5.wav",
+      "text": "five"
+    },
+    {
+      "file": "you-win.wav",
+      "text": "You win!"
+    },
+    {
+      "file": "simon-wins.wav",
+      "text": "Simon wins!"
+    }
+  ]
+}

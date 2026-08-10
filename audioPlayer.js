@@ -355,6 +355,49 @@ class AudioPlayerAiModel {
         this._syncTransportButtons();
     }
 
+    /**
+     * Play a static URL (e.g. pre-recorded Simon Says clips) through the same tap.
+     * @param {string} url
+     * @param {string} [label]
+     * @returns {Promise<void>}
+     */
+    async playSrc(url, label = "Audio") {
+        const src = String(url || "").trim();
+        if (!src) throw new Error("No audio URL to play.");
+        const audio = this._ensureAudio();
+        this._resolvePlayEndedWaiters();
+        this._revokeTtsUrl();
+        audio.pause();
+        try {
+            audio.currentTime = 0;
+        } catch (_) {}
+        audio.src = src;
+        audio.load();
+        this._loadedId = `src:${src}`;
+        this.ensurePlaybackTap();
+        if (this._audioContext && this._audioContext.state === "suspended") {
+            await this._audioContext.resume().catch(() => {});
+        }
+        const ended = new Promise((resolve) => {
+            this._playEndedWaiters.push(resolve);
+        });
+        try {
+            await audio.play();
+            this._setStatus(`Playing: ${label}`);
+            window.__phonebotTtsSpeaking = true;
+        } catch (err) {
+            this._resolvePlayEndedWaiters();
+            window.__phonebotTtsSpeaking = false;
+            console.error("Audio playSrc failed:", err);
+            this._setStatus(`Could not play: ${err?.message || "unknown"}`, true);
+            throw err;
+        }
+        this._syncTransportButtons();
+        await ended;
+        window.__phonebotTtsSpeaking = false;
+        this._syncTransportButtons();
+    }
+
     _loadSelected() {
         const entry = this._entryById(this._selectedId);
         if (!entry) {

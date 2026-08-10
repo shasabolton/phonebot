@@ -1,10 +1,12 @@
 /**
- * Simon Says Pose Match — local MoveNet + Groq TTS (via agent audio player).
- * Command: bring two body keypoints together (within ~eye-spacing).
+ * Simon Says Pose Match — local MoveNet + pre-recorded Austin clips (no AI API).
+ * Command audio is sequenced: [Simon Says?] + Put your + X + on your + Y.
  */
 class SimonSaysPoseMatch {
-    static OPENING_PHRASE = "Hello, Let's play a game of Simon Says!";
+    static AUDIO_DIR = "simonSays/audio";
+    static OPENING_PHRASE = "Hello, Let's play a game of Simon Says! First to three wins.";
     static KEY_PHRASE = "Simon Says";
+    static WIN_SCORE = 3;
     /** Cycled when Simon said and the pose was wrong. */
     static WRONG_POSE_PHRASES = Object.freeze([
         "Wrong pose. Try again.",
@@ -20,6 +22,23 @@ class SimonSaysPoseMatch {
         "Ah ah ah — no Simon says. I score.",
         "You moved and Simon didn't say. Point to Simon."
     ]);
+
+    /** Joint id → pre-recorded clip filename (Groq Orpheus Austin). */
+    static JOINT_AUDIO = Object.freeze({
+        left_wrist: "left-hand.wav",
+        right_wrist: "right-hand.wav",
+        nose: "nose.wav",
+        left_ear: "left-ear.wav",
+        right_ear: "right-ear.wav",
+        left_shoulder: "left-shoulder.wav",
+        right_shoulder: "right-shoulder.wav",
+        left_elbow: "left-elbow.wav",
+        right_elbow: "right-elbow.wav",
+        left_hip: "left-hip.wav",
+        right_hip: "right-hip.wav",
+        left_ankle: "left-foot.wav",
+        right_ankle: "right-foot.wav"
+    });
 
     /** At least one hand (MoveNet wrist) is always in the pair. */
     static HAND_JOINTS = Object.freeze(["left_wrist", "right_wrist"]);
@@ -62,7 +81,8 @@ class SimonSaysPoseMatch {
     /** Max time after the command to achieve that hold. */
     static POSE_CHECK_WINDOW_MS = 3000;
     static POSE_POLL_MS = 50;
-    static SIMON_SAYS_PROBABILITY = 0.8;
+    /** Chance a command includes "Simon Says" (rest are traps). */
+    static SIMON_SAYS_PROBABILITY = 0.5;
 
     /**
      * @param {object} robot
@@ -77,11 +97,15 @@ class SimonSaysPoseMatch {
         this._simonSaid = false;
         this._wrongPhraseIndex = 0;
         this._gotchaPhraseIndex = 0;
+        this._playerScore = 0;
+        this._simonScore = 0;
     }
 
     start() {
         this.stop();
         this._running = true;
+        this._playerScore = 0;
+        this._simonScore = 0;
         this._generation += 1;
         const generation = this._generation;
         void this._runLoop(generation);
@@ -94,6 +118,59 @@ class SimonSaysPoseMatch {
         this._currentB = null;
         this._clearPoseHighlight();
         this._cancelSpeech();
+    }
+
+    _scoreLine() {
+        return `Simon ${this._simonScore}, you ${this._playerScore}`;
+    }
+
+    _numClip(n) {
+        const v = Math.max(0, Math.min(5, Math.floor(Number(n) || 0)));
+        return `num-${v}.wav`;
+    }
+
+    /** Announce "Simon x, you y" from sequenced clips. */
+    async _announceScore(generation) {
+        return this._playAudioFiles(
+            [
+                "score-simon.wav",
+                this._numClip(this._simonScore),
+                "score-you.wav",
+                this._numClip(this._playerScore)
+            ],
+            generation
+        );
+    }
+
+    /**
+     * After a point: optional "point to you", then score line; stop if someone hit WIN_SCORE.
+     * @param {"player"|"simon"} who
+     * @returns {Promise<"continue"|"won"|false>} false = cancelled
+     */
+    async _onScored(who, generation) {
+        if (who === "player") {
+            const said = await this._playAudioFiles(["point-to-you.wav"], generation);
+            if (!said) return false;
+        }
+        this._setStatus(this._scoreLine(), who === "player" ? "ok" : "warn");
+        const scored = await this._announceScore(generation);
+        if (!scored) return false;
+
+        const target = SimonSaysPoseMatch.WIN_SCORE;
+        if (this._playerScore >= target || this._simonScore >= target) {
+            const playerWon = this._playerScore >= target;
+            const winClip = playerWon ? "you-win.wav" : "simon-wins.wav";
+            this._setStatus(
+                playerWon
+                    ? `You win! ${this._scoreLine()}`
+                    : `Simon wins! ${this._scoreLine()}`,
+                playerWon ? "ok" : "warn"
+            );
+            const ended = await this._playAudioFiles([winClip], generation);
+            if (!ended) return false;
+            return "won";
+        }
+        return "continue";
     }
 
     _isActive(generation) {
@@ -126,11 +203,15 @@ class SimonSaysPoseMatch {
         return this.robot?.agentInterface || null;
     }
 
+    _getAudioPlayer() {
+        if (!this.robot || typeof this.robot.getProcessingByType !== "function") return null;
+        return this.robot.getProcessingByType("audioPlayer");
+    }
+
     _cancelSpeech() {
-        const agent = this._getAgent();
-        if (agent && typeof agent._stopSpeaking === "function") {
-            agent._stopSpeaking();
-            return;
+        const player = this._getAudioPlayer();
+        if (player && typeof player.stop === "function") {
+            player.stop();
         }
         try {
             if (window.speechSynthesis) window.speechSynthesis.cancel();
@@ -138,28 +219,43 @@ class SimonSaysPoseMatch {
         window.__phonebotTtsSpeaking = false;
     }
 
+    _audioUrl(fileName) {
+        const base = String(SimonSaysPoseMatch.AUDIO_DIR || "simonSays/audio").replace(/\/+$/, "");
+        const name = String(fileName || "").replace(/^\/+/, "");
+        return `${base}/${name}`;
+    }
+
+    _jointAudioFile(jointName) {
+        return SimonSaysPoseMatch.JOINT_AUDIO[jointName] || null;
+    }
+
     /**
-     * Speak via agent TTS (Groq Orpheus or Gemini; mouth servo can follow audioPlayer).
-     * @param {string} text
+     * Play pre-recorded clips in order via audioPlayer (mouth sync).
+     * @param {string[]} fileNames
      * @param {number} generation
-     * @returns {Promise<boolean>} true if utterance finished while still active
+     * @returns {Promise<boolean>} true if all clips finished while still active
      */
-    async _speak(text, generation) {
-        const content = String(text || "").trim();
-        if (!content) return this._isActive(generation);
+    async _playAudioFiles(fileNames, generation) {
+        const files = (Array.isArray(fileNames) ? fileNames : []).filter(Boolean);
+        if (!files.length) return this._isActive(generation);
         if (!this._isActive(generation)) return false;
 
-        const agent = this._getAgent();
-        if (agent && typeof agent._speakAsync === "function") {
-            // Sync API key from the UI before first TTS call.
-            if (agent._keyInput) {
-                agent._apiKey = agent._keyInput.value?.trim() || agent._apiKey;
-            }
-            const finished = await agent._speakAsync(content);
-            return finished && this._isActive(generation);
+        const player = this._getAudioPlayer();
+        if (!player || typeof player.playSrc !== "function") {
+            this._setStatus("Audio player unavailable for Simon Says clips.", "error");
+            return false;
         }
 
-        this._setStatus("Agent TTS unavailable — is the agent panel loaded?", "error");
+        for (const file of files) {
+            if (!this._isActive(generation)) return false;
+            try {
+                await player.playSrc(this._audioUrl(file), file);
+            } catch (err) {
+                console.warn("Simon Says clip failed:", file, err);
+                this._setStatus(`Could not play ${file}`, "error");
+                return false;
+            }
+        }
         return this._isActive(generation);
     }
 
@@ -250,27 +346,23 @@ class SimonSaysPoseMatch {
     }
 
     _commandPhrase(a, b) {
-        return `touch your ${this._labelJoint(a)} to your ${this._labelJoint(b)}`;
+        return `Put your ${this._labelJoint(a)} on your ${this._labelJoint(b)}`;
     }
 
     /** Next wrong-pose line, cycling through {@link WRONG_POSE_PHRASES}. */
-    _nextWrongPosePhrase() {
+    _nextWrongPoseClip() {
         const list = SimonSaysPoseMatch.WRONG_POSE_PHRASES;
-        if (!list.length) return "Wrong pose. Try again.";
-        const phrase = list[this._wrongPhraseIndex % list.length];
-        this._wrongPhraseIndex = (this._wrongPhraseIndex + 1) % list.length;
-        return phrase;
+        const i = list.length ? this._wrongPhraseIndex % list.length : 0;
+        this._wrongPhraseIndex = list.length ? (i + 1) % list.length : 0;
+        return `wrong-pose-${i}.wav`;
     }
 
     /** Next trap-gotcha line, cycling through {@link SIMON_DID_NOT_SAY_PHRASES}. */
-    _nextSimonDidNotSayPhrase() {
+    _nextSimonDidNotSayClip() {
         const list = SimonSaysPoseMatch.SIMON_DID_NOT_SAY_PHRASES;
-        if (!list.length) {
-            return "Hey, Simon did not say to do it. Got you. That's a point for me";
-        }
-        const phrase = list[this._gotchaPhraseIndex % list.length];
-        this._gotchaPhraseIndex = (this._gotchaPhraseIndex + 1) % list.length;
-        return phrase;
+        const i = list.length ? this._gotchaPhraseIndex % list.length : 0;
+        this._gotchaPhraseIndex = list.length ? (i + 1) % list.length : 0;
+        return `gotcha-${i}.wav`;
     }
 
     _jointSide(name) {
@@ -360,11 +452,16 @@ class SimonSaysPoseMatch {
     }
 
     async _announceCommand(generation) {
-        if (this._simonSaid) {
-            const okKey = await this._speak(SimonSaysPoseMatch.KEY_PHRASE, generation);
-            if (!okKey) return false;
+        const jointA = this._jointAudioFile(this._currentA);
+        const jointB = this._jointAudioFile(this._currentB);
+        if (!jointA || !jointB) {
+            this._setStatus("Missing joint audio clip for this pose.", "error");
+            return false;
         }
-        return this._speak(this._commandPhrase(this._currentA, this._currentB), generation);
+        const clips = [];
+        if (this._simonSaid) clips.push("simon-says.wav");
+        clips.push("put-your.wav", jointA, "on-your.wav", jointB);
+        return this._playAudioFiles(clips, generation);
     }
 
     /**
@@ -416,7 +513,7 @@ class SimonSaysPoseMatch {
 
     async _runLoop(generation) {
         this._setStatus("Simon Says Pose Match — stand in view of the camera…");
-        const opened = await this._speak(SimonSaysPoseMatch.OPENING_PHRASE, generation);
+        const opened = await this._playAudioFiles(["opening.wav"], generation);
         if (!opened) return;
 
         // 2) Pick pose → announce → check → score; repeat.
@@ -460,23 +557,46 @@ class SimonSaysPoseMatch {
 
                 if (this._simonSaid) {
                     if (correct) {
-                        // Correct — silent, next round (step 2).
-                        this._setStatus("Correct — next round…", "ok");
+                        // Correct pose — no score, next round.
+                        this._setStatus(
+                            `Correct — ${this._scoreLine()}. Next…`,
+                            "ok"
+                        );
                     } else {
-                        const said = await this._speak(this._nextWrongPosePhrase(), generation);
+                        const said = await this._playAudioFiles(
+                            [this._nextWrongPoseClip()],
+                            generation
+                        );
                         if (!said) return;
                         // Retry same command from step 4 (re-say Simon Says + command).
                         needAnnounce = true;
                     }
                 } else if (correct) {
-                    const said = await this._speak(this._nextSimonDidNotSayPhrase(), generation);
+                    // Fell for the trap — Simon scores.
+                    this._simonScore += 1;
+                    const said = await this._playAudioFiles(
+                        [this._nextSimonDidNotSayClip()],
+                        generation
+                    );
                     if (!said) return;
-                    this._setStatus("Gotcha — next round…", "warn");
+                    const result = await this._onScored("simon", generation);
+                    if (result === false) return;
+                    if (result === "won") {
+                        this._running = false;
+                        break;
+                    }
                 } else {
-                    // Correctly ignored the trap — silent next round.
-                    this._setStatus("Good — you ignored the trap. Next…", "ok");
+                    // Correctly ignored the trap — player scores.
+                    this._playerScore += 1;
+                    const result = await this._onScored("player", generation);
+                    if (result === false) return;
+                    if (result === "won") {
+                        this._running = false;
+                        break;
+                    }
                 }
             }
+            if (!this._running) break;
         }
         this._clearPoseHighlight();
     }
