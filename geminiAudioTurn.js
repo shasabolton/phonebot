@@ -175,6 +175,26 @@ class GeminiAudioTurn {
         return GeminiAudioTurn.pcmToWavBlob(bytes, rate, 1);
     }
 
+    /**
+     * Prefer the original MediaRecorder blob (usually audio/webm;codecs=opus) — same size as Groq Whisper.
+     * Official Gemini docs list WAV/MP3/AAC/OGG/FLAC; WebM is experimental here so we can measure acceptance.
+     */
+    static mimeTypeForInlineAudio(blob) {
+        const raw = String(blob?.type || "").trim().toLowerCase();
+        if (!raw || raw === "application/octet-stream") return "audio/webm";
+        // Keep codec params (e.g. audio/webm;codecs=opus) — Gemini may ignore them.
+        if (raw.startsWith("audio/")) return raw.split(";")[0].trim() || "audio/webm";
+        return "audio/webm";
+    }
+
+    /** Encode mic clip as Gemini inlineData without decompressing to WAV. */
+    static async blobToInlineAudioPart(blob) {
+        if (!blob || blob.size < 32) throw new Error("No audio blob for Gemini.");
+        const mimeType = GeminiAudioTurn.mimeTypeForInlineAudio(blob);
+        const b64 = GeminiAudioTurn.arrayBufferToBase64(await blob.arrayBuffer());
+        return { inlineData: { mimeType, data: b64 } };
+    }
+
     static async blobToWavBlob(blob) {
         if (!blob) throw new Error("No audio blob to convert.");
         const type = String(blob.type || "").toLowerCase();
@@ -456,9 +476,7 @@ class GeminiAudioTurn {
             }
         ];
         if (hasAudio) {
-            const wav = await GeminiAudioTurn.blobToWavBlob(audioBlob);
-            const b64 = GeminiAudioTurn.arrayBufferToBase64(await wav.arrayBuffer());
-            turnParts.push({ inlineData: { mimeType: "audio/wav", data: b64 } });
+            turnParts.push(await GeminiAudioTurn.blobToInlineAudioPart(audioBlob));
         }
         contents.push({ role: "user", parts: turnParts });
 
@@ -505,8 +523,7 @@ class GeminiAudioTurn {
         if (!audioBlob || audioBlob.size < 32) {
             throw new Error("No audio captured for transcription.");
         }
-        const wav = await GeminiAudioTurn.blobToWavBlob(audioBlob);
-        const b64 = GeminiAudioTurn.arrayBufferToBase64(await wav.arrayBuffer());
+        const audioPart = await GeminiAudioTurn.blobToInlineAudioPart(audioBlob);
         const result = await GeminiAudioTurn.generateContent({
             baseUrl,
             apiKey,
@@ -518,7 +535,7 @@ class GeminiAudioTurn {
                         {
                             text: "Transcribe this audio clip. Return only the spoken words, no quotes or commentary. If there is no speech, return an empty string."
                         },
-                        { inlineData: { mimeType: "audio/wav", data: b64 } }
+                        audioPart
                     ]
                 }
             ],
