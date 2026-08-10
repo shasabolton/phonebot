@@ -30,6 +30,10 @@ class Robot {
         this.dashboardContainer = null;
         this._onModeChange =
             typeof options.onModeChange === "function" ? options.onModeChange : null;
+        this._onRequestStart =
+            typeof options.onRequestStart === "function" ? options.onRequestStart : null;
+        this._startFlowOverlay = null;
+        this._startFlowStep = 0;
 
         this.stateMachine = null;
         this.strategies = null;
@@ -46,6 +50,7 @@ class Robot {
     }
 
     destroy() {
+        this._dismissStartFlowOverlay();
         this._stopLocalGame();
         this.teardownJoysticks();
         this.stopMixClock();
@@ -863,6 +868,107 @@ class Robot {
             missing.textContent = "No camera configured for this robot.";
             camHost.appendChild(missing);
         }
+
+        this._mountStartFlowOverlay(camHost);
+    }
+
+    getStartFlowConfig() {
+        const flow = this.config?.startFlow;
+        if (!flow || typeof flow !== "object" || Array.isArray(flow)) return null;
+        const steps = Array.isArray(flow.steps) ? flow.steps.filter(Boolean) : [];
+        if (!steps.length) return null;
+        return {
+            autoStart: flow.autoStart !== false,
+            steps
+        };
+    }
+
+    _mountStartFlowOverlay(host) {
+        if (!host) return;
+        const flow = this.getStartFlowConfig();
+        if (!flow) return;
+
+        this._dismissStartFlowOverlay();
+        this._startFlowStep = 0;
+
+        const overlay = document.createElement("div");
+        overlay.className = "robot-start-flow";
+        overlay.setAttribute("role", "dialog");
+        overlay.setAttribute("aria-modal", "true");
+        overlay.setAttribute("aria-label", "Robot start setup");
+
+        const card = document.createElement("div");
+        card.className = "robot-start-flow-card";
+        const textEl = document.createElement("p");
+        textEl.className = "robot-start-flow-text";
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "robot-start-flow-btn";
+        btn.addEventListener("click", () => {
+            void this._advanceStartFlow();
+        });
+
+        card.appendChild(textEl);
+        card.appendChild(btn);
+        overlay.appendChild(card);
+        host.appendChild(overlay);
+
+        this._startFlowOverlay = overlay;
+        this._startFlowTextEl = textEl;
+        this._startFlowBtn = btn;
+        this._renderStartFlowStep();
+    }
+
+    _renderStartFlowStep() {
+        const flow = this.getStartFlowConfig();
+        if (!flow || !this._startFlowOverlay) return;
+        const step = flow.steps[this._startFlowStep];
+        if (!step) {
+            void this._finishStartFlow();
+            return;
+        }
+        const text = String(step.text || step.message || "").trim() || "Continue";
+        const label = String(step.button || step.buttonLabel || "Done").trim() || "Done";
+        if (this._startFlowTextEl) this._startFlowTextEl.textContent = text;
+        if (this._startFlowBtn) {
+            this._startFlowBtn.textContent = label;
+            this._startFlowBtn.disabled = false;
+        }
+        this._startFlowOverlay.hidden = false;
+    }
+
+    async _advanceStartFlow() {
+        const flow = this.getStartFlowConfig();
+        if (!flow) return;
+        this._startFlowStep += 1;
+        if (this._startFlowStep >= flow.steps.length) {
+            await this._finishStartFlow();
+            return;
+        }
+        this._renderStartFlowStep();
+    }
+
+    async _finishStartFlow() {
+        const flow = this.getStartFlowConfig();
+        const shouldAutoStart = !!(flow && flow.autoStart);
+        if (this._startFlowBtn) this._startFlowBtn.disabled = true;
+        this._dismissStartFlowOverlay();
+        if (shouldAutoStart && typeof this._onRequestStart === "function") {
+            try {
+                await this._onRequestStart();
+            } catch (err) {
+                console.error("Start flow auto-start failed:", err);
+            }
+        }
+    }
+
+    _dismissStartFlowOverlay() {
+        if (this._startFlowOverlay && this._startFlowOverlay.parentNode) {
+            this._startFlowOverlay.parentNode.removeChild(this._startFlowOverlay);
+        }
+        this._startFlowOverlay = null;
+        this._startFlowTextEl = null;
+        this._startFlowBtn = null;
     }
 
     _buildDefaultDashboard(container) {

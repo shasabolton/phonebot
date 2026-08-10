@@ -134,12 +134,20 @@ class App {
             initialMode: options.mode,
             onModeChange: () => {
                 if (!this._applyingUrl) this.syncUrlParams();
-            }
+            },
+            onRequestStart: () => this.requestStartFromFlow()
         });
         void this.preferScreenLightIfNoWifi();
         this.updateStartButtonState();
         this._refreshSettingsMenu();
         if (!options.skipUrlSync) this.syncUrlParams();
+    }
+
+    /** Used by robot start-flow overlays after the user confirms setup steps. */
+    async requestStartFromFlow() {
+        await this.preferScreenLightIfNoWifi();
+        if (this.isRunLoopActive()) return;
+        await this.onStart();
     }
 
     isWifiConnected() {
