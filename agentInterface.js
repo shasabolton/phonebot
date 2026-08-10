@@ -785,39 +785,50 @@ class AgentInterface {
     /**
      * MoveNet image coords: x/y in 0–1, y=0 at top of frame (sky).
      * Hand raised = either wrist y is smaller than nose y (closer to top).
-     * @returns {boolean}
+     * Score floor matches the skeleton overlay (~0.1) so a drawn wrist can still gate talk.
+     * @param {{ hold?: boolean }} [options] When `hold` is true, use a looser exit band so
+     *   brief MoveNet jitter while recording does not count as hand-down.
+     * @returns {boolean|null} true/false, or null when pose/nose is missing (unknown — not down).
      */
-    _isHandRaisedAboveNose() {
+    _isHandRaisedAboveNose(options = {}) {
         const cv =
             this.robot && typeof this.robot.getProcessingByType === "function"
                 ? this.robot.getProcessingByType("computervision")
                 : null;
-        if (!cv || String(cv.model || "").toLowerCase() !== "movenet") return false;
+        if (!cv || String(cv.model || "").toLowerCase() !== "movenet") return null;
         const poses = typeof cv.poses !== "undefined" ? cv.poses : null;
         const keypoints = poses?.[0]?.keypoints;
-        if (!Array.isArray(keypoints) || !keypoints.length) return false;
+        if (!Array.isArray(keypoints) || !keypoints.length) return null;
 
         const byName = (name) =>
             keypoints.find((kp) => String(kp?.name || "").toLowerCase() === name) || null;
-        const minScore = 0.3;
+        // Overlay draws keypoints from ~0.1; keep talk gate in the same ballpark.
+        const minScore = 0.15;
         const nose = byName("nose");
-        if (!nose || (nose.score || 0) < minScore || !Number.isFinite(Number(nose.y))) return false;
+        if (!nose || (nose.score || 0) < minScore || !Number.isFinite(Number(nose.y))) return null;
         const noseY = Number(nose.y);
+        // Enter: clearly above nose. Hold: stay raised until clearly below (hysteresis).
+        const yThreshold = options.hold ? noseY + 0.04 : noseY - 0.02;
 
+        let sawWrist = false;
         for (const handName of ["left_wrist", "right_wrist"]) {
             const hand = byName(handName);
             if (!hand || (hand.score || 0) < minScore || !Number.isFinite(Number(hand.y))) continue;
+            sawWrist = true;
             // Smaller y = higher in frame (toward sky).
-            if (Number(hand.y) < noseY) return true;
+            if (Number(hand.y) < yThreshold) return true;
         }
+        // Wrists briefly unscored while the skeleton still draws them — treat as unknown, not down.
+        if (!sawWrist) return null;
         return false;
     }
 
     /**
      * Poll MoveNet until hand-raised matches `wantRaised` for a few stable samples.
+     * Unknown pose frames do not reset the streak.
      * @param {boolean} wantRaised
      * @param {number} generation
-     * @param {{ needed?: number, pollMs?: number, onTick?: function }} [options]
+     * @param {{ needed?: number, pollMs?: number, onTick?: function, hold?: boolean }} [options]
      * @returns {Promise<boolean>}
      */
     async _waitForStableHandRaised(wantRaised, generation, options = {}) {
@@ -827,7 +838,10 @@ class AgentInterface {
         while (generation === this._speakGeneration) {
             if (!this._agentEnabled || !this._isConversationMode()) return false;
             if (typeof options.onTick === "function") options.onTick();
-            if (this._isHandRaisedAboveNose() === wantRaised) {
+            const raised = this._isHandRaisedAboveNose({ hold: !!options.hold });
+            if (raised === null) {
+                // Keep waiting; do not reset streak on missing/low-confidence frames.
+            } else if (raised === wantRaised) {
                 streak += 1;
                 if (streak >= needed) return true;
             } else {
@@ -949,8 +963,9 @@ class AgentInterface {
             }
 
             // Record until hand drops below nose, cancel, or max duration.
+            // ~800ms of clear "down" — brief MoveNet flickers used to end recording at ~200ms.
             const pollMs = 100;
-            const neededDown = 2;
+            const neededDown = 8;
             let downStreak = 0;
             let hitMax = false;
             while (generation === this._speakGeneration) {
@@ -967,10 +982,11 @@ class AgentInterface {
                     hitMax = true;
                     break;
                 }
-                if (!this._isHandRaisedAboveNose()) {
+                const raised = this._isHandRaisedAboveNose({ hold: true });
+                if (raised === false) {
                     downStreak += 1;
                     if (downStreak >= neededDown) break;
-                } else {
+                } else if (raised === true) {
                     downStreak = 0;
                 }
                 await new Promise((r) => setTimeout(r, pollMs));
