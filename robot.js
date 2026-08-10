@@ -953,6 +953,8 @@ class Robot {
         const shouldAutoStart = !!(flow && flow.autoStart);
         if (this._startFlowBtn) this._startFlowBtn.disabled = true;
         this._dismissStartFlowOverlay();
+        // Kick local games (e.g. Simon Says opening) in this click gesture so autoplay works.
+        this._syncLocalGameForMode();
         if (shouldAutoStart && typeof this._onRequestStart === "function") {
             try {
                 await this._onRequestStart();
@@ -1085,8 +1087,11 @@ class Robot {
             if (typeof this.agentInterface.onRobotModeChanged === "function") {
                 this.agentInterface.onRobotModeChanged(this.mode);
             }
-            this._syncLocalGameForMode();
-        } else {
+            // Defer local games until start-flow Done (needs a user gesture for audio).
+            if (!this.getStartFlowConfig()) {
+                this._syncLocalGameForMode();
+            }
+        } else if (!this.getStartFlowConfig()) {
             this._syncLocalGameForMode();
         }
 
