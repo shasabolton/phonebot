@@ -1,5 +1,5 @@
 class Robot {
-    constructor(container, config) {
+    constructor(container, config, options = {}) {
         this.config = typeof config === 'string' ? JSON.parse(config) : config;
         this.container = container;
         this.name = this.config?.name;
@@ -27,14 +27,21 @@ class Robot {
         this._goalInputEl = null;
         this._modeSelect = null;
         this._localGame = null;
+        this.dashboardContainer = null;
+        this._onModeChange =
+            typeof options.onModeChange === "function" ? options.onModeChange : null;
+
         this.stateMachine = null;
         this.strategies = null;
         // PID controllers read targets/sensors and may set control inputs.
         // Mix clock rematches control inputs + processing → actuators at mixFrequencyHz.
         // Modes sparsely override actuator mixes (and later, behaviors).
 
-        this._initModeFromConfig();
+        this._initModeFromConfig(options.initialMode);
         this.buildRobot();
+        if (options.dashboardContainer) {
+            this.attachDashboard(options.dashboardContainer);
+        }
         this.buildGUI();
     }
 
@@ -397,10 +404,15 @@ class Robot {
         }
     }
 
-    _initModeFromConfig() {
+    _initModeFromConfig(preferredMode) {
         const modes = this._getModesMap();
         if (!modes) {
             this.mode = null;
+            return;
+        }
+        const preferred = String(preferredMode || "").trim();
+        if (preferred && modes[preferred]) {
+            this.mode = preferred;
             return;
         }
         const want = String(this.config.defaultMode || "").trim();
@@ -497,6 +509,13 @@ class Robot {
             this.agentInterface.onRobotModeChanged(this.mode);
         }
         this._syncLocalGameForMode();
+        if (typeof this._onModeChange === "function") {
+            try {
+                this._onModeChange(this.mode);
+            } catch (err) {
+                console.error("onModeChange failed:", err);
+            }
+        }
         return true;
     }
 
@@ -799,6 +818,68 @@ class Robot {
         }
     }
 
+    getDashboardKind() {
+        const raw = this.config?.dashboard;
+        if (raw != null && String(raw).trim()) return String(raw).trim();
+        if (String(this.name || "").toLowerCase() === "talking head") return "talkingHead";
+        return "default";
+    }
+
+    attachDashboard(container) {
+        this.dashboardContainer = container || null;
+        if (!container) return;
+        this.buildDashboard(container);
+    }
+
+    buildDashboard(container) {
+        if (!container) return;
+        container.innerHTML = "";
+        const kind = this.getDashboardKind();
+        if (kind === "talkingHead") {
+            this._buildTalkingHeadDashboard(container);
+            return;
+        }
+        this._buildDefaultDashboard(container);
+    }
+
+    _buildTalkingHeadDashboard(container) {
+        const root = document.createElement("div");
+        root.className = "robot-dashboard robot-dashboard--talking-head";
+
+        this.buildModesGUI(root);
+
+        const camHost = document.createElement("div");
+        camHost.className = "robot-dashboard-camera";
+        root.appendChild(camHost);
+        container.appendChild(root);
+
+        const camera =
+            this.sensors.find((s) => String(s?.type || "").toLowerCase() === "camera") || null;
+        if (camera && typeof camera.buildDashboardPreview === "function") {
+            camera.buildDashboardPreview(camHost);
+        } else {
+            const missing = document.createElement("p");
+            missing.className = "muted";
+            missing.textContent = "No camera configured for this robot.";
+            camHost.appendChild(missing);
+        }
+    }
+
+    _buildDefaultDashboard(container) {
+        const root = document.createElement("div");
+        root.className = "robot-dashboard robot-dashboard--default";
+        const title = document.createElement("h3");
+        title.className = "robot-dashboard-title";
+        title.textContent = this.name || "Robot";
+        root.appendChild(title);
+        this.buildModesGUI(root);
+        const hint = document.createElement("p");
+        hint.className = "muted";
+        hint.textContent = "Open the menu for transmitter, setup, and detailed panels.";
+        root.appendChild(hint);
+        container.appendChild(root);
+    }
+
     buildModesGUI(container) {
         if (!container) return;
         const modes = this.getModeList();
@@ -834,7 +915,10 @@ class Robot {
         title.textContent = this.name || 'Robot';
         this.container.appendChild(title);
 
-        this.buildModesGUI(this.container);
+        // Modes live on the dashboard when the robot has a custom/default dashboard host.
+        if (!this.dashboardContainer) {
+            this.buildModesGUI(this.container);
+        }
 
         const goalWrap = document.createElement("div");
         goalWrap.className = "robot-goal";

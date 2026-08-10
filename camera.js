@@ -18,6 +18,10 @@ class Camera extends Sensor {
         this._startBtn = null;
         this._frontBtn = null;
         this._backBtn = null;
+        /** @type {"default" | "fill"} */
+        this._layoutMode = "default";
+        /** @type {HTMLElement | null} */
+        this._previewWrap = null;
         /** @type {(() => void) | null} */
         this._onVideoLayout = null;
         /** @type {ResizeObserver | null} */
@@ -27,7 +31,7 @@ class Camera extends Sensor {
     /**
      * Size the frame to the camera stream aspect so the video element is not letterboxed inside the box:
      * the painted picture fills the frame (same framing as canvas drawImage / model JPEG). Fits within the
-     * sensor column width and 70vh.
+     * sensor column width and 70vh, or the dashboard preview parent when layoutMode is "fill".
      */
     _layoutVideoFrameToStreamAspect() {
         const v = this._videoEl;
@@ -40,15 +44,262 @@ class Camera extends Sensor {
             frame.style.height = "";
             return;
         }
-        const wrap = this.gui;
+        const wrap = this._previewWrap || this.gui;
         const maxW = Math.max(1, (wrap?.clientWidth || frame.parentElement?.clientWidth || 400) | 0);
-        const vhCap = window.visualViewport?.height || window.innerHeight;
-        const maxH = Math.max(1, Math.floor(vhCap * 0.7));
+        let maxH;
+        if (this._layoutMode === "fill" && wrap) {
+            maxH = Math.max(1, wrap.clientHeight | 0);
+        } else {
+            const vhCap = window.visualViewport?.height || window.innerHeight;
+            maxH = Math.max(1, Math.floor(vhCap * 0.7));
+        }
+        if (!maxH) return;
         const scale = Math.min(maxW / vw, maxH / vh);
         const dispW = Math.max(1, Math.floor(vw * scale));
         const dispH = Math.max(1, Math.floor(vh * scale));
         frame.style.width = `${dispW}px`;
         frame.style.height = `${dispH}px`;
+    }
+
+    _ensurePreviewElements() {
+        if (this._frameEl && this._videoEl) return;
+        const frame = document.createElement("div");
+        frame.className = "sensor-camera-frame";
+        const video = document.createElement("video");
+        video.setAttribute("playsinline", "");
+        video.setAttribute("webkit-playsinline", "");
+        video.setAttribute("autoplay", "");
+        video.muted = true;
+        video.playsInline = true;
+        video.className = "sensor-camera-video";
+        frame.appendChild(video);
+        this._frameEl = frame;
+        this._videoEl = video;
+        this._syncMirrorClass();
+
+        this._onVideoLayout = () => this._layoutVideoFrameToStreamAspect();
+        video.addEventListener("loadedmetadata", this._onVideoLayout);
+        window.addEventListener("resize", this._onVideoLayout);
+    }
+
+    _bindPreviewResizeObserver(observeEl) {
+        if (typeof ResizeObserver === "undefined" || !observeEl) return;
+        if (this._frameResizeObs) {
+            this._frameResizeObs.disconnect();
+            this._frameResizeObs = null;
+        }
+        this._frameResizeObs = new ResizeObserver(() => this._layoutVideoFrameToStreamAspect());
+        this._frameResizeObs.observe(observeEl);
+    }
+
+    /**
+     * Compact live preview for robot dashboards (single frame + overlay host).
+     * Safe to call before settings buildGUI; settings then attach controls only.
+     */
+    buildDashboardPreview(container) {
+        if (!container) return;
+        this._ensurePreviewElements();
+        this._layoutMode = "fill";
+
+        const wrap = document.createElement("div");
+        wrap.className = "sensor sensor-camera sensor-camera--dashboard";
+        const status = document.createElement("p");
+        status.className = "muted sensor-camera-status";
+        const startBtn = document.createElement("button");
+        startBtn.type = "button";
+        startBtn.className = "sensor-camera-start-btn";
+        startBtn.textContent = "Start camera";
+        startBtn.addEventListener("click", async () => {
+            startBtn.disabled = true;
+            const ok = await this.start();
+            startBtn.disabled = false;
+            if (!ok && this._startBtn) this._startBtn.style.display = "";
+        });
+
+        wrap.appendChild(this._frameEl);
+        wrap.appendChild(status);
+        wrap.appendChild(startBtn);
+        container.appendChild(wrap);
+
+        this._previewWrap = wrap;
+        this.gui = wrap;
+        this._statusEl = status;
+        this._startBtn = startBtn;
+        this._bindPreviewResizeObserver(wrap);
+        this._layoutVideoFrameToStreamAspect();
+
+        this.start().then((ok) => {
+            if (!ok && this._startBtn) {
+                if (this._statusEl && !this._statusEl.textContent) {
+                    this._statusEl.textContent = "Tap “Start camera” to use the camera on this device.";
+                    this._statusEl.className = "muted";
+                }
+            }
+        });
+    }
+
+    _buildControlsOnly(container) {
+        const wrap = document.createElement("div");
+        wrap.className = "sensor sensor-camera sensor-camera--controls";
+        const title = document.createElement("h4");
+        title.textContent = this.name;
+        const note = document.createElement("p");
+        note.className = "muted";
+        note.textContent = "Live preview is on the dashboard.";
+        wrap.appendChild(title);
+        wrap.appendChild(note);
+
+        const faceRow = document.createElement("div");
+        faceRow.className = "sensor-camera-face-row";
+        const frontBtn = document.createElement("button");
+        frontBtn.type = "button";
+        frontBtn.className = "sensor-camera-face-btn";
+        frontBtn.textContent = "Front";
+        const backBtn = document.createElement("button");
+        backBtn.type = "button";
+        backBtn.className = "sensor-camera-face-btn";
+        backBtn.textContent = "Back";
+        frontBtn.addEventListener("click", async () => {
+            if (this._facingMode === "user") return;
+            frontBtn.disabled = true;
+            backBtn.disabled = true;
+            await this.setFacing("user");
+            frontBtn.disabled = false;
+            backBtn.disabled = false;
+        });
+        backBtn.addEventListener("click", async () => {
+            if (this._facingMode === "environment") return;
+            frontBtn.disabled = true;
+            backBtn.disabled = true;
+            await this.setFacing("environment");
+            frontBtn.disabled = false;
+            backBtn.disabled = false;
+        });
+        faceRow.appendChild(frontBtn);
+        faceRow.appendChild(backBtn);
+        this._frontBtn = frontBtn;
+        this._backBtn = backBtn;
+        this._syncFaceButtons();
+        wrap.appendChild(faceRow);
+
+        this._appendFlowAndGridControls(wrap);
+
+        if (!this._statusEl) {
+            const status = document.createElement("p");
+            status.className = "muted sensor-camera-status";
+            wrap.appendChild(status);
+            this._statusEl = status;
+        }
+        if (!this._startBtn) {
+            const startBtn = document.createElement("button");
+            startBtn.type = "button";
+            startBtn.className = "sensor-camera-start-btn";
+            startBtn.textContent = "Start camera";
+            startBtn.addEventListener("click", async () => {
+                startBtn.disabled = true;
+                if (this._frontBtn) this._frontBtn.disabled = true;
+                if (this._backBtn) this._backBtn.disabled = true;
+                const ok = await this.start();
+                startBtn.disabled = false;
+                if (this._frontBtn) this._frontBtn.disabled = false;
+                if (this._backBtn) this._backBtn.disabled = false;
+                if (!ok && this._startBtn) this._startBtn.style.display = "";
+            });
+            wrap.appendChild(startBtn);
+            this._startBtn = startBtn;
+        }
+
+        container.appendChild(wrap);
+        this._controlsGui = wrap;
+    }
+
+    _appendFlowAndGridControls(parent) {
+        const flowRow = document.createElement("div");
+        flowRow.className = "sensor-camera-flow-actions";
+        flowRow.style.marginTop = "8px";
+        const deleteFlowBtn = document.createElement("button");
+        deleteFlowBtn.type = "button";
+        deleteFlowBtn.textContent = "Delete flow box";
+        deleteFlowBtn.title = "Remove the tap- or agent-placed optical-flow tracking box";
+        deleteFlowBtn.addEventListener("click", () => {
+            const r = this.robot;
+            const cv =
+                (r && typeof r.getProcessingByType === "function" && r.getProcessingByType("computervision")) ||
+                (r && Array.isArray(r.processing) && r.processing.find((m) => String(m?.type || "").toLowerCase() === "computervision")) ||
+                null;
+            if (cv && typeof cv.clearManualFlowTracks === "function") {
+                cv.clearManualFlowTracks();
+            }
+        });
+        flowRow.appendChild(deleteFlowBtn);
+
+        const flowBoxSizeWrap = document.createElement("div");
+        flowBoxSizeWrap.className = "sensor-camera-flow-box-size";
+        const flowBoxSizeLabel = document.createElement("label");
+        flowBoxSizeLabel.className = "sensor-camera-flow-box-size-label";
+        flowBoxSizeLabel.style.display = "block";
+        const flowBoxSizeText = document.createElement("span");
+        flowBoxSizeText.textContent = "Flow box width (% of frame)";
+        const flowBoxSizeSelect = document.createElement("select");
+        flowBoxSizeSelect.setAttribute("aria-label", "Flow box width as percent of camera frame width");
+        const Vision = typeof window !== "undefined" ? window.ComputerVisionAiModel : null;
+        const pctOptions = Vision?.FLOW_TOUCH_BOX_WIDTH_PCT_OPTIONS || [10, 15, 20, 25, 30];
+        for (const p of pctOptions) {
+            const opt = document.createElement("option");
+            opt.value = String(p);
+            opt.textContent = `${p}%`;
+            flowBoxSizeSelect.appendChild(opt);
+        }
+        const r0 = this.robot;
+        const cv0 =
+            (r0 && typeof r0.getProcessingByType === "function" && r0.getProcessingByType("computervision")) ||
+            (r0 &&
+                Array.isArray(r0.processing) &&
+                r0.processing.find((m) => String(m?.type || "").toLowerCase() === "computervision")) ||
+            null;
+        if (cv0 && typeof cv0.getFlowTouchBoxWidthPercent === "function") {
+            flowBoxSizeSelect.value = String(cv0.getFlowTouchBoxWidthPercent());
+        } else {
+            flowBoxSizeSelect.value = "10";
+        }
+        if (!cv0 || typeof cv0.setFlowTouchBoxWidthPercent !== "function") {
+            flowBoxSizeSelect.disabled = true;
+            flowBoxSizeSelect.title = "Computer vision model is required to change flow box size.";
+        }
+        flowBoxSizeSelect.addEventListener("change", () => {
+            const r = this.robot;
+            const cv =
+                (r && typeof r.getProcessingByType === "function" && r.getProcessingByType("computervision")) ||
+                (r &&
+                    Array.isArray(r.processing) &&
+                    r.processing.find((m) => String(m?.type || "").toLowerCase() === "computervision")) ||
+                null;
+            if (cv && typeof cv.setFlowTouchBoxWidthPercent === "function") {
+                cv.setFlowTouchBoxWidthPercent(Number(flowBoxSizeSelect.value));
+            }
+        });
+        flowBoxSizeLabel.appendChild(flowBoxSizeText);
+        flowBoxSizeLabel.appendChild(flowBoxSizeSelect);
+        flowBoxSizeWrap.appendChild(flowBoxSizeLabel);
+        flowRow.appendChild(flowBoxSizeWrap);
+        parent.appendChild(flowRow);
+
+        const gridWrap = document.createElement("label");
+        gridWrap.className = "sensor-camera-grid-toggle";
+        gridWrap.style.display = "flex";
+        gridWrap.style.alignItems = "center";
+        gridWrap.style.gap = "8px";
+        gridWrap.style.marginTop = "8px";
+        const gridCheckbox = document.createElement("input");
+        gridCheckbox.type = "checkbox";
+        gridCheckbox.checked = this.showNormalizationGrid;
+        gridCheckbox.addEventListener("change", () => {
+            this.showNormalizationGrid = !!gridCheckbox.checked;
+        });
+        gridWrap.appendChild(gridCheckbox);
+        gridWrap.appendChild(document.createTextNode("Show grid labels (11–99)"));
+        parent.appendChild(gridWrap);
+        this._gridCheckbox = gridCheckbox;
     }
 
     _syncFaceButtons() {
@@ -183,6 +434,14 @@ class Camera extends Sensor {
 
     buildGUI(container) {
         if (!container) return;
+        if (this._frameEl && this._layoutMode === "fill") {
+            this._buildControlsOnly(container);
+            return;
+        }
+
+        this._ensurePreviewElements();
+        this._layoutMode = "default";
+
         const wrap = document.createElement("div");
         wrap.className = "sensor sensor-camera";
         const title = document.createElement("h4");
@@ -194,12 +453,10 @@ class Camera extends Sensor {
         frontBtn.type = "button";
         frontBtn.className = "sensor-camera-face-btn";
         frontBtn.textContent = "Front";
-        frontBtn.setAttribute("aria-pressed", "true");
         const backBtn = document.createElement("button");
         backBtn.type = "button";
         backBtn.className = "sensor-camera-face-btn";
         backBtn.textContent = "Back";
-        backBtn.setAttribute("aria-pressed", "false");
         frontBtn.addEventListener("click", async () => {
             if (this._facingMode === "user") return;
             frontBtn.disabled = true;
@@ -222,101 +479,6 @@ class Camera extends Sensor {
         this._backBtn = backBtn;
         this._syncFaceButtons();
 
-        const frame = document.createElement("div");
-        frame.className = "sensor-camera-frame";
-        const video = document.createElement("video");
-        video.setAttribute("playsinline", "");
-        video.setAttribute("webkit-playsinline", "");
-        video.setAttribute("autoplay", "");
-        video.muted = true;
-        video.playsInline = true;
-        video.className = "sensor-camera-video";
-        frame.appendChild(video);
-
-        const flowRow = document.createElement("div");
-        flowRow.className = "sensor-camera-flow-actions";
-        flowRow.style.marginTop = "8px";
-        const deleteFlowBtn = document.createElement("button");
-        deleteFlowBtn.type = "button";
-        deleteFlowBtn.textContent = "Delete flow box";
-        deleteFlowBtn.title = "Remove the tap- or agent-placed optical-flow tracking box";
-        deleteFlowBtn.addEventListener("click", () => {
-            const r = this.robot;
-            const cv =
-                (r && typeof r.getProcessingByType === "function" && r.getProcessingByType("computervision")) ||
-                (r && Array.isArray(r.processing) && r.processing.find((m) => String(m?.type || "").toLowerCase() === "computervision")) ||
-                null;
-            if (cv && typeof cv.clearManualFlowTracks === "function") {
-                cv.clearManualFlowTracks();
-            }
-        });
-        flowRow.appendChild(deleteFlowBtn);
-
-        const flowBoxSizeWrap = document.createElement("div");
-        flowBoxSizeWrap.className = "sensor-camera-flow-box-size";
-        const flowBoxSizeLabel = document.createElement("label");
-        flowBoxSizeLabel.className = "sensor-camera-flow-box-size-label";
-        flowBoxSizeLabel.style.display = "block";
-        const flowBoxSizeText = document.createElement("span");
-        flowBoxSizeText.textContent = "Flow box width (% of frame)";
-        const flowBoxSizeSelect = document.createElement("select");
-        flowBoxSizeSelect.setAttribute("aria-label", "Flow box width as percent of camera frame width");
-        const Vision = typeof window !== "undefined" ? window.ComputerVisionAiModel : null;
-        const pctOptions = Vision?.FLOW_TOUCH_BOX_WIDTH_PCT_OPTIONS || [10, 15, 20, 25, 30];
-        for (const p of pctOptions) {
-            const opt = document.createElement("option");
-            opt.value = String(p);
-            opt.textContent = `${p}%`;
-            flowBoxSizeSelect.appendChild(opt);
-        }
-        const r0 = this.robot;
-        const cv0 =
-            (r0 && typeof r0.getProcessingByType === "function" && r0.getProcessingByType("computervision")) ||
-            (r0 &&
-                Array.isArray(r0.processing) &&
-                r0.processing.find((m) => String(m?.type || "").toLowerCase() === "computervision")) ||
-            null;
-        if (cv0 && typeof cv0.getFlowTouchBoxWidthPercent === "function") {
-            flowBoxSizeSelect.value = String(cv0.getFlowTouchBoxWidthPercent());
-        } else {
-            flowBoxSizeSelect.value = "10";
-        }
-        if (!cv0 || typeof cv0.setFlowTouchBoxWidthPercent !== "function") {
-            flowBoxSizeSelect.disabled = true;
-            flowBoxSizeSelect.title = "Computer vision model is required to change flow box size.";
-        }
-        flowBoxSizeSelect.addEventListener("change", () => {
-            const r = this.robot;
-            const cv =
-                (r && typeof r.getProcessingByType === "function" && r.getProcessingByType("computervision")) ||
-                (r &&
-                    Array.isArray(r.processing) &&
-                    r.processing.find((m) => String(m?.type || "").toLowerCase() === "computervision")) ||
-                null;
-            if (cv && typeof cv.setFlowTouchBoxWidthPercent === "function") {
-                cv.setFlowTouchBoxWidthPercent(Number(flowBoxSizeSelect.value));
-            }
-        });
-        flowBoxSizeLabel.appendChild(flowBoxSizeText);
-        flowBoxSizeLabel.appendChild(flowBoxSizeSelect);
-        flowBoxSizeWrap.appendChild(flowBoxSizeLabel);
-        flowRow.appendChild(flowBoxSizeWrap);
-
-        const gridWrap = document.createElement("label");
-        gridWrap.className = "sensor-camera-grid-toggle";
-        gridWrap.style.display = "flex";
-        gridWrap.style.alignItems = "center";
-        gridWrap.style.gap = "8px";
-        gridWrap.style.marginTop = "8px";
-        const gridCheckbox = document.createElement("input");
-        gridCheckbox.type = "checkbox";
-        gridCheckbox.checked = this.showNormalizationGrid;
-        gridCheckbox.addEventListener("change", () => {
-            this.showNormalizationGrid = !!gridCheckbox.checked;
-        });
-        gridWrap.appendChild(gridCheckbox);
-        gridWrap.appendChild(document.createTextNode("Show grid labels (11–99)"));
-
         const status = document.createElement("p");
         status.className = "muted sensor-camera-status";
         const startBtn = document.createElement("button");
@@ -333,29 +495,21 @@ class Camera extends Sensor {
             backBtn.disabled = false;
             if (!ok && this._startBtn) this._startBtn.style.display = "";
         });
+
         wrap.appendChild(title);
         wrap.appendChild(faceRow);
-        wrap.appendChild(frame);
-        wrap.appendChild(flowRow);
-        wrap.appendChild(gridWrap);
+        wrap.appendChild(this._frameEl);
+        this._appendFlowAndGridControls(wrap);
         wrap.appendChild(status);
         wrap.appendChild(startBtn);
         container.appendChild(wrap);
+
+        this._previewWrap = wrap;
         this.gui = wrap;
-        this._videoEl = video;
-        this._frameEl = frame;
         this._statusEl = status;
         this._startBtn = startBtn;
-        this._gridCheckbox = gridCheckbox;
-        this._syncMirrorClass();
-
-        this._onVideoLayout = () => this._layoutVideoFrameToStreamAspect();
-        video.addEventListener("loadedmetadata", this._onVideoLayout);
-        window.addEventListener("resize", this._onVideoLayout);
-        if (typeof ResizeObserver !== "undefined") {
-            this._frameResizeObs = new ResizeObserver(() => this._layoutVideoFrameToStreamAspect());
-            this._frameResizeObs.observe(wrap);
-        }
+        this._bindPreviewResizeObserver(wrap);
+        this._layoutVideoFrameToStreamAspect();
 
         this.start().then((ok) => {
             if (!ok && this._startBtn) {

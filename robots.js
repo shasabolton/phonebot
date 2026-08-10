@@ -86,6 +86,7 @@ window.ROBOTS_DATA = {
 
         {
             name: "talking head",
+            dashboard: "talkingHead",
             bodyPlan: "A face with one sevro for mouth and one for eye yaw",
             controlPlan:
                 "Eyes track MoveNet nose x (random glances when no nose). Modes: Mixed / Simon Says Pose Match (local MoveNet + pre-recorded Austin clips) / Simon Says AI (pose countdown) / Conversation / 20 Questions / Linking Word. Groq Orpheus or Gemini TTS / Mp3 → audioPlayer → audioMouthFilter → mouth servo.",

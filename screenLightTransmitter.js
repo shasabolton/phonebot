@@ -421,10 +421,12 @@ Strip height reserved: ${rows * h}&nbsp;mm.</p>
     const b = ScreenLightTransmitter.BORDER_MM;
     const totalMm = ScreenLightTransmitter.PATCH_ROWS * h;
     style.textContent = `
+:root {
+  --screen-light-strip-height: 0px;
+}
 html.screen-light-tx-active,
 body.screen-light-tx-active {
-  padding-bottom: calc(${totalMm}mm + 12px) !important;
-  box-sizing: border-box;
+  --screen-light-strip-height: calc(${totalMm}mm + 12px);
 }
 #screenLightStrip {
   position: fixed;
