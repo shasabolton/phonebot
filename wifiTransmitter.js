@@ -79,6 +79,8 @@ class WifiTransmitter {
     this.ready = false;
     this._readyChangeHandler = null;
     this._uploadFirmwareBusy = false;
+    /** @type {Promise<void> | null} */
+    this._detectPromise = null;
     this._onContainerClick = (e) => {
       if (e.target.closest('[data-action="detect-mode"]')) {
         e.preventDefault();
@@ -106,6 +108,16 @@ class WifiTransmitter {
 
   isReady() {
     return this.ready && !!this.robotStaBaseUrl;
+  }
+
+  /** Resolves when the current (or last) connection probe finishes. */
+  async waitForDetectMode() {
+    if (!this._detectPromise) return;
+    try {
+      await this._detectPromise;
+    } catch (_) {
+      /* ignore probe errors */
+    }
   }
 
   async postControl(path, message) {
@@ -601,6 +613,16 @@ class WifiTransmitter {
   }
 
   async detectMode() {
+    const run = this._detectModeBody();
+    this._detectPromise = run;
+    try {
+      await run;
+    } finally {
+      if (this._detectPromise === run) this._detectPromise = null;
+    }
+  }
+
+  async _detectModeBody() {
     const status = this.el("status");
     const wifiSetup = this.el("wifiSetup");
     if (!status || !wifiSetup) return;

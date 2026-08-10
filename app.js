@@ -136,9 +136,40 @@ class App {
                 if (!this._applyingUrl) this.syncUrlParams();
             }
         });
+        void this.preferScreenLightIfNoWifi();
         this.updateStartButtonState();
         this._refreshSettingsMenu();
         if (!options.skipUrlSync) this.syncUrlParams();
+    }
+
+    isWifiConnected() {
+        if (!this.transmitterListEl || this.transmitterListEl.value !== 'wifi') return false;
+        const tx = this.transmitterInstance;
+        return !!(tx && typeof tx.isReady === 'function' && tx.isReady());
+    }
+
+    /** When a robot is chosen and station WiFi is not ready, default transmitter to screen light. */
+    async preferScreenLightIfNoWifi() {
+        if (!this.transmitterListEl) return;
+        const robotStillSelected = !!this.robot;
+        if (!robotStillSelected) return;
+
+        if (this.transmitterListEl.value === 'wifi' && this.transmitterInstance) {
+            const wifiTx = this.transmitterInstance;
+            if (typeof wifiTx.waitForDetectMode === 'function') {
+                await wifiTx.waitForDetectMode();
+            }
+            if (!this.robot) return;
+            if (this.transmitterInstance !== wifiTx) return;
+            if (typeof wifiTx.isReady === 'function' && wifiTx.isReady()) return;
+        } else if (this.isWifiConnected()) {
+            return;
+        }
+
+        if (!this.robot) return;
+        if (this.transmitterListEl.value === 'screen light') return;
+        this.transmitterListEl.value = 'screen light';
+        this.onTransmitterSelect();
     }
 
     _renderEmptyDashboard() {
