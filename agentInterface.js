@@ -77,10 +77,15 @@ class AgentInterface {
         this._voiceOn = this._resolveVoiceDefault(null);
     }
 
-    /** True when a hand-up-to-talk mode is active (Conversation, 20 Questions, Linking Word). */
+    /** True when a hand-up-to-talk mode is active (Mixed, Conversation, 20 Questions, Linking Word). */
     _isConversationMode() {
         const mode = String(this.robot?.mode || "").trim().toLowerCase();
-        return mode === "conversation" || mode === "twentyquestions" || mode === "linkingword";
+        return (
+            mode === "mixed" ||
+            mode === "conversation" ||
+            mode === "twentyquestions" ||
+            mode === "linkingword"
+        );
     }
 
     /** True when Groq Simon Says AI is active (not the local pose-match game). */

@@ -88,7 +88,7 @@ window.ROBOTS_DATA = {
             name: "talking head",
             bodyPlan: "A face with one sevro for mouth and one for eye yaw",
             controlPlan:
-                "Eyes track MoveNet nose x (random glances when no nose). Modes: Simon Says Pose Match (local MoveNet + agent TTS) / Simon Says AI (pose countdown) / Conversation / 20 Questions / Linking Word. Groq Orpheus or Gemini TTS / Mp3 → audioPlayer → audioMouthFilter → mouth servo.",
+                "Eyes track MoveNet nose x (random glances when no nose). Modes: Mixed / Simon Says Pose Match (local MoveNet + agent TTS) / Simon Says AI (pose countdown) / Conversation / 20 Questions / Linking Word. Groq Orpheus or Gemini TTS / Mp3 → audioPlayer → audioMouthFilter → mouth servo.",
             actuators: [
                 {
                     type: "servo",
@@ -151,8 +151,12 @@ window.ROBOTS_DATA = {
                     name: "Computer vision"
                 }
             ],
-            defaultMode: "conversation",
+            defaultMode: "mixed",
             modes: {
+                mixed: {
+                    label: "Mixed",
+                    promptTemplate: "promptTemplates/mixedPrompt.txt"
+                },
                 simonSaysPoseMatch: {
                     label: "Simon Says Pose Match",
                     game: "simonSaysPoseMatch"
@@ -184,6 +188,7 @@ window.ROBOTS_DATA = {
                 cameraCaptureMaxEdge: 960,
                 cameraCaptureJpegQuality: 0.85,
                 promptTemplates: [
+                    { name: "Mixed", path: "promptTemplates/mixedPrompt.txt" },
                     { name: "Simon Says", path: "promptTemplates/simonSaysPrompt.txt" },
                     { name: "Short conversation", path: "promptTemplates/shortConversation" },
                     { name: "20 Questions", path: "promptTemplates/20QuestionsPrompt.txt" },
