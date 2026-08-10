@@ -95,6 +95,10 @@ window.ROBOTS_DATA = {
                         button: "Done"
                     },
                     {
+                        text: "Turn up the volume",
+                        button: "Done"
+                    },
+                    {
                         text: "Put your phone behind the robot's forehead",
                         button: "Done"
                     }
