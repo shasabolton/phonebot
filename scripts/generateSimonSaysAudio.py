@@ -63,7 +63,7 @@ CLIPS = [
     ("num-4.mp3", "four"),
     ("num-5.mp3", "five"),
     ("you-win.mp3", "You win!"),
-    ("simon-wins.mp3", "Simon wins!"),
+    ("simon-wins.mp3", "Simon wins. Better luck next time."),
 ]
 
 
