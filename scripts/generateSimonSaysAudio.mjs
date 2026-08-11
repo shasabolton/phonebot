@@ -77,7 +77,8 @@ export const CLIPS = [
 
     {
         file: "step-back.wav",
-        text: "Please take a step back so I can see from your waist to your head."
+        text: "Please take a step back, so I can see from your waist to your head.",
+        speed: 0.75
     }
 ];
 
@@ -97,19 +98,23 @@ function sleep(ms) {
     return new Promise((r) => setTimeout(r, ms));
 }
 
-async function synthesize(apiKey, text, attempt = 1) {
+async function synthesize(apiKey, text, speed = 1, attempt = 1) {
+    const body = {
+        model: MODEL,
+        voice: VOICE,
+        input: text,
+        response_format: "wav"
+    };
+    if (Number.isFinite(speed) && speed > 0 && speed !== 1) {
+        body.speed = speed;
+    }
     const res = await fetch(API_URL, {
         method: "POST",
         headers: {
             Authorization: `Bearer ${apiKey}`,
             "Content-Type": "application/json"
         },
-        body: JSON.stringify({
-            model: MODEL,
-            voice: VOICE,
-            input: text,
-            response_format: "wav"
-        })
+        body: JSON.stringify(body)
     });
     if (res.status === 429 && attempt <= 10) {
         const errText = await res.text().catch(() => "");
@@ -118,7 +123,7 @@ async function synthesize(apiKey, text, attempt = 1) {
         const waitMs = Math.ceil((Number.isFinite(waitSec) ? waitSec : 6) * 1000) + 750;
         process.stdout.write(`rate-limited, wait ${waitMs}ms… `);
         await sleep(waitMs);
-        return synthesize(apiKey, text, attempt + 1);
+        return synthesize(apiKey, text, speed, attempt + 1);
     }
     if (!res.ok) {
         const errText = await res.text().catch(() => "");
@@ -165,7 +170,7 @@ async function main() {
             continue;
         }
         process.stdout.write(`[${args.offset + i}] Generating ${clip.file}… `);
-        const wav = await synthesize(apiKey, clip.text);
+        const wav = await synthesize(apiKey, clip.text, clip.speed ?? 1);
         fs.writeFileSync(outPath, wav);
         console.log(`${wav.byteLength} bytes`);
         if (i < slice.length - 1) await sleep(args.delayMs);

@@ -119,6 +119,8 @@
     }
     .app-dashboard {
       flex: 1 1 auto;
+      /* Cap the live dashboard so it never exceeds half the viewport. */
+      max-height: 50dvh;
       min-height: 0;
       overflow: hidden;
       padding: 8px 12px 10px 12px;

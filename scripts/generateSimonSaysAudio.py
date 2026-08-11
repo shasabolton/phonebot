@@ -66,7 +66,7 @@ CLIPS = [
     ("simon-wins.mp3", "Simon wins. Better luck next time."),
     (
         "step-back.mp3",
-        "Please take a step back so I can see from your waist to your head.",
+        "Please take a step back, so I can see from your waist to your head.",
     ),
 ]
 
