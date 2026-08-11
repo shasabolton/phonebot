@@ -74,7 +74,7 @@ class SimonSaysPoseMatch {
 
     static MIN_KEYPOINT_SCORE = 0.3;
     /** Match if distance ≤ this × inter-eye distance. */
-    static MATCH_EYE_TOLERANCE = 3;
+    static MATCH_EYE_TOLERANCE = 4;
     static FALLBACK_EYE_SPACING = 0.06;
     /** Pose must stay matched continuously for this long to count. */
     static MATCH_HOLD_MS = 450;
