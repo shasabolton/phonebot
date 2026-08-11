@@ -64,6 +64,10 @@ CLIPS = [
     ("num-5.mp3", "five"),
     ("you-win.mp3", "You win!"),
     ("simon-wins.mp3", "Simon wins. Better luck next time."),
+    (
+        "step-back.mp3",
+        "Please take a step back so I can see from your waist to your head.",
+    ),
 ]
 
 

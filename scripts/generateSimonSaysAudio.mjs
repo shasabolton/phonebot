@@ -73,7 +73,12 @@ export const CLIPS = [
     { file: "num-4.wav", text: "four" },
     { file: "num-5.wav", text: "five" },
     { file: "you-win.wav", text: "You win!" },
-    { file: "simon-wins.wav", text: "Simon wins. Better luck next time." }
+    { file: "simon-wins.wav", text: "Simon wins. Better luck next time." },
+
+    {
+        file: "step-back.wav",
+        text: "Please take a step back so I can see from your waist to your head."
+    }
 ];
 
 function parseArgs(argv) {

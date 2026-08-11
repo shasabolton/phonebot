@@ -83,6 +83,9 @@ class SimonSaysPoseMatch {
     static POSE_POLL_MS = 50;
     /** Chance a command includes "Simon Says" (rest are traps). */
     static SIMON_SAYS_PROBABILITY = 0.5;
+    /** Prompt step-back after nose + hip are missing this long. */
+    static FRAME_MISSING_MS = 2000;
+    static FRAME_POLL_MS = 100;
 
     /**
      * @param {object} robot
@@ -99,6 +102,10 @@ class SimonSaysPoseMatch {
         this._gotchaPhraseIndex = 0;
         this._playerScore = 0;
         this._simonScore = 0;
+        this._audioBusy = false;
+        this._stepBackPlaying = false;
+        /** @type {number|null} */
+        this._frameMissingSince = null;
     }
 
     start() {
@@ -106,8 +113,12 @@ class SimonSaysPoseMatch {
         this._running = true;
         this._playerScore = 0;
         this._simonScore = 0;
+        this._frameMissingSince = null;
+        this._stepBackPlaying = false;
+        this._audioBusy = false;
         this._generation += 1;
         const generation = this._generation;
+        void this._runFramingWatch(generation);
         void this._runLoop(generation);
     }
 
@@ -116,6 +127,9 @@ class SimonSaysPoseMatch {
         this._generation += 1;
         this._currentA = null;
         this._currentB = null;
+        this._frameMissingSince = null;
+        this._stepBackPlaying = false;
+        this._audioBusy = false;
         this._clearPoseHighlight();
         this._cancelSpeech();
     }
@@ -238,6 +252,12 @@ class SimonSaysPoseMatch {
     async _playAudioFiles(fileNames, generation) {
         const files = (Array.isArray(fileNames) ? fileNames : []).filter(Boolean);
         if (!files.length) return this._isActive(generation);
+
+        while (this._audioBusy) {
+            if (!this._isActive(generation)) return false;
+            const waited = await this._sleep(40, generation);
+            if (!waited) return false;
+        }
         if (!this._isActive(generation)) return false;
 
         const player = this._getAudioPlayer();
@@ -246,17 +266,66 @@ class SimonSaysPoseMatch {
             return false;
         }
 
-        for (const file of files) {
-            if (!this._isActive(generation)) return false;
-            try {
-                await player.playSrc(this._audioUrl(file), file);
-            } catch (err) {
-                console.warn("Simon Says clip failed:", file, err);
-                this._setStatus(`Could not play ${file}`, "error");
-                return false;
+        this._audioBusy = true;
+        try {
+            for (const file of files) {
+                if (!this._isActive(generation)) return false;
+                try {
+                    await player.playSrc(this._audioUrl(file), file);
+                } catch (err) {
+                    console.warn("Simon Says clip failed:", file, err);
+                    this._setStatus(`Could not play ${file}`, "error");
+                    return false;
+                }
             }
+            return this._isActive(generation);
+        } finally {
+            this._audioBusy = false;
         }
-        return this._isActive(generation);
+    }
+
+    /** True when nose and at least one hip are confidently in view (waist → head). */
+    _hasWaistToHeadFrame(keypoints) {
+        const nose = this._byName(keypoints, "nose");
+        if (!this._isVisible(nose)) return false;
+        const leftHip = this._byName(keypoints, "left_hip");
+        const rightHip = this._byName(keypoints, "right_hip");
+        return this._isVisible(leftHip) || this._isVisible(rightHip);
+    }
+
+    /**
+     * While the game runs: if nose + hip stay out of view for FRAME_MISSING_MS, play step-back.
+     * Waits for other clips to finish so we don't cut off commands mid-sentence.
+     */
+    async _runFramingWatch(generation) {
+        const needMs = SimonSaysPoseMatch.FRAME_MISSING_MS;
+        const pollMs = SimonSaysPoseMatch.FRAME_POLL_MS;
+
+        while (this._isActive(generation)) {
+            if (this._hasWaistToHeadFrame(this._getKeypoints())) {
+                this._frameMissingSince = null;
+            } else if (this._frameMissingSince == null) {
+                this._frameMissingSince = performance.now();
+            } else if (
+                !this._audioBusy &&
+                !this._stepBackPlaying &&
+                performance.now() - this._frameMissingSince >= needMs
+            ) {
+                this._stepBackPlaying = true;
+                this._setStatus("Step back — need waist to head in view", "warn");
+                try {
+                    const played = await this._playAudioFiles(["step-back.wav"], generation);
+                    if (!played) return;
+                } finally {
+                    this._stepBackPlaying = false;
+                    // Require another full missing stretch before repeating.
+                    this._frameMissingSince = performance.now();
+                }
+            }
+
+            const ok = await this._sleep(pollMs, generation);
+            if (!ok) return;
+        }
     }
 
     _sleep(ms, generation) {
