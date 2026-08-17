@@ -135,8 +135,21 @@ class AgentInterface {
         };
     }
 
+    /** The key field is the source of truth, so clearing it drops any remembered key. */
+    _clientApiKey() {
+        if (this._keyInput) return String(this._keyInput.value || "").trim();
+        return String(this._apiKey || "").trim();
+    }
+
+    /** Hosted Groq is the fallback for paid modes only when the user has no key of their own. */
+    _useHostedAi() {
+        if (this._clientApiKey()) return false;
+        return !!window.playBilling?.isArcadeAiMode?.(this._billingContext().modeConfig);
+    }
+
     async _ensureArcadeAiBudget() {
         const context = this._billingContext();
+        if (!this._useHostedAi()) return true;
         if (!window.playBilling?.isArcadeAiMode?.(context.modeConfig)) return true;
         const allowed = await window.playBilling.ensureAiBudget(context);
         this._billingPaused = !allowed;
@@ -339,7 +352,7 @@ class AgentInterface {
         form.append("file", blob, filename);
         form.append("model", model);
         const hostedArcade =
-            window.playBilling?.isArcadeAiMode?.(this._billingContext().modeConfig) &&
+            this._useHostedAi() &&
             typeof window.playBilling?.fetchHostedTranscribe === "function";
         let res;
         if (hostedArcade) {
@@ -349,7 +362,7 @@ class AgentInterface {
             if (!url) {
                 throw new Error("Agent has no transcription URL (set baseUrl or transcriptionUrl).");
             }
-            const apiKey = String(this._apiKey || this._keyInput?.value || "").trim();
+            const apiKey = this._clientApiKey();
             if (!apiKey) {
                 throw new Error("Enter an API key for this provider.");
             }
@@ -470,7 +483,7 @@ class AgentInterface {
             response_format: "wav"
         };
         const hostedArcade =
-            window.playBilling?.isArcadeAiMode?.(this._billingContext().modeConfig) &&
+            this._useHostedAi() &&
             typeof window.playBilling?.fetchHostedSpeech === "function";
         let res;
         if (hostedArcade) {
@@ -478,7 +491,7 @@ class AgentInterface {
         } else {
             const url = this._resolveSpeechUrl(agent);
             if (!url) throw new Error("Agent has no speech URL (set baseUrl or speechUrl).");
-            const apiKey = String(this._apiKey || this._keyInput?.value || "").trim();
+            const apiKey = this._clientApiKey();
             if (!apiKey) throw new Error("Enter an API key for TTS.");
             const authHeader = String(agent.authHeader || "Authorization").trim();
             const authPrefix = agent.authPrefix !== undefined ? String(agent.authPrefix) : "Bearer ";
@@ -591,8 +604,8 @@ class AgentInterface {
             this._voiceSelect.value = this._ttsVoice;
         }
         this._setVoiceStatus(
-            window.playBilling?.isArcadeAiMode?.(this._billingContext().modeConfig)
-                ? "Arcade session active. Chat, Whisper, and TTS use the hosted metered Groq key (no app key needed)."
+            this._useHostedAi()
+                ? "Arcade session active. Chat, Whisper, and TTS use the hosted metered Groq key (clear key field = hosted)."
                 : gemini
                 ? "Gemini audio turn + TTS (AI Studio). Text history only — no Groq Whisper/Orpheus."
                 : "Groq Orpheus TTS (API credits). Max 200 chars. Plays via audio player for mouth sync."
@@ -1723,9 +1736,9 @@ class AgentInterface {
         }
         const hostedArcadeChat =
             !gemini &&
-            window.playBilling?.isArcadeAiMode?.(this._billingContext().modeConfig) &&
+            this._useHostedAi() &&
             typeof window.playBilling?.fetchHostedChat === "function";
-        const apiKey = String(this._apiKey || "").trim();
+        const apiKey = this._clientApiKey();
         if (!hostedArcadeChat && !apiKey) {
             throw new Error("Enter an API key for this provider.");
         }
@@ -2701,12 +2714,30 @@ class AgentInterface {
         keyLabel.textContent = "API key (this provider)";
         const keyInput = document.createElement("input");
         keyInput.type = "password";
-        keyInput.placeholder = "sk-… / gsk_… / AIza…";
-        keyInput.autocomplete = "off";
+        keyInput.placeholder = "sk-… / gsk_… / AIza… (blank = hosted arcade key)";
+        // Password managers ignore autocomplete="off"; "new-password" stops them refilling a cleared key.
+        keyInput.autocomplete = "new-password";
+        keyInput.name = `phonebot-agent-key-${Math.random().toString(36).slice(2)}`;
         keyInput.addEventListener("input", () => {
             this._apiKey = String(keyInput.value || "").trim();
             const agent = this.getSelectedAgent();
             if (agent) this._persistKeyForAgent(agent.name, this._apiKey);
+        });
+
+        const clearKeyBtn = document.createElement("button");
+        clearKeyBtn.type = "button";
+        clearKeyBtn.className = "agent-key-clear-btn";
+        clearKeyBtn.textContent = "Clear key (use hosted arcade key)";
+        clearKeyBtn.addEventListener("click", () => {
+            keyInput.value = "";
+            this._apiKey = "";
+            const agent = this.getSelectedAgent();
+            if (agent) this._persistKeyForAgent(agent.name, "");
+            this._syncVoiceUiForSelectedAgent();
+            if (this._statusEl) {
+                this._statusEl.className = "muted";
+                this._statusEl.textContent = "API key cleared.";
+            }
         });
 
         const rememberWrap = document.createElement("label");
@@ -2850,6 +2881,7 @@ class AgentInterface {
         controls.appendChild(agentSelect);
         controls.appendChild(keyLabel);
         controls.appendChild(keyInput);
+        controls.appendChild(clearKeyBtn);
         controls.appendChild(rememberWrap);
         controls.appendChild(modelLabel);
         controls.appendChild(modelOverrideInput);
@@ -2896,6 +2928,8 @@ class AgentInterface {
         this._voiceOn = this._resolveVoiceDefault(this.getSelectedAgent());
         this._voiceInput.checked = this._voiceOn;
         this._syncKeyFromSelection();
+        // Browsers restore form values after load; re-assert what we actually stored.
+        requestAnimationFrame(() => this._syncKeyFromSelection());
         this._syncVoiceUiForSelectedAgent();
         this._syncSendButtonState();
         void this._hydrateDefaultPromptFromIntroductionTemplate();

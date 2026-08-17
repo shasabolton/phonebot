@@ -184,9 +184,11 @@ Copy `worker/.dev.vars.example` to `worker/.dev.vars` for local secrets. Never c
 
 `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET` must be Stripe **test-mode** values while
 testing. `GROQ_API_KEY` is used only by the Worker's metered hosted chat route. Free modes
-retain BYOK. Paid arcade modes route chat, Whisper transcription, and TTS through the Worker
-using `GROQ_API_KEY`, and debit the play-session AI budget. Checkout amounts come
-from the Worker mode catalog, not from the browser request body.
+retain BYOK. In paid arcade modes, a key entered in the app takes priority: chat, Whisper,
+and TTS use that key directly and no AI budget is debited. With the key field empty, those
+calls route through the Worker using `GROQ_API_KEY` and debit the play-session AI budget.
+Payment is still required to enter a paid mode either way. Checkout amounts come from the
+Worker mode catalog, not from the browser request body.
 
 Set `GROQ_RATES_JSON` to a JSON object keyed by allowed model. Rates are AUD cents per
 million tokens, for example:
