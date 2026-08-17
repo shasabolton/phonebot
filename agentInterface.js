@@ -81,14 +81,12 @@ class AgentInterface {
         this._voiceOn = this._resolveVoiceDefault(null);
     }
 
-    /** True when a hand-up-to-talk mode is active (Mixed, Conversation, 20 Questions, Linking Word, Fortune Teller). */
+    /** True when a hand-up-to-talk game is active (Philosophy, 20 Questions, Fortune Teller). */
     _isConversationMode() {
         const mode = String(this.robot?.mode || "").trim().toLowerCase();
         return (
-            mode === "mixed" ||
-            mode === "conversation" ||
+            mode === "philosophy" ||
             mode === "twentyquestions" ||
-            mode === "linkingword" ||
             mode === "fortuneteller"
         );
     }

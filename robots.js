@@ -106,7 +106,7 @@ window.ROBOTS_DATA = {
             },
             bodyPlan: "A face with one sevro for mouth and one for eye yaw",
             controlPlan:
-                "Eyes track MoveNet nose x (random glances when no nose). Modes: Mixed / Simon Says Pose Match (local MoveNet + pre-recorded Austin clips) / Simon Says AI (pose countdown) / Conversation / 20 Questions / Linking Word. Groq Orpheus or Gemini TTS / Mp3 → audioPlayer → audioMouthFilter → mouth servo.",
+                "Eyes track MoveNet nose x (random glances when no nose). Games: Menu / Simon Says Basic (local MoveNet + pre-recorded Austin clips) / Simon Says Advanced (pose countdown) / Philosophy / 20 Questions / Fortune Teller. Groq Orpheus or Gemini TTS / Mp3 → audioPlayer → audioMouthFilter → mouth servo.",
             actuators: [
                 {
                     type: "servo",
@@ -178,15 +178,8 @@ window.ROBOTS_DATA = {
                     currency: "aud",
                     free: true
                 },
-                mixed: {
-                    label: "Mixed",
-                    promptTemplate: "promptTemplates/mixedPrompt.txt",
-                    priceCents: 0,
-                    currency: "aud",
-                    free: true
-                },
                 simonSaysPoseMatch: {
-                    label: "Simon Says Pose Match",
+                    label: "Simon Says Basic",
                     game: "simonSaysPoseMatch",
                     priceCents: 200,
                     currency: "aud",
@@ -194,7 +187,7 @@ window.ROBOTS_DATA = {
                     aiBudgetCents: 0
                 },
                 simonSaysAi: {
-                    label: "Simon Says AI",
+                    label: "Simon Says Advanced",
                     promptTemplate: "promptTemplates/simonSaysPrompt.txt",
                     priceCents: 200,
                     currency: "aud",
@@ -202,9 +195,9 @@ window.ROBOTS_DATA = {
                     aiBudgetCents: 50,
                     continuePriceCents: 200
                 },
-                conversation: {
-                    label: "Conversation",
-                    promptTemplate: "promptTemplates/shortConversation",
+                philosophy: {
+                    label: "Philosophy",
+                    promptTemplate: "promptTemplates/philosophyPrompt.txt",
                     priceCents: 200,
                     currency: "aud",
                     endCondition: "manualOrTimeout",
@@ -214,15 +207,6 @@ window.ROBOTS_DATA = {
                 twentyQuestions: {
                     label: "20 Questions",
                     promptTemplate: "promptTemplates/20QuestionsPrompt.txt",
-                    priceCents: 200,
-                    currency: "aud",
-                    endCondition: "gameFinished",
-                    aiBudgetCents: 50,
-                    continuePriceCents: 200
-                },
-                linkingWord: {
-                    label: "Linking Word",
-                    promptTemplate: "promptTemplates/linkingWord.txt",
                     priceCents: 200,
                     currency: "aud",
                     endCondition: "gameFinished",
@@ -249,11 +233,9 @@ window.ROBOTS_DATA = {
                 cameraCaptureMaxEdge: 960,
                 cameraCaptureJpegQuality: 0.85,
                 promptTemplates: [
-                    { name: "Mixed", path: "promptTemplates/mixedPrompt.txt" },
-                    { name: "Simon Says", path: "promptTemplates/simonSaysPrompt.txt" },
-                    { name: "Short conversation", path: "promptTemplates/shortConversation" },
+                    { name: "Simon Says Advanced", path: "promptTemplates/simonSaysPrompt.txt" },
+                    { name: "Philosophy", path: "promptTemplates/philosophyPrompt.txt" },
                     { name: "20 Questions", path: "promptTemplates/20QuestionsPrompt.txt" },
-                    { name: "Linking Word", path: "promptTemplates/linkingWord.txt" },
                     { name: "Fortune Teller", path: "promptTemplates/fortuneTellerPrompt.txt" }
                 ],
                 agents: [

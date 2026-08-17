@@ -1,20 +1,20 @@
 const MODE_CATALOG = Object.freeze({
     simonSaysPoseMatch: {
-        label: "Simon Says Pose Match",
+        label: "Simon Says Basic",
         priceCents: 200,
         currency: "aud",
         aiBudgetCents: 0,
         continuePriceCents: 200
     },
     simonSaysAi: {
-        label: "Simon Says AI",
+        label: "Simon Says Advanced",
         priceCents: 200,
         currency: "aud",
         aiBudgetCents: 50,
         continuePriceCents: 200
     },
-    conversation: {
-        label: "Conversation",
+    philosophy: {
+        label: "Philosophy",
         priceCents: 200,
         currency: "aud",
         aiBudgetCents: 50,
@@ -22,13 +22,6 @@ const MODE_CATALOG = Object.freeze({
     },
     twentyQuestions: {
         label: "20 Questions",
-        priceCents: 200,
-        currency: "aud",
-        aiBudgetCents: 50,
-        continuePriceCents: 200
-    },
-    linkingWord: {
-        label: "Linking Word",
         priceCents: 200,
         currency: "aud",
         aiBudgetCents: 50,

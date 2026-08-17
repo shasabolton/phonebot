@@ -1091,7 +1091,7 @@ class Robot {
         wrap.className = "robot-modes";
 
         const label = document.createElement("label");
-        label.textContent = "Mode";
+        label.textContent = "Game";
         const select = document.createElement("select");
         select.className = "robot-modes-select";
         for (const { id, label: text } of modes) {
