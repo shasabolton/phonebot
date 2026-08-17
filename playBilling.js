@@ -100,21 +100,55 @@ class PlayBilling {
         });
         if (!checkout?.url) return false;
         localStorage.setItem(key, checkout.playSessionId);
-        if (accepted.checkoutWindow) {
-            this._checkoutWindow = accepted.checkoutWindow;
-            accepted.checkoutWindow.location.replace(checkout.url);
+        const checkoutWindow = this._usableCheckoutWindow(accepted.checkoutWindow);
+        if (checkoutWindow) {
+            this._checkoutWindow = checkoutWindow;
+            try {
+                checkoutWindow.location.replace(checkout.url);
+            } catch (_) {
+                try {
+                    checkoutWindow.close();
+                } catch (_) {}
+                this._checkoutWindow = null;
+                window.location.assign(checkout.url);
+                return false;
+            }
             const paidSession = await this._waitForPaid(checkout.playSessionId);
             if (!paidSession) return false;
             try {
-                accepted.checkoutWindow.close();
+                checkoutWindow.close();
             } catch (_) {}
             this._checkoutWindow = null;
             this._modal.hidden = true;
             this._setActive(await this._startSession(paidSession.id));
             return true;
         }
+        // Mobile browsers often leave popup tabs stuck on about:blank — use same-tab Checkout.
         window.location.assign(checkout.url);
         return false;
+    }
+
+    _preferSameTabCheckout() {
+        try {
+            if (window.matchMedia("(pointer: coarse)").matches) return true;
+            if (window.matchMedia("(max-width: 900px)").matches) return true;
+        } catch (_) {}
+        const ua = String(navigator.userAgent || "");
+        return /Android|iPhone|iPad|iPod|Mobile/i.test(ua);
+    }
+
+    _usableCheckoutWindow(win) {
+        if (!win || win.closed) return null;
+        try {
+            // A blocked or inert popup may exist but reject navigation after the async checkout create.
+            void win.location.href;
+            return win;
+        } catch (_) {
+            try {
+                win.close();
+            } catch (_) {}
+            return null;
+        }
     }
 
     async ensureAiBudget({ modeId, modeConfig, robotSlug }) {
@@ -383,7 +417,13 @@ class PlayBilling {
         const cancel = overlay.querySelector(".play-billing-cancel");
         pay.addEventListener("click", () => {
             pay.disabled = true;
-            const checkoutWindow = window.open("about:blank", "phonebotStripeCheckout");
+            let checkoutWindow = null;
+            if (!this._preferSameTabCheckout()) {
+                checkoutWindow = window.open("about:blank", "phonebotStripeCheckout");
+                if (!checkoutWindow || checkoutWindow.closed) {
+                    checkoutWindow = null;
+                }
+            }
             const resolve = this._modalResolve;
             this._modalResolve = null;
             if (resolve) resolve({ checkoutWindow });
