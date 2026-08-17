@@ -333,34 +333,42 @@ class AgentInterface {
                 audioBlob: blob
             });
         }
-        const url = this._resolveTranscribeUrl(agent);
-        if (!url) {
-            throw new Error("Agent has no transcription URL (set baseUrl or transcriptionUrl).");
-        }
         const model = this._resolveTranscriptionModel(agent);
-        const apiKey = String(this._apiKey || "").trim();
-        if (!apiKey) {
-            throw new Error("Enter an API key for this provider.");
-        }
-        const authHeader = String(agent.authHeader || "Authorization").trim();
-        const authPrefix = agent.authPrefix !== undefined ? String(agent.authPrefix) : "Bearer ";
         const filename = String(options.filename || "speech.webm").trim() || "speech.webm";
         const form = new FormData();
         form.append("file", blob, filename);
         form.append("model", model);
-        const headers = {
-            [authHeader]: `${authPrefix}${apiKey}`
-        };
-        if (agent.extraHeaders && typeof agent.extraHeaders === "object") {
-            for (const [k, v] of Object.entries(agent.extraHeaders)) {
-                if (k && v != null) headers[k] = String(v);
+        const hostedArcade =
+            window.playBilling?.isArcadeAiMode?.(this._billingContext().modeConfig) &&
+            typeof window.playBilling?.fetchHostedTranscribe === "function";
+        let res;
+        if (hostedArcade) {
+            res = await window.playBilling.fetchHostedTranscribe(form);
+        } else {
+            const url = this._resolveTranscribeUrl(agent);
+            if (!url) {
+                throw new Error("Agent has no transcription URL (set baseUrl or transcriptionUrl).");
             }
+            const apiKey = String(this._apiKey || this._keyInput?.value || "").trim();
+            if (!apiKey) {
+                throw new Error("Enter an API key for this provider.");
+            }
+            const authHeader = String(agent.authHeader || "Authorization").trim();
+            const authPrefix = agent.authPrefix !== undefined ? String(agent.authPrefix) : "Bearer ";
+            const headers = {
+                [authHeader]: `${authPrefix}${apiKey}`
+            };
+            if (agent.extraHeaders && typeof agent.extraHeaders === "object") {
+                for (const [k, v] of Object.entries(agent.extraHeaders)) {
+                    if (k && v != null) headers[k] = String(v);
+                }
+            }
+            res = await fetch(url, {
+                method: "POST",
+                headers,
+                body: form
+            });
         }
-        const res = await fetch(url, {
-            method: "POST",
-            headers,
-            body: form
-        });
         if (await window.playBilling?.handlePaymentRequired?.(res, this._billingContext())) {
             this._billingPaused = true;
             throw new Error("AI budget used. Pay to continue.");
@@ -446,10 +454,6 @@ class AgentInterface {
                 voice
             });
         }
-        const url = this._resolveSpeechUrl(agent);
-        if (!url) throw new Error("Agent has no speech URL (set baseUrl or speechUrl).");
-        const apiKey = String(this._apiKey || this._keyInput?.value || "").trim();
-        if (!apiKey) throw new Error("Enter an API key for TTS.");
         const voice = window.GroqTts?.isKnownVoice?.(options.voice)
             ? options.voice
             : window.GroqTts?.DEFAULT_VOICE || "autumn";
@@ -459,27 +463,40 @@ class AgentInterface {
                 : String(text || "").trim().slice(0, 200);
         if (!input) throw new Error("Nothing to speak.");
         const model = this._resolveSpeechModel(agent);
-        const authHeader = String(agent.authHeader || "Authorization").trim();
-        const authPrefix = agent.authPrefix !== undefined ? String(agent.authPrefix) : "Bearer ";
-        const headers = {
-            "Content-Type": "application/json",
-            [authHeader]: `${authPrefix}${apiKey}`
+        const speechBody = {
+            model,
+            voice,
+            input,
+            response_format: "wav"
         };
-        if (agent.extraHeaders && typeof agent.extraHeaders === "object") {
-            for (const [k, v] of Object.entries(agent.extraHeaders)) {
-                if (k && v != null) headers[k] = String(v);
+        const hostedArcade =
+            window.playBilling?.isArcadeAiMode?.(this._billingContext().modeConfig) &&
+            typeof window.playBilling?.fetchHostedSpeech === "function";
+        let res;
+        if (hostedArcade) {
+            res = await window.playBilling.fetchHostedSpeech(speechBody);
+        } else {
+            const url = this._resolveSpeechUrl(agent);
+            if (!url) throw new Error("Agent has no speech URL (set baseUrl or speechUrl).");
+            const apiKey = String(this._apiKey || this._keyInput?.value || "").trim();
+            if (!apiKey) throw new Error("Enter an API key for TTS.");
+            const authHeader = String(agent.authHeader || "Authorization").trim();
+            const authPrefix = agent.authPrefix !== undefined ? String(agent.authPrefix) : "Bearer ";
+            const headers = {
+                "Content-Type": "application/json",
+                [authHeader]: `${authPrefix}${apiKey}`
+            };
+            if (agent.extraHeaders && typeof agent.extraHeaders === "object") {
+                for (const [k, v] of Object.entries(agent.extraHeaders)) {
+                    if (k && v != null) headers[k] = String(v);
+                }
             }
+            res = await fetch(url, {
+                method: "POST",
+                headers,
+                body: JSON.stringify(speechBody)
+            });
         }
-        const res = await fetch(url, {
-            method: "POST",
-            headers,
-            body: JSON.stringify({
-                model,
-                voice,
-                input,
-                response_format: "wav"
-            })
-        });
         if (await window.playBilling?.handlePaymentRequired?.(res, this._billingContext())) {
             this._billingPaused = true;
             throw new Error("AI budget used. Pay to continue.");
@@ -575,7 +592,7 @@ class AgentInterface {
         }
         this._setVoiceStatus(
             window.playBilling?.isArcadeAiMode?.(this._billingContext().modeConfig)
-                ? "Arcade session active. Chat uses the hosted metered key; v1 transcription/TTS still use your provider key."
+                ? "Arcade session active. Chat, Whisper, and TTS use the hosted metered Groq key (no app key needed)."
                 : gemini
                 ? "Gemini audio turn + TTS (AI Studio). Text history only — no Groq Whisper/Orpheus."
                 : "Groq Orpheus TTS (API credits). Max 200 chars. Plays via audio player for mouth sync."
@@ -614,7 +631,8 @@ class AgentInterface {
         let usedBrowserFallback = false;
         try {
             this._setVoiceStatus(gemini ? `Gemini TTS (${this._ttsVoice})…` : `Groq TTS (${this._ttsVoice})…`);
-            this._apiKey = this._keyInput?.value?.trim() || this._apiKey;
+            // Prefer the field value as-is so clearing the input drops a remembered key.
+            this._apiKey = this._keyInput ? String(this._keyInput.value || "").trim() : this._apiKey;
             const blob = await this.synthesizeSpeechBlob(content, { voice: this._ttsVoice });
             if (generation !== this._speakGeneration) return;
             await this._playSpeechBlob(blob, content, generation, {
@@ -2685,6 +2703,11 @@ class AgentInterface {
         keyInput.type = "password";
         keyInput.placeholder = "sk-… / gsk_… / AIza…";
         keyInput.autocomplete = "off";
+        keyInput.addEventListener("input", () => {
+            this._apiKey = String(keyInput.value || "").trim();
+            const agent = this.getSelectedAgent();
+            if (agent) this._persistKeyForAgent(agent.name, this._apiKey);
+        });
 
         const rememberWrap = document.createElement("label");
         rememberWrap.style.display = "flex";

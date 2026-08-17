@@ -13,6 +13,10 @@
 	"vars": {
 		"ALLOWED_ORIGINS": "https://shasabolton.github.io,http://localhost:8000",
 		"GROQ_ALLOWED_MODELS": "qwen/qwen3.6-27b",
+		"GROQ_ALLOWED_TRANSCRIBE_MODELS": "whisper-large-v3",
+		"GROQ_ALLOWED_SPEECH_MODELS": "canopylabs/orpheus-v1-english",
+		"GROQ_TRANSCRIBE_CENTS": "1",
+		"GROQ_SPEECH_CENTS": "1",
 		"GROQ_RATES_JSON": "{}"
 	},
 	"d1_databases": [

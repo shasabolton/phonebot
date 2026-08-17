@@ -188,6 +188,33 @@ class PlayBilling {
         });
     }
 
+    fetchHostedTranscribe(formData) {
+        if (!this._active?.id) {
+            throw new Error("No active arcade play session.");
+        }
+        return fetch(`${this.apiBaseUrl}/ai/transcribe`, {
+            method: "POST",
+            headers: {
+                "X-Play-Session": this._active.id
+            },
+            body: formData
+        });
+    }
+
+    fetchHostedSpeech(body) {
+        if (!this._active?.id) {
+            throw new Error("No active arcade play session.");
+        }
+        return fetch(`${this.apiBaseUrl}/ai/speech`, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "X-Play-Session": this._active.id
+            },
+            body: JSON.stringify(body)
+        });
+    }
+
     async handlePaymentRequired(response, context) {
         if (response?.status !== 402) return false;
         let payload = null;

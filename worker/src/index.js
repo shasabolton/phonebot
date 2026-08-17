@@ -57,6 +57,14 @@ export default {
                 assertAllowedOrigin(request, env);
                 return corsResponse(request, env, await proxyGroqChat(request, env));
             }
+            if (path === "/api/ai/transcribe" && request.method === "POST") {
+                assertAllowedOrigin(request, env);
+                return corsResponse(request, env, await proxyGroqTranscribe(request, env));
+            }
+            if (path === "/api/ai/speech" && request.method === "POST") {
+                assertAllowedOrigin(request, env);
+                return corsResponse(request, env, await proxyGroqSpeech(request, env));
+            }
 
             const match = path.match(/^\/api\/session\/([0-9a-f-]+)(?:\/(start|complete))?$/i);
             if (match) {
@@ -267,24 +275,12 @@ async function completeSession(request, env, id) {
 }
 
 async function proxyGroqChat(request, env) {
-    if (!env.GROQ_API_KEY) throw httpError(503, "Hosted AI is not configured.");
-    const id = cleanMetadata(request.headers.get("X-Play-Session"), 64);
-    await expireSessionIfNeeded(env, id);
-    const session = await selectSession(env, id);
-    if (!session || session.status !== "active") {
-        return json({ error: "A valid active play session is required.", session: session && publicSession(session) }, 402);
-    }
-    if (session.ai_budget_cents <= session.ai_spent_cents) {
-        await pauseForPayment(env, id);
-        const paused = await selectSession(env, id);
-        return json({ error: "AI budget exhausted.", session: publicSession(paused) }, 402);
-    }
+    const gate = await requireActiveAiSession(request, env);
+    if (gate instanceof Response) return gate;
+    const { id, session } = gate;
 
     const body = await readJson(request);
-    const allowedModels = String(env.GROQ_ALLOWED_MODELS || "qwen/qwen3.6-27b")
-        .split(",")
-        .map((value) => value.trim())
-        .filter(Boolean);
+    const allowedModels = csvList(env.GROQ_ALLOWED_MODELS, "qwen/qwen3.6-27b");
     if (!allowedModels.includes(body.model)) throw httpError(400, "Model is not allowed for hosted arcade use.");
     body.max_tokens = Math.min(1024, Math.max(1, Number(body.max_tokens) || 256));
     body.stream = false;
@@ -306,6 +302,125 @@ async function proxyGroqChat(request, env) {
     }
     const payload = JSON.parse(raw);
     const charge = calculateChatCharge(payload.usage, body.model, env);
+    await debitAiBudget(env, id, charge);
+    return new Response(raw, {
+        status: 200,
+        headers: {
+            "Content-Type": "application/json",
+            "X-Phonebot-AI-Charge-Cents": String(charge)
+        }
+    });
+}
+
+async function proxyGroqTranscribe(request, env) {
+    const gate = await requireActiveAiSession(request, env);
+    if (gate instanceof Response) return gate;
+    const { id } = gate;
+
+    const form = await request.formData();
+    const file = form.get("file");
+    const model = String(form.get("model") || "whisper-large-v3").trim();
+    const allowed = csvList(env.GROQ_ALLOWED_TRANSCRIBE_MODELS, "whisper-large-v3");
+    if (!allowed.includes(model)) throw httpError(400, "Transcription model is not allowed.");
+    if (!(file instanceof Blob) || file.size < 32) throw httpError(400, "Audio file is required.");
+    if (file.size > 25_000_000) throw httpError(413, "Audio file too large.");
+
+    const upstreamForm = new FormData();
+    upstreamForm.append("file", file, String(form.get("filename") || "speech.webm"));
+    upstreamForm.append("model", model);
+
+    const upstream = await fetch("https://api.groq.com/openai/v1/audio/transcriptions", {
+        method: "POST",
+        headers: {
+            Authorization: `Bearer ${env.GROQ_API_KEY}`
+        },
+        body: upstreamForm
+    });
+    const raw = await upstream.text();
+    if (!upstream.ok) {
+        return new Response(raw, {
+            status: upstream.status,
+            headers: { "Content-Type": upstream.headers.get("Content-Type") || "application/json" }
+        });
+    }
+    const charge = Math.max(1, Number(env.GROQ_TRANSCRIBE_CENTS) || 1);
+    await debitAiBudget(env, id, charge);
+    return new Response(raw, {
+        status: 200,
+        headers: {
+            "Content-Type": "application/json",
+            "X-Phonebot-AI-Charge-Cents": String(charge)
+        }
+    });
+}
+
+async function proxyGroqSpeech(request, env) {
+    const gate = await requireActiveAiSession(request, env);
+    if (gate instanceof Response) return gate;
+    const { id } = gate;
+
+    const body = await readJson(request);
+    const model = String(body.model || "").trim();
+    const allowed = csvList(
+        env.GROQ_ALLOWED_SPEECH_MODELS,
+        "canopylabs/orpheus-v1-english"
+    );
+    if (!allowed.includes(model)) throw httpError(400, "Speech model is not allowed.");
+    const input = String(body.input || "").trim().slice(0, 200);
+    if (!input) throw httpError(400, "Nothing to speak.");
+
+    const upstream = await fetch("https://api.groq.com/openai/v1/audio/speech", {
+        method: "POST",
+        headers: {
+            Authorization: `Bearer ${env.GROQ_API_KEY}`,
+            "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+            model,
+            voice: String(body.voice || "autumn").trim() || "autumn",
+            input,
+            response_format: "wav"
+        })
+    });
+    if (!upstream.ok) {
+        const errText = await upstream.text();
+        return new Response(errText, {
+            status: upstream.status,
+            headers: { "Content-Type": upstream.headers.get("Content-Type") || "application/json" }
+        });
+    }
+    const charge = Math.max(1, Number(env.GROQ_SPEECH_CENTS) || 1);
+    await debitAiBudget(env, id, charge);
+    const audio = await upstream.arrayBuffer();
+    return new Response(audio, {
+        status: 200,
+        headers: {
+            "Content-Type": upstream.headers.get("Content-Type") || "audio/wav",
+            "X-Phonebot-AI-Charge-Cents": String(charge)
+        }
+    });
+}
+
+async function requireActiveAiSession(request, env) {
+    if (!env.GROQ_API_KEY) throw httpError(503, "Hosted AI is not configured.");
+    const id = cleanMetadata(request.headers.get("X-Play-Session"), 64);
+    await expireSessionIfNeeded(env, id);
+    const session = await selectSession(env, id);
+    if (!session || session.status !== "active") {
+        return json(
+            { error: "A valid active play session is required.", session: session && publicSession(session) },
+            402
+        );
+    }
+    if (session.ai_budget_cents <= session.ai_spent_cents) {
+        await pauseForPayment(env, id);
+        const paused = await selectSession(env, id);
+        return json({ error: "AI budget exhausted.", session: publicSession(paused) }, 402);
+    }
+    return { id, session };
+}
+
+async function debitAiBudget(env, id, charge) {
     await env.DB.prepare(
         `UPDATE play_sessions
          SET ai_spent_cents = MIN(ai_budget_cents, ai_spent_cents + ?),
@@ -314,13 +429,17 @@ async function proxyGroqChat(request, env) {
     )
         .bind(charge, charge, id)
         .run();
-    return new Response(raw, {
-        status: 200,
-        headers: {
-            "Content-Type": "application/json",
-            "X-Phonebot-AI-Charge-Cents": String(charge)
-        }
-    });
+}
+
+function csvList(value, fallback) {
+    const list = String(value || "")
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean);
+    return list.length ? list : String(fallback || "")
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean);
 }
 
 function calculateChatCharge(usage, model, env) {
