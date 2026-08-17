@@ -626,6 +626,16 @@ class Robot {
             }
             this._localGame = new GameClass(this);
             this._localGame.start();
+            return;
+        }
+        if (gameId === "menuMode") {
+            const GameClass = window.MenuMode;
+            if (typeof GameClass !== "function") {
+                console.error("MenuMode is unavailable. Check games/menuMode/menuMode.js loading.");
+                return;
+            }
+            this._localGame = new GameClass(this);
+            this._localGame.start();
         }
     }
 
@@ -633,6 +643,9 @@ class Robot {
         this._modeReady = false;
         if (window.playBilling?.requiresPayment?.(this._getActiveModeConfig())) {
             void window.playBilling.completeActiveSession(reason);
+        }
+        if (String(this.name || "").toLowerCase() === "talking head" && this.mode !== "menu") {
+            void this.setMode("menu");
         }
     }
 

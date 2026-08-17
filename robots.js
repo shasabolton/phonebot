@@ -169,8 +169,15 @@ window.ROBOTS_DATA = {
                     name: "Computer vision"
                 }
             ],
-            defaultMode: "mixed",
+            defaultMode: "menu",
             modes: {
+                menu: {
+                    label: "Menu",
+                    game: "menuMode",
+                    priceCents: 0,
+                    currency: "aud",
+                    free: true
+                },
                 mixed: {
                     label: "Mixed",
                     promptTemplate: "promptTemplates/mixedPrompt.txt",
