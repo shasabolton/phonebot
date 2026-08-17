@@ -39,7 +39,7 @@ class PlayBilling {
 
     async ensurePlaySession({ modeId, modeConfig, robotSlug, continuation = false }) {
         if (!this.requiresPayment(modeConfig)) {
-            this._active = null;
+            this._setActive(null);
             return true;
         }
 
@@ -57,11 +57,11 @@ class PlayBilling {
                 this.returnedSessionId = null;
                 this._removeReturnParam();
                 const started = session.status === "active" ? session : await this._startSession(session.id);
-                this._active = started;
+                this._setActive(started);
                 return true;
             }
             if (session?.status === "paused_for_payment") {
-                this._active = session;
+                this._setActive(session);
                 continuation = true;
             } else {
                 localStorage.removeItem(key);
@@ -110,7 +110,7 @@ class PlayBilling {
             } catch (_) {}
             this._checkoutWindow = null;
             this._modal.hidden = true;
-            this._active = await this._startSession(paidSession.id);
+            this._setActive(await this._startSession(paidSession.id));
             return true;
         }
         window.location.assign(checkout.url);
@@ -126,11 +126,11 @@ class PlayBilling {
         }
         const session = await this._getSession(sessionId).catch(() => null);
         if (session && (session.status === "paid" || session.status === "active")) {
-            this._active = session;
+            this._setActive(session);
             return true;
         }
         if (session?.status === "paused_for_payment") {
-            this._active = session;
+            this._setActive(session);
             return this.ensurePlaySession({
                 modeId,
                 modeConfig,
@@ -149,7 +149,7 @@ class PlayBilling {
 
     async completeActiveSession(reason = "game_finished") {
         const session = this._active;
-        this._active = null;
+        this._setActive(null);
         await this.completeSession(session, reason);
     }
 
@@ -173,11 +173,11 @@ class PlayBilling {
         return this._active ? { ...this._active } : null;
     }
 
-    fetchHostedChat(body, signal) {
+    async fetchHostedChat(body, signal) {
         if (!this._active?.id) {
             throw new Error("No active arcade play session.");
         }
-        return fetch(`${this.apiBaseUrl}/ai/chat`, {
+        const response = await fetch(`${this.apiBaseUrl}/ai/chat`, {
             method: "POST",
             headers: {
                 "Content-Type": "application/json",
@@ -186,32 +186,52 @@ class PlayBilling {
             body: JSON.stringify(body),
             signal
         });
+        this._applyAiChargeResponse(response);
+        return response;
     }
 
-    fetchHostedTranscribe(formData) {
+    async fetchHostedTranscribe(formData) {
         if (!this._active?.id) {
             throw new Error("No active arcade play session.");
         }
-        return fetch(`${this.apiBaseUrl}/ai/transcribe`, {
+        const response = await fetch(`${this.apiBaseUrl}/ai/transcribe`, {
             method: "POST",
             headers: {
                 "X-Play-Session": this._active.id
             },
             body: formData
         });
+        this._applyAiChargeResponse(response);
+        return response;
     }
 
-    fetchHostedSpeech(body) {
+    async fetchHostedSpeech(body) {
         if (!this._active?.id) {
             throw new Error("No active arcade play session.");
         }
-        return fetch(`${this.apiBaseUrl}/ai/speech`, {
+        const response = await fetch(`${this.apiBaseUrl}/ai/speech`, {
             method: "POST",
             headers: {
                 "Content-Type": "application/json",
                 "X-Play-Session": this._active.id
             },
             body: JSON.stringify(body)
+        });
+        this._applyAiChargeResponse(response);
+        return response;
+    }
+
+    fetchHostedVoiceTurn(formData, signal) {
+        if (!this._active?.id) {
+            throw new Error("No active arcade play session.");
+        }
+        return fetch(`${this.apiBaseUrl}/ai/voice-turn`, {
+            method: "POST",
+            headers: {
+                "X-Play-Session": this._active.id
+            },
+            body: formData,
+            signal
         });
     }
 
@@ -221,7 +241,7 @@ class PlayBilling {
         try {
             payload = await response.clone().json();
         } catch (_) {}
-        if (payload?.session) this._active = payload.session;
+        if (payload?.session) this._setActive(payload.session);
         await this.onAiBudgetExhausted(context);
         return true;
     }
@@ -231,8 +251,34 @@ class PlayBilling {
             method: "POST",
             body: "{}"
         });
-        this._active = session;
+        this._setActive(session);
         return session;
+    }
+
+    recordAiCharge(cents) {
+        const charge = Math.max(0, Number(cents) || 0);
+        if (!charge || !this._active) return;
+        const budget = Math.max(0, Number(this._active.aiBudgetCents) || 0);
+        const spent = Math.min(budget, Math.max(0, Number(this._active.aiSpentCents) || 0) + charge);
+        this._setActive({
+            ...this._active,
+            aiSpentCents: spent,
+            status: budget > 0 && spent >= budget ? "paused_for_payment" : this._active.status
+        });
+    }
+
+    _applyAiChargeResponse(response) {
+        if (!response?.ok) return;
+        this.recordAiCharge(response.headers.get("X-Phonebot-AI-Charge-Cents"));
+    }
+
+    _setActive(session) {
+        this._active = session || null;
+        window.dispatchEvent(
+            new CustomEvent("phonebot:ai-budget", {
+                detail: this.getActiveSession()
+            })
+        );
     }
 
     _getSession(id) {

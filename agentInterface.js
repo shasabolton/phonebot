@@ -66,6 +66,9 @@ class AgentInterface {
         /** True while conversation-mode timed mic capture / transcribe is running. */
         this._conversationListenRunning = false;
         this._billingPaused = false;
+        this._aiBudgetEl = null;
+        this._aiBudgetListener = () => this._syncAiBudgetUi();
+        window.addEventListener("phonebot:ai-budget", this._aiBudgetListener);
         this._agentPowerBtn = null;
         /** When true, attach current camera JPEG to the last user message on send. */
         this._sendCameraImage = this.config.sendCameraImage !== false;
@@ -157,6 +160,34 @@ class AgentInterface {
             throw new Error("AI is paused until payment is completed.");
         }
         return true;
+    }
+
+    _syncAiBudgetUi() {
+        if (!this._aiBudgetEl) return;
+        const modeConfig = this._billingContext().modeConfig;
+        if (!window.playBilling?.isArcadeAiMode?.(modeConfig)) {
+            this._aiBudgetEl.hidden = true;
+            return;
+        }
+        this._aiBudgetEl.hidden = false;
+        if (this._clientApiKey()) {
+            this._aiBudgetEl.textContent = "Hosted AI quota: BYOK active — 0% used.";
+            this._aiBudgetEl.className = "ok";
+            return;
+        }
+        const session = window.playBilling?.getActiveSession?.();
+        const budget = Math.max(
+            0,
+            Number(session?.aiBudgetCents ?? modeConfig?.aiBudgetCents) || 0
+        );
+        const spent = Math.min(budget, Math.max(0, Number(session?.aiSpentCents) || 0));
+        const percent = budget > 0 ? Math.min(100, Math.round((spent / budget) * 100)) : 0;
+        const format = (cents) =>
+            window.playBilling?.formatPrice?.(cents, modeConfig?.currency || "aud") ??
+            `${cents}¢`;
+        this._aiBudgetEl.textContent =
+            `Hosted AI quota: ${percent}% used (${format(spent)} of ${format(budget)}).`;
+        this._aiBudgetEl.className = percent >= 80 ? "warn" : "muted";
     }
 
     /**
@@ -931,7 +962,7 @@ class AgentInterface {
             throw new Error("Microphone capture is not available.");
         }
 
-        const maxRecordMs = 60000;
+        const maxRecordMs = 20000;
         let stream = null;
         let mediaRecorder = null;
         const chunks = [];
@@ -1162,6 +1193,17 @@ class AgentInterface {
                     speechTranscriber: "Gemini audio turn"
                 });
                 if (!sent) shouldRetry = true;
+                return;
+            }
+
+            if (
+                this._useHostedAi() &&
+                typeof window.playBilling?.fetchHostedVoiceTurn === "function"
+            ) {
+                const sent = await this._submitHostedVoiceTurnFromBlob(blob, {
+                    filename: `speech.${this._extensionForRecorderMime(blob.type)}`
+                });
+                if (!sent && !this._billingPaused) shouldRetry = true;
                 return;
             }
 
@@ -2393,6 +2435,176 @@ class AgentInterface {
         return ok;
     }
 
+    /**
+     * Hosted arcade voice turn: one Worker request performs transcription, chat, and TTS.
+     * This is never used when the user has entered a BYOK key.
+     */
+    async _submitHostedVoiceTurnFromBlob(blob, options = {}) {
+        if (!this._agentEnabled || !this._useHostedAi()) return false;
+        if (this._sendInProgress) return false;
+
+        const agent = this.getSelectedAgent();
+        if (!agent || this._isGeminiProvider(agent)) return false;
+        const model = this._resolveModel(agent);
+        if (!model) throw new Error("Set a model on the agent or use the model override field.");
+
+        this._sendInProgress = true;
+        this._syncSendButtonState();
+        if (this._statusEl) {
+            this._statusEl.textContent = "Processing voice turn…";
+            this._statusEl.className = "muted";
+        }
+
+        let result = null;
+        let audioBlob = null;
+        let ok = false;
+        try {
+            const marker = `__PHONEBOT_TRANSCRIPT_${crypto.randomUUID()}__`;
+            const stateBlock = this._buildCurrentStateForIntroductionPrompt();
+            const userTemplate = `Current state (json):\n${stateBlock || "[]"}\n\nUser said:\n${marker}`;
+            const prior = this._buildPriorConversationMessages();
+            const outboundTemplate = await this._mergeIntroductionIntoFirstUserMessage(
+                userTemplate,
+                prior.length
+            );
+            const conversationMessages = [...prior, { role: "user", content: outboundTemplate }];
+            if (this._sendCameraImageInput) {
+                this._sendCameraImage = !!this._sendCameraImageInput.checked;
+            }
+            if (this._sendCameraImage) {
+                this._attachCurrentCameraToLastUserMessage(conversationMessages);
+            }
+
+            const temperature = Number.isFinite(agent.temperature)
+                ? agent.temperature
+                : Number.isFinite(this.config.defaultChatTemperature)
+                  ? this.config.defaultChatTemperature
+                  : 0.35;
+            const responseFormat =
+                agent.responseFormat && typeof agent.responseFormat === "object"
+                    ? agent.responseFormat
+                    : this.config.chatResponseFormat && typeof this.config.chatResponseFormat === "object"
+                      ? this.config.chatResponseFormat
+                      : null;
+            const chatBody = {
+                model,
+                messages: conversationMessages,
+                temperature,
+                max_tokens: Number.isFinite(agent.maxTokens) ? Math.round(agent.maxTokens) : 1024
+            };
+            if (responseFormat) chatBody.response_format = responseFormat;
+            const reasoningEffort = String(
+                agent.reasoningEffort || agent.reasoning_effort || ""
+            ).trim();
+            if (reasoningEffort) chatBody.reasoning_effort = reasoningEffort;
+            if (agent.extraBody && typeof agent.extraBody === "object") {
+                Object.assign(chatBody, agent.extraBody);
+            }
+
+            const form = new FormData();
+            form.append("file", blob, String(options.filename || "speech.webm"));
+            form.append("filename", String(options.filename || "speech.webm"));
+            form.append("transcribeModel", this._resolveTranscriptionModel(agent));
+            form.append("chatBody", JSON.stringify(chatBody));
+            form.append("transcriptMarker", marker);
+            form.append("synthesizeSpeech", this._voiceOn ? "true" : "false");
+            form.append("speechModel", this._resolveSpeechModel(agent));
+            form.append("voice", this._ttsVoice);
+
+            const controller = typeof AbortController === "function" ? new AbortController() : null;
+            const timeoutMs = 90000;
+            const timeoutId = controller
+                ? setTimeout(() => {
+                      try {
+                          controller.abort();
+                      } catch (_) {}
+                  }, timeoutMs)
+                : null;
+            let response;
+            try {
+                response = await window.playBilling.fetchHostedVoiceTurn(form, controller?.signal);
+                if (await window.playBilling.handlePaymentRequired(response, this._billingContext())) {
+                    this._billingPaused = true;
+                    throw new Error("AI budget used. Pay to continue.");
+                }
+                const raw = await response.text();
+                if (!response.ok) throw new Error(`HTTP ${response.status}: ${raw.slice(0, 500)}`);
+                result = JSON.parse(raw);
+            } catch (err) {
+                if (err?.name === "AbortError") {
+                    throw new Error(`Voice turn timed out after ${Math.round(timeoutMs / 1000)}s.`);
+                }
+                throw err;
+            } finally {
+                if (timeoutId) clearTimeout(timeoutId);
+            }
+
+            const transcript = String(result?.transcript || "").trim();
+            if (!transcript) throw new Error("No speech was detected.");
+            const outboundUser = outboundTemplate.replace(marker, transcript);
+            const contentText = String(result?.contentText || "").trim();
+            const rawText = JSON.stringify(result?.chat || {});
+            this.messageHistory.push({
+                role: "user",
+                text: prior.length ? transcript : outboundUser,
+                fullPrompt: outboundUser,
+                at: new Date().toISOString()
+            });
+            this.messageHistory.push({
+                role: "assistant",
+                text: contentText,
+                at: new Date().toISOString()
+            });
+            await this._maybeRunActionFromResponse(contentText, rawText);
+            this._renderHistory();
+
+            if (result?.audioBase64) {
+                const binary = atob(result.audioBase64);
+                const bytes = new Uint8Array(binary.length);
+                for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+                audioBlob = new Blob([bytes], { type: result.audioType || "audio/wav" });
+            }
+            console.info("Hosted voice turn timings (ms):", result?.timingsMs || {});
+            window.playBilling?.recordAiCharge?.(result?.chargeCents);
+            ok = true;
+        } catch (err) {
+            console.error("Hosted voice turn error:", err);
+            if (this._statusEl) {
+                this._statusEl.textContent = err?.message || "Hosted voice turn failed";
+                this._statusEl.className = "error";
+            }
+        } finally {
+            this._sendInProgress = false;
+            this._syncSendButtonState();
+        }
+
+        if (!ok) return false;
+        const spokenText = String(result?.spokenText || "").trim();
+        if (this._voiceOn && spokenText) {
+            const generation = this._speakGeneration;
+            if (audioBlob?.size >= 44) {
+                try {
+                    await this._playSpeechBlob(audioBlob, spokenText, generation, {
+                        speakingLabel: `Speaking (hosted Groq ${this._ttsVoice})…`,
+                        idleLabel: "Hosted arcade voice ready.",
+                        playLabel: `Hosted Groq (${this._ttsVoice})`
+                    });
+                } catch (err) {
+                    console.warn("Hosted audio playback failed; using browser speech:", err);
+                    await this._speakBrowserFallback(spokenText);
+                }
+            } else {
+                await this._speakBrowserFallback(spokenText);
+            }
+        }
+        if (this._statusEl && this._agentEnabled) {
+            this._statusEl.textContent = "Done. (single hosted voice turn)";
+            this._statusEl.className = "ok";
+        }
+        this._maybeQueueConversationListenAfterTurn();
+        return true;
+    }
+
     async _onSend() {
         if (!this._sendBtn || !this._promptInput) return;
         if (!this._agentEnabled) {
@@ -2677,6 +2889,7 @@ class AgentInterface {
             this._voiceInput.checked = this._voiceOn;
         }
         this._syncVoiceUiForSelectedAgent();
+        this._syncAiBudgetUi();
     }
 
     buildGUI(container) {
@@ -2722,6 +2935,7 @@ class AgentInterface {
             this._apiKey = String(keyInput.value || "").trim();
             const agent = this.getSelectedAgent();
             if (agent) this._persistKeyForAgent(agent.name, this._apiKey);
+            this._syncAiBudgetUi();
         });
 
         const clearKeyBtn = document.createElement("button");
@@ -2734,6 +2948,7 @@ class AgentInterface {
             const agent = this.getSelectedAgent();
             if (agent) this._persistKeyForAgent(agent.name, "");
             this._syncVoiceUiForSelectedAgent();
+            this._syncAiBudgetUi();
             if (this._statusEl) {
                 this._statusEl.className = "muted";
                 this._statusEl.textContent = "API key cleared.";
@@ -2870,6 +3085,12 @@ class AgentInterface {
         status.className = "muted";
         status.textContent = "Select an agent, enter API key and prompt.";
 
+        const aiBudget = document.createElement("p");
+        aiBudget.className = "muted";
+        aiBudget.hidden = true;
+        aiBudget.style.margin = "4px 0";
+        aiBudget.setAttribute("aria-live", "polite");
+
         const historyLabel = document.createElement("label");
         historyLabel.textContent = "History";
         const historyEl = document.createElement("div");
@@ -2883,6 +3104,7 @@ class AgentInterface {
         controls.appendChild(keyInput);
         controls.appendChild(clearKeyBtn);
         controls.appendChild(rememberWrap);
+        controls.appendChild(aiBudget);
         controls.appendChild(modelLabel);
         controls.appendChild(modelOverrideInput);
         controls.appendChild(voiceWrap);
@@ -2924,6 +3146,7 @@ class AgentInterface {
         this._agentPowerBtn = agentPowerBtn;
         this._statusEl = status;
         this._historyEl = historyEl;
+        this._aiBudgetEl = aiBudget;
 
         this._voiceOn = this._resolveVoiceDefault(this.getSelectedAgent());
         this._voiceInput.checked = this._voiceOn;
@@ -2931,12 +3154,14 @@ class AgentInterface {
         // Browsers restore form values after load; re-assert what we actually stored.
         requestAnimationFrame(() => this._syncKeyFromSelection());
         this._syncVoiceUiForSelectedAgent();
+        this._syncAiBudgetUi();
         this._syncSendButtonState();
         void this._hydrateDefaultPromptFromIntroductionTemplate();
     }
 
     destroy() {
         this._stopSpeaking();
+        window.removeEventListener("phonebot:ai-budget", this._aiBudgetListener);
         if (this._containerEl && this._containerEl.parentNode) {
             this._containerEl.parentNode.removeChild(this._containerEl);
         }
@@ -2958,6 +3183,7 @@ class AgentInterface {
         this._agentPowerBtn = null;
         this._statusEl = null;
         this._historyEl = null;
+        this._aiBudgetEl = null;
         this.messageHistory = [];
     }
 }

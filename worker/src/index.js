@@ -65,6 +65,10 @@ export default {
                 assertAllowedOrigin(request, env);
                 return corsResponse(request, env, await proxyGroqSpeech(request, env));
             }
+            if (path === "/api/ai/voice-turn" && request.method === "POST") {
+                assertAllowedOrigin(request, env);
+                return corsResponse(request, env, await proxyGroqVoiceTurn(request, env));
+            }
 
             const match = path.match(/^\/api\/session\/([0-9a-f-]+)(?:\/(start|complete))?$/i);
             if (match) {
@@ -401,6 +405,218 @@ async function proxyGroqSpeech(request, env) {
     });
 }
 
+async function proxyGroqVoiceTurn(request, env) {
+    const startedAt = Date.now();
+    const gate = await requireActiveAiSession(request, env);
+    if (gate instanceof Response) return gate;
+    const { id } = gate;
+
+    const form = await request.formData();
+    const file = form.get("file");
+    if (!(file instanceof Blob) || file.size < 32) throw httpError(400, "Audio file is required.");
+    if (file.size > 25_000_000) throw httpError(413, "Audio file too large.");
+
+    const transcribeModel = String(form.get("transcribeModel") || "whisper-large-v3").trim();
+    const allowedTranscribe = csvList(env.GROQ_ALLOWED_TRANSCRIBE_MODELS, "whisper-large-v3");
+    if (!allowedTranscribe.includes(transcribeModel)) {
+        throw httpError(400, "Transcription model is not allowed.");
+    }
+
+    let chatBody;
+    try {
+        chatBody = JSON.parse(String(form.get("chatBody") || ""));
+    } catch (_) {
+        throw httpError(400, "Invalid chatBody JSON.");
+    }
+    if (!chatBody || !Array.isArray(chatBody.messages)) {
+        throw httpError(400, "chatBody.messages is required.");
+    }
+    const allowedChat = csvList(env.GROQ_ALLOWED_MODELS, "qwen/qwen3.6-27b");
+    if (!allowedChat.includes(chatBody.model)) {
+        throw httpError(400, "Model is not allowed for hosted arcade use.");
+    }
+    chatBody.max_tokens = Math.min(1024, Math.max(1, Number(chatBody.max_tokens) || 256));
+    chatBody.stream = false;
+
+    const transcribeForm = new FormData();
+    transcribeForm.append("file", file, String(form.get("filename") || "speech.webm"));
+    transcribeForm.append("model", transcribeModel);
+    const transcribeStartedAt = Date.now();
+    const transcribeResponse = await fetch("https://api.groq.com/openai/v1/audio/transcriptions", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${env.GROQ_API_KEY}` },
+        body: transcribeForm
+    });
+    const transcribeRaw = await transcribeResponse.text();
+    if (!transcribeResponse.ok) {
+        return new Response(transcribeRaw, {
+            status: transcribeResponse.status,
+            headers: { "Content-Type": transcribeResponse.headers.get("Content-Type") || "application/json" }
+        });
+    }
+    let transcript = "";
+    try {
+        transcript = String(JSON.parse(transcribeRaw)?.text || "").trim();
+    } catch (_) {
+        throw httpError(502, "Groq transcription response was invalid.");
+    }
+    if (!transcript) throw httpError(422, "No speech was detected.");
+    const transcribeMs = Date.now() - transcribeStartedAt;
+
+    const marker = String(form.get("transcriptMarker") || "__PHONEBOT_TRANSCRIPT__");
+    const finalUserMessage = chatBody.messages[chatBody.messages.length - 1];
+    const replacement = replaceTranscriptMarker(finalUserMessage?.content, marker, transcript);
+    if (!replacement.replaced) throw httpError(400, "Transcript marker is missing from the final user message.");
+    finalUserMessage.content = replacement.content;
+
+    const chatStartedAt = Date.now();
+    const chatResponse = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        method: "POST",
+        headers: {
+            Authorization: `Bearer ${env.GROQ_API_KEY}`,
+            "Content-Type": "application/json"
+        },
+        body: JSON.stringify(chatBody)
+    });
+    const chatRaw = await chatResponse.text();
+    if (!chatResponse.ok) {
+        return new Response(chatRaw, {
+            status: chatResponse.status,
+            headers: { "Content-Type": chatResponse.headers.get("Content-Type") || "application/json" }
+        });
+    }
+    let chatPayload;
+    try {
+        chatPayload = JSON.parse(chatRaw);
+    } catch (_) {
+        throw httpError(502, "Groq chat response was invalid.");
+    }
+    const rawContent =
+        chatPayload?.choices?.[0]?.message?.content ??
+        chatPayload?.choices?.[0]?.text ??
+        chatPayload?.message?.content ??
+        "";
+    const contentText = stripThinkingBlocks(rawContent) || JSON.stringify(chatPayload);
+    const spokenText = extractSpokenText(contentText).slice(0, 200);
+    const chatMs = Date.now() - chatStartedAt;
+
+    let audioBase64 = "";
+    let audioType = "";
+    let speechMs = 0;
+    let speechCharge = 0;
+    const synthesizeSpeech = String(form.get("synthesizeSpeech") || "true") !== "false";
+    if (synthesizeSpeech && spokenText) {
+        const speechModel = String(form.get("speechModel") || "").trim();
+        const allowedSpeech = csvList(
+            env.GROQ_ALLOWED_SPEECH_MODELS,
+            "canopylabs/orpheus-v1-english"
+        );
+        if (!allowedSpeech.includes(speechModel)) throw httpError(400, "Speech model is not allowed.");
+        const speechStartedAt = Date.now();
+        const speechResponse = await fetch("https://api.groq.com/openai/v1/audio/speech", {
+            method: "POST",
+            headers: {
+                Authorization: `Bearer ${env.GROQ_API_KEY}`,
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+                model: speechModel,
+                voice: String(form.get("voice") || "autumn").trim() || "autumn",
+                input: spokenText,
+                response_format: "wav"
+            })
+        });
+        if (!speechResponse.ok) {
+            const errorText = await speechResponse.text();
+            return new Response(errorText, {
+                status: speechResponse.status,
+                headers: { "Content-Type": speechResponse.headers.get("Content-Type") || "application/json" }
+            });
+        }
+        const audio = await speechResponse.arrayBuffer();
+        audioBase64 = arrayBufferToBase64(audio);
+        audioType = speechResponse.headers.get("Content-Type") || "audio/wav";
+        speechMs = Date.now() - speechStartedAt;
+        speechCharge = Math.max(1, Number(env.GROQ_SPEECH_CENTS) || 1);
+    }
+
+    const transcribeCharge = Math.max(1, Number(env.GROQ_TRANSCRIBE_CENTS) || 1);
+    const chatCharge = calculateChatCharge(chatPayload.usage, chatBody.model, env);
+    const totalCharge = transcribeCharge + chatCharge + speechCharge;
+    await debitAiBudget(env, id, totalCharge);
+
+    return json({
+        transcript,
+        contentText,
+        spokenText,
+        chat: chatPayload,
+        audioBase64,
+        audioType,
+        chargeCents: totalCharge,
+        timingsMs: {
+            transcribe: transcribeMs,
+            chat: chatMs,
+            speech: speechMs,
+            total: Date.now() - startedAt
+        }
+    });
+}
+
+function replaceTranscriptMarker(content, marker, transcript) {
+    if (typeof content === "string") {
+        return {
+            content: content.includes(marker) ? content.replace(marker, transcript) : content,
+            replaced: content.includes(marker)
+        };
+    }
+    if (!Array.isArray(content)) return { content, replaced: false };
+    let replaced = false;
+    const next = content.map((part) => {
+        if (!part || typeof part !== "object" || typeof part.text !== "string" || replaced) return part;
+        if (!part.text.includes(marker)) return part;
+        replaced = true;
+        return { ...part, text: part.text.replace(marker, transcript) };
+    });
+    return { content: next, replaced };
+}
+
+function stripThinkingBlocks(text) {
+    return String(text || "")
+        .replace(/<think\b[^>]*>[\s\S]*?<\/think>/gi, "")
+        .trim();
+}
+
+function extractSpokenText(contentText) {
+    const content = String(contentText || "").trim();
+    if (!content) return "";
+    let payload = null;
+    try {
+        payload = JSON.parse(content);
+    } catch (_) {
+        const match = content.match(/\{[\s\S]*\}/);
+        if (match) {
+            try {
+                payload = JSON.parse(match[0]);
+            } catch (_) {}
+        }
+    }
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) return content;
+    if (typeof payload.message === "string" && payload.message.trim()) return payload.message.trim();
+    if (typeof payload.reply === "string" && payload.reply.trim()) return payload.reply.trim();
+    if (typeof payload.text === "string" && payload.text.trim()) return payload.text.trim();
+    if (Object.prototype.hasOwnProperty.call(payload, "actions")) return "";
+    return content;
+}
+
+function arrayBufferToBase64(buffer) {
+    const bytes = new Uint8Array(buffer);
+    let binary = "";
+    for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+        binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+    }
+    return btoa(binary);
+}
+
 async function requireActiveAiSession(request, env) {
     if (!env.GROQ_API_KEY) throw httpError(503, "Hosted AI is not configured.");
     const id = cleanMetadata(request.headers.get("X-Play-Session"), 64);
@@ -584,6 +800,7 @@ function corsResponse(request, env, response, status) {
         result.headers.set("Access-Control-Allow-Origin", origin);
         result.headers.set("Vary", "Origin");
         result.headers.set("Access-Control-Allow-Headers", "Content-Type, X-Play-Session");
+        result.headers.set("Access-Control-Expose-Headers", "X-Phonebot-AI-Charge-Cents");
         result.headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
     }
     return result;

@@ -187,6 +187,11 @@ testing. `GROQ_API_KEY` is used only by the Worker's metered hosted chat route. 
 retain BYOK. In paid arcade modes, a key entered in the app takes priority: chat, Whisper,
 and TTS use that key directly and no AI budget is debited. With the key field empty, those
 calls route through the Worker using `GROQ_API_KEY` and debit the play-session AI budget.
+Hand-raised conversation turns with the hosted key use one Worker request for transcription,
+chat, and speech, with one session check and one combined budget debit. BYOK remains entirely
+client-side and continues to call Groq directly. Hand-raised recordings stop automatically
+after 20 seconds. The agent UI shows the percentage and dollar amount of the hosted AI budget
+used; while BYOK is active it shows that the hosted quota is not being consumed.
 Payment is still required to enter a paid mode either way. Checkout amounts come from the
 Worker mode catalog, not from the browser request body.
 
