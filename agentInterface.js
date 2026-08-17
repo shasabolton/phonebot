@@ -65,6 +65,7 @@ class AgentInterface {
         this._simonPoseCycleRunning = false;
         /** True while conversation-mode timed mic capture / transcribe is running. */
         this._conversationListenRunning = false;
+        this._billingPaused = false;
         this._agentPowerBtn = null;
         /** When true, attach current camera JPEG to the last user message on send. */
         this._sendCameraImage = this.config.sendCameraImage !== false;
@@ -124,6 +125,25 @@ class AgentInterface {
     /** Local MoveNet + agent-TTS Simon Says (no chat LLM). */
     _isSimonSaysPoseMatchMode() {
         return String(this.robot?.mode || "").trim().toLowerCase() === "simonsaysposematch";
+    }
+
+    _billingContext() {
+        return {
+            modeId: this.robot?.mode,
+            modeConfig: this.robot?._getActiveModeConfig?.(),
+            robotSlug: this.robot?._robotSlug?.()
+        };
+    }
+
+    async _ensureArcadeAiBudget() {
+        const context = this._billingContext();
+        if (!window.playBilling?.isArcadeAiMode?.(context.modeConfig)) return true;
+        const allowed = await window.playBilling.ensureAiBudget(context);
+        this._billingPaused = !allowed;
+        if (!allowed) {
+            throw new Error("AI is paused until payment is completed.");
+        }
+        return true;
     }
 
     /**
@@ -292,6 +312,7 @@ class AgentInterface {
      * @returns {Promise<string>} trimmed transcript text
      */
     async transcribeSpeechBlob(blob, options = {}) {
+        await this._ensureArcadeAiBudget();
         if (!blob || blob.size < 32) {
             throw new Error("No audio captured for transcription.");
         }
@@ -340,6 +361,10 @@ class AgentInterface {
             headers,
             body: form
         });
+        if (await window.playBilling?.handlePaymentRequired?.(res, this._billingContext())) {
+            this._billingPaused = true;
+            throw new Error("AI budget used. Pay to continue.");
+        }
         const rawText = await res.text();
         if (!res.ok) {
             throw new Error(`Transcription HTTP ${res.status}: ${rawText.slice(0, 500)}`);
@@ -401,6 +426,7 @@ class AgentInterface {
      * @returns {Promise<Blob>}
      */
     async synthesizeSpeechBlob(text, options = {}) {
+        await this._ensureArcadeAiBudget();
         const agent = this.getSelectedAgent();
         if (!agent) throw new Error("No agent selected.");
         if (this._isGeminiProvider(agent)) {
@@ -454,6 +480,10 @@ class AgentInterface {
                 response_format: "wav"
             })
         });
+        if (await window.playBilling?.handlePaymentRequired?.(res, this._billingContext())) {
+            this._billingPaused = true;
+            throw new Error("AI budget used. Pay to continue.");
+        }
         if (!res.ok) {
             const errText = await res.text().catch(() => "");
             throw new Error(`TTS HTTP ${res.status}: ${errText.slice(0, 400)}`);
@@ -544,7 +574,9 @@ class AgentInterface {
             this._voiceSelect.value = this._ttsVoice;
         }
         this._setVoiceStatus(
-            gemini
+            window.playBilling?.isArcadeAiMode?.(this._billingContext().modeConfig)
+                ? "Arcade session active. Chat uses the hosted metered key; v1 transcription/TTS still use your provider key."
+                : gemini
                 ? "Gemini audio turn + TTS (AI Studio). Text history only — no Groq Whisper/Orpheus."
                 : "Groq Orpheus TTS (API credits). Max 200 chars. Plays via audio player for mouth sync."
         );
@@ -1156,6 +1188,7 @@ class AgentInterface {
             this._syncSendButtonState();
             if (
                 shouldRetry &&
+                !this._billingPaused &&
                 generation === this._speakGeneration &&
                 this._agentEnabled &&
                 this._isConversationMode()
@@ -1655,6 +1688,7 @@ class AgentInterface {
      * If singleTurn, only `userText` is sent as one user message.
      */
     async sendPrompt(userText, options = {}) {
+        await this._ensureArcadeAiBudget();
         const agent = this.getSelectedAgent();
         const prompt = String(userText || "").trim();
         if (!agent) {
@@ -1669,8 +1703,12 @@ class AgentInterface {
         if (!model) {
             throw new Error("Set a model on the agent or use the model override field.");
         }
+        const hostedArcadeChat =
+            !gemini &&
+            window.playBilling?.isArcadeAiMode?.(this._billingContext().modeConfig) &&
+            typeof window.playBilling?.fetchHostedChat === "function";
         const apiKey = String(this._apiKey || "").trim();
-        if (!apiKey) {
+        if (!hostedArcadeChat && !apiKey) {
             throw new Error("Enter an API key for this provider.");
         }
 
@@ -1777,12 +1815,18 @@ class AgentInterface {
             }, timeoutMs);
         let res;
         try {
-            res = await fetch(url, {
-                method: String(agent.method || "POST").toUpperCase(),
-                headers,
-                body: JSON.stringify(body),
-                signal: controller?.signal
-            });
+            res = hostedArcadeChat
+                ? await window.playBilling.fetchHostedChat(body, controller?.signal)
+                : await fetch(url, {
+                      method: String(agent.method || "POST").toUpperCase(),
+                      headers,
+                      body: JSON.stringify(body),
+                      signal: controller?.signal
+                  });
+            if (await window.playBilling?.handlePaymentRequired?.(res, this._billingContext())) {
+                this._billingPaused = true;
+                throw new Error("AI budget used. Pay to continue.");
+            }
         } catch (err) {
             if (err?.name === "AbortError") {
                 throw new Error(`Request timed out after ${Math.round(timeoutMs / 1000)}s.`);

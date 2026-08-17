@@ -1,0 +1,26 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "phonebot-arcade-billing",
+	"main": "src/index.js",
+	"compatibility_date": "2026-08-17",
+	"compatibility_flags": [
+		"nodejs_compat"
+	],
+	"observability": {
+		"enabled": true,
+		"head_sampling_rate": 1
+	},
+	"vars": {
+		"ALLOWED_ORIGINS": "https://shasabolton.github.io,http://localhost:8000",
+		"GROQ_ALLOWED_MODELS": "qwen/qwen3.6-27b",
+		"GROQ_RATES_JSON": "{}"
+	},
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "phonebot-arcade",
+			"database_id": "60c02bf8-f0a5-4b2b-b28d-3f74f77f3bf9",
+			"migrations_dir": "migrations"
+		}
+	]
+}

@@ -104,11 +104,25 @@ class SimonSaysPoseMatch {
         this._simonScore = 0;
         this._audioBusy = false;
         this._stepBackPlaying = false;
+        this._sessionCompleted = false;
         /** @type {number|null} */
         this._frameMissingSince = null;
     }
 
     start() {
+        if (this.robot && this.robot._modeReady === false) {
+            void this._startAfterPayment();
+            return;
+        }
+        this._startGame();
+    }
+
+    async _startAfterPayment() {
+        if (typeof this.robot?._activateCurrentMode !== "function") return;
+        await this.robot._activateCurrentMode();
+    }
+
+    _startGame() {
         this.stop();
         this._running = true;
         this._playerScore = 0;
@@ -116,6 +130,7 @@ class SimonSaysPoseMatch {
         this._frameMissingSince = null;
         this._stepBackPlaying = false;
         this._audioBusy = false;
+        this._sessionCompleted = false;
         this._generation += 1;
         const generation = this._generation;
         void this._runFramingWatch(generation);
@@ -136,6 +151,14 @@ class SimonSaysPoseMatch {
 
     _scoreLine() {
         return `Simon ${this._simonScore}, you ${this._playerScore}`;
+    }
+
+    _completePlaySession() {
+        if (this._sessionCompleted) return;
+        this._sessionCompleted = true;
+        if (typeof this.robot?.onLocalGameEnded === "function") {
+            this.robot.onLocalGameEnded("simon_says_finished");
+        }
     }
 
     _numClip(n) {
@@ -652,6 +675,7 @@ class SimonSaysPoseMatch {
                     if (result === false) return;
                     if (result === "won") {
                         this._running = false;
+                        this._completePlaySession();
                         break;
                     }
                 } else {
@@ -661,6 +685,7 @@ class SimonSaysPoseMatch {
                     if (result === false) return;
                     if (result === "won") {
                         this._running = false;
+                        this._completePlaySession();
                         break;
                     }
                 }

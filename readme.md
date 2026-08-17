@@ -152,3 +152,83 @@ POST /config
 "ssid": "...",
 "password": "..."
 }
+```
+
+## Arcade billing (Stripe Checkout)
+
+Paid talking-head modes are configured in `robots.js`. The Worker repeats the paid-mode
+catalog as a server-authoritative allowlist so a browser cannot lower `priceCents`.
+Keep both catalogs in sync when changing a product price.
+
+The browser defaults to `/api` on the same origin. If the Worker is on another hostname,
+change the `phonebot-billing-api` meta tag in `index.html`. Set `ALLOWED_ORIGINS` in
+`worker/wrangler.jsonc` to the exact PWA origins. Optional `?owner=` and `?machine=` query
+values are copied into Stripe and play-session metadata; they do not trigger payouts.
+
+### Cloudflare setup
+
+From `worker/`:
+
+```sh
+npx wrangler d1 create phonebot-arcade
+# Copy the returned ID into wrangler.jsonc.
+npx wrangler d1 migrations apply phonebot-arcade --remote
+npx wrangler secret put STRIPE_SECRET_KEY
+npx wrangler secret put STRIPE_WEBHOOK_SECRET
+npx wrangler secret put GROQ_API_KEY
+npx wrangler deploy
+```
+
+Copy `worker/.dev.vars.example` to `worker/.dev.vars` for local secrets. Never commit
+`.dev.vars` or real Stripe/Groq keys.
+
+`STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET` must be Stripe **test-mode** values while
+testing. `GROQ_API_KEY` is used only by the Worker's metered hosted chat route. Free modes
+retain BYOK. In this first version, paid-mode transcription and TTS also remain BYOK and
+the UI says so; chat usage is debited from the server-side AI budget. Checkout amounts come
+from the Worker mode catalog, not from the browser request body.
+
+Set `GROQ_RATES_JSON` to a JSON object keyed by allowed model. Rates are AUD cents per
+million tokens, for example:
+
+```json
+{
+  "qwen/qwen3.6-27b": {
+    "inputCentsPerMillion": 0,
+    "outputCentsPerMillion": 0
+  }
+}
+```
+
+Replace the example zeroes with the current effective provider costs. A hosted chat call
+is charged at least one cent so a missing or stale rate cannot create unlimited play.
+
+### Stripe webhook and local test
+
+Create a Stripe webhook endpoint:
+
+```text
+https://YOUR_WORKER/api/webhooks/stripe
+```
+
+Subscribe it to `checkout.session.completed` and
+`checkout.session.async_payment_succeeded`. For local testing:
+
+```sh
+npx wrangler dev
+stripe listen --forward-to http://localhost:8787/api/webhooks/stripe
+```
+
+Use the `whsec_...` printed by `stripe listen` as the local
+`STRIPE_WEBHOOK_SECRET`; it differs from the Dashboard endpoint secret. Open a paid mode,
+complete Checkout with Stripe's test card `4242 4242 4242 4242`, any future expiry and
+any CVC. The PWA polls/validates the returned play-session ID and unlocks only after the
+verified webhook marks it paid.
+
+Useful checks:
+
+- `priceCents: 0` or `free: true`: mode starts without billing.
+- `priceCents: 200`: Checkout asks for A$2.00.
+- Finishing Simon Says consumes the session; selecting/rematching requires another payment.
+- When hosted chat spends the AI budget, the session becomes `paused_for_payment`; paying
+  again creates a continuation session while browser conversation/game state stays intact.

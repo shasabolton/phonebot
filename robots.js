@@ -173,27 +173,54 @@ window.ROBOTS_DATA = {
             modes: {
                 mixed: {
                     label: "Mixed",
-                    promptTemplate: "promptTemplates/mixedPrompt.txt"
+                    promptTemplate: "promptTemplates/mixedPrompt.txt",
+                    priceCents: 0,
+                    currency: "aud",
+                    free: true
                 },
                 simonSaysPoseMatch: {
                     label: "Simon Says Pose Match",
-                    game: "simonSaysPoseMatch"
+                    game: "simonSaysPoseMatch",
+                    priceCents: 200,
+                    currency: "aud",
+                    endCondition: "gameFinished",
+                    aiBudgetCents: 0
                 },
                 simonSaysAi: {
                     label: "Simon Says AI",
-                    promptTemplate: "promptTemplates/simonSaysPrompt.txt"
+                    promptTemplate: "promptTemplates/simonSaysPrompt.txt",
+                    priceCents: 200,
+                    currency: "aud",
+                    endCondition: "gameFinished",
+                    aiBudgetCents: 50,
+                    continuePriceCents: 200
                 },
                 conversation: {
                     label: "Conversation",
-                    promptTemplate: "promptTemplates/shortConversation"
+                    promptTemplate: "promptTemplates/shortConversation",
+                    priceCents: 200,
+                    currency: "aud",
+                    endCondition: "manualOrTimeout",
+                    aiBudgetCents: 50,
+                    continuePriceCents: 200
                 },
                 twentyQuestions: {
                     label: "20 Questions",
-                    promptTemplate: "promptTemplates/20QuestionsPrompt.txt"
+                    promptTemplate: "promptTemplates/20QuestionsPrompt.txt",
+                    priceCents: 200,
+                    currency: "aud",
+                    endCondition: "gameFinished",
+                    aiBudgetCents: 50,
+                    continuePriceCents: 200
                 },
                 linkingWord: {
                     label: "Linking Word",
-                    promptTemplate: "promptTemplates/linkingWord.txt"
+                    promptTemplate: "promptTemplates/linkingWord.txt",
+                    priceCents: 200,
+                    currency: "aud",
+                    endCondition: "gameFinished",
+                    aiBudgetCents: 50,
+                    continuePriceCents: 200
                 }
             },
             agentInterface: {

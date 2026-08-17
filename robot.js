@@ -27,6 +27,8 @@ class Robot {
         this._goalInputEl = null;
         this._modeSelect = null;
         this._localGame = null;
+        this._modeReady = false;
+        this._modeActivationGeneration = 0;
         this.dashboardContainer = null;
         this._onModeChange =
             typeof options.onModeChange === "function" ? options.onModeChange : null;
@@ -52,6 +54,9 @@ class Robot {
     destroy() {
         this._dismissStartFlowOverlay();
         this._stopLocalGame();
+        if (window.playBilling?.getActiveSessionId?.()) {
+            void window.playBilling.completeActiveSession("robot_closed");
+        }
         this.teardownJoysticks();
         this.stopMixClock();
         this.teardownStrategies();
@@ -492,28 +497,26 @@ class Robot {
      * @param {string} id
      * @returns {boolean}
      */
-    setMode(id) {
+    async setMode(id) {
         const modes = this._getModesMap();
         if (!modes) return false;
         const want = String(id || "").trim();
         if (!want || !modes[want]) return false;
         if (this.mode === want) {
             if (this._modeSelect) this._modeSelect.value = this.mode;
+            if (!this._modeReady) return this._activateCurrentMode();
             return true;
         }
-        this.mode = want;
-        const wasEnabled = this.mixEnabled;
-        this._rebuildActuatorMixes({ restoreEnabled: wasEnabled });
-        if (this._modeSelect) this._modeSelect.value = this.mode;
-        // Stop any local game first — game.stop() calls agent._stopSpeaking(), which would
-        // cancel a conversation listen queued in onRobotModeChanged if we did this after.
+        const previousMode = this.mode;
+        const previousSession = window.playBilling?.getActiveSession?.() || null;
+        const generation = ++this._modeActivationGeneration;
+        this._modeReady = false;
         this._stopLocalGame();
-        this._applyActiveModePromptTemplate();
-        // Stop agent TTS / listen before starting a local game (game uses agent Groq TTS).
-        if (this.agentInterface && typeof this.agentInterface.onRobotModeChanged === "function") {
-            this.agentInterface.onRobotModeChanged(this.mode);
+        if (this.agentInterface && typeof this.agentInterface._stopSpeaking === "function") {
+            this.agentInterface._stopSpeaking();
         }
-        this._syncLocalGameForMode();
+        this.mode = want;
+        if (this._modeSelect) this._modeSelect.value = this.mode;
         if (typeof this._onModeChange === "function") {
             try {
                 this._onModeChange(this.mode);
@@ -521,7 +524,68 @@ class Robot {
                 console.error("onModeChange failed:", err);
             }
         }
+        const paid = await this._ensureCurrentModeSession();
+        if (generation !== this._modeActivationGeneration) return false;
+        if (!paid) {
+            this.mode = previousMode;
+            if (this._modeSelect) this._modeSelect.value = this.mode;
+            if (typeof this._onModeChange === "function") this._onModeChange(this.mode);
+            this._modeReady = true;
+            this._applyModeBehavior();
+            return false;
+        }
+        const currentSession = window.playBilling?.getActiveSession?.() || null;
+        if (previousSession?.id) {
+            if (previousSession.id === currentSession?.id) {
+                void window.playBilling.completeActiveSession("mode_changed");
+            } else {
+                void window.playBilling.completeSession(previousSession, "mode_changed");
+            }
+        }
+        const wasEnabled = this.mixEnabled;
+        this._rebuildActuatorMixes({ restoreEnabled: wasEnabled });
+        this._modeReady = true;
+        this._applyModeBehavior();
         return true;
+    }
+
+    _robotSlug() {
+        return String(this.name || "")
+            .trim()
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, "-")
+            .replace(/^-+|-+$/g, "");
+    }
+
+    async _ensureCurrentModeSession() {
+        const billing = window.playBilling;
+        const modeConfig = this._getActiveModeConfig();
+        if (!billing?.requiresPayment?.(modeConfig)) return true;
+        return billing.ensurePlaySession({
+            modeId: this.mode,
+            modeConfig,
+            robotSlug: this._robotSlug()
+        });
+    }
+
+    async _activateCurrentMode() {
+        const generation = ++this._modeActivationGeneration;
+        this._modeReady = false;
+        const allowed = await this._ensureCurrentModeSession();
+        if (!allowed || generation !== this._modeActivationGeneration) return false;
+        this._modeReady = true;
+        this._applyModeBehavior();
+        return true;
+    }
+
+    _applyModeBehavior() {
+        this._applyActiveModePromptTemplate();
+        if (this.agentInterface && typeof this.agentInterface.onRobotModeChanged === "function") {
+            this.agentInterface.onRobotModeChanged(this.mode);
+        }
+        if (!this.getStartFlowConfig() || !this._startFlowOverlay) {
+            this._syncLocalGameForMode();
+        }
     }
 
     /** If the active mode declares `promptTemplate`, select and insert it in the agent UI. */
@@ -551,6 +615,7 @@ class Robot {
      */
     _syncLocalGameForMode() {
         this._stopLocalGame();
+        if (!this._modeReady) return;
         const gameId = String(this._getActiveModeConfig()?.game || "").trim();
         if (!gameId) return;
         if (gameId === "simonSaysPoseMatch") {
@@ -561,6 +626,13 @@ class Robot {
             }
             this._localGame = new GameClass(this);
             this._localGame.start();
+        }
+    }
+
+    onLocalGameEnded(reason = "game_finished") {
+        this._modeReady = false;
+        if (window.playBilling?.requiresPayment?.(this._getActiveModeConfig())) {
+            void window.playBilling.completeActiveSession(reason);
         }
     }
 
@@ -954,7 +1026,10 @@ class Robot {
         if (this._startFlowBtn) this._startFlowBtn.disabled = true;
         this._dismissStartFlowOverlay();
         // Kick local games (e.g. Simon Says opening) in this click gesture so autoplay works.
-        this._syncLocalGameForMode();
+        const wasReady = this._modeReady;
+        const modeAllowed = wasReady || (await this._activateCurrentMode());
+        if (!modeAllowed) return;
+        if (wasReady) this._syncLocalGameForMode();
         if (shouldAutoStart && typeof this._onRequestStart === "function") {
             try {
                 await this._onRequestStart();
@@ -1009,7 +1084,12 @@ class Robot {
         if (this.mode && modes.some((m) => m.id === this.mode)) {
             select.value = this.mode;
         }
-        select.addEventListener("change", () => this.setMode(select.value));
+        select.addEventListener("change", () => {
+            select.disabled = true;
+            void this.setMode(select.value).finally(() => {
+                select.disabled = false;
+            });
+        });
 
         wrap.appendChild(label);
         wrap.appendChild(select);
@@ -1081,18 +1161,10 @@ class Robot {
             agentDiv.className = "robot-agent-interfaces";
             this.agentInterface.buildGUI(agentDiv);
             this.container.appendChild(agentDiv);
-            // Same order as setMode: stop local game before agent mode hooks queue listen.
-            this._stopLocalGame();
-            this._applyActiveModePromptTemplate();
-            if (typeof this.agentInterface.onRobotModeChanged === "function") {
-                this.agentInterface.onRobotModeChanged(this.mode);
-            }
-            // Defer local games until start-flow Done (needs a user gesture for audio).
-            if (!this.getStartFlowConfig()) {
-                this._syncLocalGameForMode();
-            }
+            // Payment validation must finish before agent hooks or a local game can run.
+            void this._activateCurrentMode();
         } else if (!this.getStartFlowConfig()) {
-            this._syncLocalGameForMode();
+            void this._activateCurrentMode();
         }
 
         const filtersDiv = document.createElement('div');
