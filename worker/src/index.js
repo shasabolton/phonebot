@@ -33,6 +33,13 @@ const MODE_CATALOG = Object.freeze({
         currency: "aud",
         aiBudgetCents: 50,
         continuePriceCents: 200
+    },
+    fortuneTeller: {
+        label: "Fortune Teller",
+        priceCents: 200,
+        currency: "aud",
+        aiBudgetCents: 50,
+        continuePriceCents: 200
     }
 });
 
@@ -497,11 +504,12 @@ async function proxyGroqVoiceTurn(request, env) {
         chatPayload?.message?.content ??
         "";
     const contentText = stripThinkingBlocks(rawContent) || JSON.stringify(chatPayload);
-    const spokenText = extractSpokenText(contentText).slice(0, 200);
+    const spokenText = extractSpokenText(contentText);
     const chatMs = Date.now() - chatStartedAt;
 
     let audioBase64 = "";
     let audioType = "";
+    const audioChunks = [];
     let speechMs = 0;
     let speechCharge = 0;
     const synthesizeSpeech = String(form.get("synthesizeSpeech") || "true") !== "false";
@@ -512,32 +520,41 @@ async function proxyGroqVoiceTurn(request, env) {
             "canopylabs/orpheus-v1-english"
         );
         if (!allowedSpeech.includes(speechModel)) throw httpError(400, "Speech model is not allowed.");
+        const voice = String(form.get("voice") || "autumn").trim() || "autumn";
+        const speechParts = splitGroqSpeechInput(spokenText);
         const speechStartedAt = Date.now();
-        const speechResponse = await fetch("https://api.groq.com/openai/v1/audio/speech", {
-            method: "POST",
-            headers: {
-                Authorization: `Bearer ${env.GROQ_API_KEY}`,
-                "Content-Type": "application/json"
-            },
-            body: JSON.stringify({
-                model: speechModel,
-                voice: String(form.get("voice") || "autumn").trim() || "autumn",
-                input: spokenText,
-                response_format: "wav"
-            })
-        });
-        if (!speechResponse.ok) {
-            const errorText = await speechResponse.text();
-            return new Response(errorText, {
-                status: speechResponse.status,
-                headers: { "Content-Type": speechResponse.headers.get("Content-Type") || "application/json" }
+        for (const part of speechParts) {
+            const speechResponse = await fetch("https://api.groq.com/openai/v1/audio/speech", {
+                method: "POST",
+                headers: {
+                    Authorization: `Bearer ${env.GROQ_API_KEY}`,
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({
+                    model: speechModel,
+                    voice,
+                    input: part,
+                    response_format: "wav"
+                })
             });
+            if (!speechResponse.ok) {
+                const errorText = await speechResponse.text();
+                return new Response(errorText, {
+                    status: speechResponse.status,
+                    headers: { "Content-Type": speechResponse.headers.get("Content-Type") || "application/json" }
+                });
+            }
+            const audio = await speechResponse.arrayBuffer();
+            const type = speechResponse.headers.get("Content-Type") || "audio/wav";
+            const base64 = arrayBufferToBase64(audio);
+            audioChunks.push({ base64, type });
+            speechCharge += Math.max(1, Number(env.GROQ_SPEECH_CENTS) || 1);
         }
-        const audio = await speechResponse.arrayBuffer();
-        audioBase64 = arrayBufferToBase64(audio);
-        audioType = speechResponse.headers.get("Content-Type") || "audio/wav";
         speechMs = Date.now() - speechStartedAt;
-        speechCharge = Math.max(1, Number(env.GROQ_SPEECH_CENTS) || 1);
+        if (audioChunks.length) {
+            audioBase64 = audioChunks[0].base64;
+            audioType = audioChunks[0].type;
+        }
     }
 
     const transcribeCharge = Math.max(1, Number(env.GROQ_TRANSCRIBE_CENTS) || 1);
@@ -552,6 +569,7 @@ async function proxyGroqVoiceTurn(request, env) {
         chat: chatPayload,
         audioBase64,
         audioType,
+        audioChunks,
         chargeCents: totalCharge,
         timingsMs: {
             transcribe: transcribeMs,
@@ -606,6 +624,49 @@ function extractSpokenText(contentText) {
     if (typeof payload.text === "string" && payload.text.trim()) return payload.text.trim();
     if (Object.prototype.hasOwnProperty.call(payload, "actions")) return "";
     return content;
+}
+
+const GROQ_SPEECH_MAX_CHARS = 200;
+
+function splitGroqSpeechInput(text, max = GROQ_SPEECH_MAX_CHARS) {
+    const s = String(text || "").trim();
+    if (!s) return [];
+    if (s.length <= max) return [s];
+
+    const chunks = [];
+    let rest = s;
+    const minBreak = Math.floor(max * 0.45);
+
+    while (rest.length > 0) {
+        if (rest.length <= max) {
+            chunks.push(rest);
+            break;
+        }
+        const window = rest.slice(0, max);
+        let cut = max;
+
+        for (let i = window.length - 1; i >= minBreak; i--) {
+            const ch = window[i];
+            if (ch === "." || ch === "!" || ch === "?" || ch === "…") {
+                cut = i + 1;
+                break;
+            }
+        }
+        if (cut === max) {
+            const space = window.lastIndexOf(" ");
+            if (space >= minBreak) cut = space;
+        }
+
+        const piece = rest.slice(0, cut).trim();
+        if (!piece) break;
+        chunks.push(piece);
+        rest = rest.slice(cut).trim();
+    }
+
+    if (!chunks.length) {
+        return [`${s.slice(0, max - 1)}…`];
+    }
+    return chunks;
 }
 
 function arrayBufferToBase64(buffer) {

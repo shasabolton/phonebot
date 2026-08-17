@@ -228,6 +228,15 @@ window.ROBOTS_DATA = {
                     endCondition: "gameFinished",
                     aiBudgetCents: 50,
                     continuePriceCents: 200
+                },
+                fortuneTeller: {
+                    label: "Fortune Teller",
+                    promptTemplate: "promptTemplates/fortuneTellerPrompt.txt",
+                    priceCents: 200,
+                    currency: "aud",
+                    endCondition: "manualOrTimeout",
+                    aiBudgetCents: 50,
+                    continuePriceCents: 200
                 }
             },
             agentInterface: {
@@ -244,7 +253,8 @@ window.ROBOTS_DATA = {
                     { name: "Simon Says", path: "promptTemplates/simonSaysPrompt.txt" },
                     { name: "Short conversation", path: "promptTemplates/shortConversation" },
                     { name: "20 Questions", path: "promptTemplates/20QuestionsPrompt.txt" },
-                    { name: "Linking Word", path: "promptTemplates/linkingWord.txt" }
+                    { name: "Linking Word", path: "promptTemplates/linkingWord.txt" },
+                    { name: "Fortune Teller", path: "promptTemplates/fortuneTellerPrompt.txt" }
                 ],
                 agents: [
                     {

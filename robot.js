@@ -557,10 +557,16 @@ class Robot {
             .replace(/^-+|-+$/g, "");
     }
 
+    _billingOptions() {
+        return {
+            hasClientApiKey: !!this.agentInterface?.hasClientApiKey?.()
+        };
+    }
+
     async _ensureCurrentModeSession() {
         const billing = window.playBilling;
         const modeConfig = this._getActiveModeConfig();
-        if (!billing?.requiresPayment?.(modeConfig)) return true;
+        if (!billing?.requiresPayment?.(modeConfig, this._billingOptions())) return true;
         return billing.ensurePlaySession({
             modeId: this.mode,
             modeConfig,
@@ -641,7 +647,7 @@ class Robot {
 
     onLocalGameEnded(reason = "game_finished") {
         this._modeReady = false;
-        if (window.playBilling?.requiresPayment?.(this._getActiveModeConfig())) {
+        if (window.playBilling?.requiresPayment?.(this._getActiveModeConfig(), this._billingOptions())) {
             void window.playBilling.completeActiveSession(reason);
         }
         if (String(this.name || "").toLowerCase() === "talking head" && this.mode !== "menu") {

@@ -21,9 +21,11 @@ class PlayBilling {
         this._pollCancelled = false;
     }
 
-    requiresPayment(modeConfig) {
+    requiresPayment(modeConfig, { hasClientApiKey = false } = {}) {
         if (!modeConfig || modeConfig.free === true) return false;
-        return Math.max(0, Number(modeConfig.priceCents) || 0) > 0;
+        if (Math.max(0, Number(modeConfig.priceCents) || 0) <= 0) return false;
+        if (hasClientApiKey && this.isArcadeAiMode(modeConfig)) return false;
+        return true;
     }
 
     isArcadeAiMode(modeConfig) {

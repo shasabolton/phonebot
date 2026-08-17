@@ -81,14 +81,15 @@ class AgentInterface {
         this._voiceOn = this._resolveVoiceDefault(null);
     }
 
-    /** True when a hand-up-to-talk mode is active (Mixed, Conversation, 20 Questions, Linking Word). */
+    /** True when a hand-up-to-talk mode is active (Mixed, Conversation, 20 Questions, Linking Word, Fortune Teller). */
     _isConversationMode() {
         const mode = String(this.robot?.mode || "").trim().toLowerCase();
         return (
             mode === "mixed" ||
             mode === "conversation" ||
             mode === "twentyquestions" ||
-            mode === "linkingword"
+            mode === "linkingword" ||
+            mode === "fortuneteller"
         );
     }
 
@@ -142,6 +143,10 @@ class AgentInterface {
     _clientApiKey() {
         if (this._keyInput) return String(this._keyInput.value || "").trim();
         return String(this._apiKey || "").trim();
+    }
+
+    hasClientApiKey() {
+        return !!this._clientApiKey();
     }
 
     /** Hosted Groq is the fallback for paid modes only when the user has no key of their own. */
@@ -639,7 +644,7 @@ class AgentInterface {
                 ? "Arcade session active. Chat, Whisper, and TTS use the hosted metered Groq key (clear key field = hosted)."
                 : gemini
                 ? "Gemini audio turn + TTS (AI Studio). Text history only — no Groq Whisper/Orpheus."
-                : "Groq Orpheus TTS (API credits). Max 200 chars. Plays via audio player for mouth sync."
+                : "Groq Orpheus TTS (uses API credits). Long replies play in sequence (200 chars per chunk)."
         );
     }
 
@@ -672,20 +677,38 @@ class AgentInterface {
             return;
         }
         const gemini = this._isGeminiProvider();
+        const chunks = gemini
+            ? [content]
+            : typeof window.GroqTts?.splitInput === "function"
+              ? window.GroqTts.splitInput(content)
+              : [content];
         let usedBrowserFallback = false;
         try {
-            this._setVoiceStatus(gemini ? `Gemini TTS (${this._ttsVoice})…` : `Groq TTS (${this._ttsVoice})…`);
-            // Prefer the field value as-is so clearing the input drops a remembered key.
             this._apiKey = this._keyInput ? String(this._keyInput.value || "").trim() : this._apiKey;
-            const blob = await this.synthesizeSpeechBlob(content, { voice: this._ttsVoice });
-            if (generation !== this._speakGeneration) return;
-            await this._playSpeechBlob(blob, content, generation, {
-                speakingLabel: gemini ? `Speaking (Gemini ${this._ttsVoice})…` : `Speaking (${this._ttsVoice})…`,
-                idleLabel: gemini
-                    ? "Gemini TTS (AI Studio)."
-                    : "Groq Orpheus TTS (uses API credits).",
-                playLabel: gemini ? `Gemini TTS (${this._ttsVoice})` : `Groq TTS (${this._ttsVoice})`
-            });
+            for (let i = 0; i < chunks.length; i++) {
+                if (generation !== this._speakGeneration) return;
+                const chunk = chunks[i];
+                const partLabel =
+                    chunks.length > 1 ? ` (${i + 1}/${chunks.length})` : "";
+                this._setVoiceStatus(
+                    gemini
+                        ? `Gemini TTS (${this._ttsVoice})…`
+                        : `Groq TTS (${this._ttsVoice})${partLabel}…`
+                );
+                const blob = await this.synthesizeSpeechBlob(chunk, { voice: this._ttsVoice });
+                if (generation !== this._speakGeneration) return;
+                await this._playSpeechBlob(blob, chunk, generation, {
+                    speakingLabel: gemini
+                        ? `Speaking (Gemini ${this._ttsVoice})…`
+                        : `Speaking (${this._ttsVoice})${partLabel}…`,
+                    idleLabel: gemini
+                        ? "Gemini TTS (AI Studio)."
+                        : "Groq Orpheus TTS (uses API credits).",
+                    playLabel: gemini
+                        ? `Gemini TTS (${this._ttsVoice})`
+                        : `Groq TTS (${this._ttsVoice})${partLabel}`
+                });
+            }
         } catch (err) {
             console.warn("TTS error, falling back to browser speechSynthesis:", err);
             if (generation !== this._speakGeneration) return;
@@ -698,6 +721,19 @@ class AgentInterface {
             if (generation === this._speakGeneration && !usedBrowserFallback) {
                 window.__phonebotTtsSpeaking = false;
             }
+        }
+    }
+
+    _blobFromBase64Audio(base64, type = "audio/wav") {
+        const encoded = String(base64 || "").trim();
+        if (!encoded) return null;
+        try {
+            const binary = atob(encoded);
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+            return new Blob([bytes], { type: String(type || "audio/wav") });
+        } catch (_) {
+            return null;
         }
     }
 
@@ -2579,21 +2615,36 @@ class AgentInterface {
         }
 
         if (!ok) return false;
-        const spokenText = String(result?.spokenText || "").trim();
+        const spokenText = String(result?.spokenText || result?.contentText || "").trim();
         if (this._voiceOn && spokenText) {
             const generation = this._speakGeneration;
-            if (audioBlob?.size >= 44) {
-                try {
+            const hostedChunks = Array.isArray(result?.audioChunks) ? result.audioChunks : [];
+            try {
+                if (hostedChunks.length) {
+                    for (let i = 0; i < hostedChunks.length; i++) {
+                        if (generation !== this._speakGeneration) break;
+                        const entry = hostedChunks[i];
+                        const blob = this._blobFromBase64Audio(entry?.base64, entry?.type);
+                        if (!blob || blob.size < 44) continue;
+                        const partLabel =
+                            hostedChunks.length > 1 ? ` (${i + 1}/${hostedChunks.length})` : "";
+                        await this._playSpeechBlob(blob, spokenText, generation, {
+                            speakingLabel: `Speaking (hosted Groq ${this._ttsVoice})${partLabel}…`,
+                            idleLabel: "Hosted arcade voice ready.",
+                            playLabel: `Hosted Groq (${this._ttsVoice})${partLabel}`
+                        });
+                    }
+                } else if (audioBlob?.size >= 44) {
                     await this._playSpeechBlob(audioBlob, spokenText, generation, {
                         speakingLabel: `Speaking (hosted Groq ${this._ttsVoice})…`,
                         idleLabel: "Hosted arcade voice ready.",
                         playLabel: `Hosted Groq (${this._ttsVoice})`
                     });
-                } catch (err) {
-                    console.warn("Hosted audio playback failed; using browser speech:", err);
+                } else {
                     await this._speakBrowserFallback(spokenText);
                 }
-            } else {
+            } catch (err) {
+                console.warn("Hosted audio playback failed; using browser speech:", err);
                 await this._speakBrowserFallback(spokenText);
             }
         }
@@ -3000,7 +3051,7 @@ class AgentInterface {
         voiceStatus.className = "muted";
         voiceStatus.style.margin = "4px 0 0";
         voiceStatus.textContent =
-            "Groq Orpheus TTS (API credits). Max 200 chars. Plays via audio player for mouth sync.";
+            "Groq Orpheus TTS (uses API credits). Long replies play in sequence (200 chars per chunk).";
 
         const agentPowerBtn = document.createElement("button");
         agentPowerBtn.type = "button";
