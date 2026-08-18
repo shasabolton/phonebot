@@ -818,26 +818,32 @@
     }
     .play-billing-overlay {
       position: fixed;
-      inset: 0;
-      z-index: 1200;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: var(--screen-light-strip-height);
+      z-index: 10001;
       display: flex;
       align-items: center;
       justify-content: center;
       padding: 18px;
       box-sizing: border-box;
       background: rgba(0, 0, 0, 0.62);
+      overflow: auto;
     }
     .play-billing-overlay[hidden] {
       display: none !important;
     }
     .play-billing-card {
       width: min(100%, 24rem);
+      max-height: 100%;
       padding: 20px;
       box-sizing: border-box;
       border-radius: 14px;
       background: #fff;
       box-shadow: 0 14px 44px rgba(0, 0, 0, 0.32);
       text-align: center;
+      overflow: auto;
     }
     .play-billing-title {
       margin: 0 0 10px;
