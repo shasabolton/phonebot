@@ -8,6 +8,9 @@ class AgentInterface {
     static STORAGE_REMEMBER = "phonebot.agent.remember";
     /** Sentinel `<select>` value: insert live state JSON (not a file path). */
     static TEMPLATE_VALUE_STATE = "__robot_state_json__";
+    static FORTUNE_TELLER_DIRECTOR_EVERY = 5;
+    static FORTUNE_TELLER_DIRECTOR_NOTE =
+        "Director note (do not speak this): Finish your current beat, then ask if they want to hear their fortune now. Stay in character.";
 
     /**
      * @param {Robot} robot
@@ -89,6 +92,38 @@ class AgentInterface {
             mode === "twentyquestions" ||
             mode === "fortuneteller"
         );
+    }
+
+    _isFortuneTellerMode() {
+        return String(this.robot?.mode || "").trim().toLowerCase() === "fortuneteller";
+    }
+
+    /**
+     * Same note on agent turns 5, 10, 15… Current request only — not stored in history.
+     * @returns {string}
+     */
+    _fortuneTellerDirectorNoteIfDue() {
+        if (!this._isFortuneTellerMode()) return "";
+        const assistantCount = (this.messageHistory || []).filter(
+            (m) => m && m.role === "assistant"
+        ).length;
+        if ((assistantCount + 1) % AgentInterface.FORTUNE_TELLER_DIRECTOR_EVERY !== 0) return "";
+        return AgentInterface.FORTUNE_TELLER_DIRECTOR_NOTE;
+    }
+
+    /** Append the director note to this turn's game prompt (Gemini audio path). */
+    _withFortuneTellerDirectorNoteOnIntro(intro) {
+        const note = this._fortuneTellerDirectorNoteIfDue();
+        if (!note) return String(intro || "");
+        const head = String(intro || "").trim();
+        return head ? `${head}\n\n${note}` : note;
+    }
+
+    /** Prepend a system message for this request only (Groq / Gemini chat). */
+    _withFortuneTellerDirectorNoteOnMessages(messages) {
+        const note = this._fortuneTellerDirectorNoteIfDue();
+        if (!note || !Array.isArray(messages)) return messages;
+        return [{ role: "system", content: note }, ...messages];
     }
 
     /** True when Groq Simon Says AI is active (not the local pose-match game). */
@@ -1852,6 +1887,7 @@ class AgentInterface {
                 conversationMessages.push({ role: "user", content: prompt });
             }
         }
+        conversationMessages = this._withFortuneTellerDirectorNoteOnMessages(conversationMessages);
 
         let sendCameraImage;
         if (options.forceCameraImage === true) {
@@ -1971,6 +2007,17 @@ class AgentInterface {
         if (typeof window.GeminiAudioTurn?.generateContent !== "function") {
             throw new Error("Gemini audio helper is not loaded.");
         }
+        const systemParts = [];
+        const chatMessages = [];
+        for (const m of Array.isArray(conversationMessages) ? conversationMessages : []) {
+            if (!m) continue;
+            if (m.role === "system") {
+                const text = String(m.content || "").trim();
+                if (text) systemParts.push(text);
+                continue;
+            }
+            chatMessages.push(m);
+        }
         const temperature = Number.isFinite(agent.temperature)
             ? agent.temperature
             : Number.isFinite(this.config.defaultChatTemperature)
@@ -1994,7 +2041,8 @@ class AgentInterface {
             apiKey,
             baseUrl: window.GeminiAudioTurn.resolveBaseUrl(agent, this.defaultBaseUrl),
             model: model || window.GeminiAudioTurn.DEFAULT_MODEL,
-            contents: window.GeminiAudioTurn.chatMessagesToContents(conversationMessages),
+            contents: window.GeminiAudioTurn.chatMessagesToContents(chatMessages),
+            systemInstruction: systemParts.length ? systemParts.join("\n\n") : undefined,
             generationConfig
         });
         const contentText = this._stripThinkingBlocks(String(result.text || "").trim());
@@ -2292,7 +2340,7 @@ class AgentInterface {
             const result = await this.sendGeminiAudioTurn({
                 audioBlob: blob,
                 textHistory: prior,
-                systemOrIntro: intro,
+                systemOrIntro: this._withFortuneTellerDirectorNoteOnIntro(intro),
                 stateJson: stateBlock,
                 voice: this._ttsVoice
             });
@@ -2501,7 +2549,10 @@ class AgentInterface {
                 userTemplate,
                 prior.length
             );
-            const conversationMessages = [...prior, { role: "user", content: outboundTemplate }];
+            const conversationMessages = this._withFortuneTellerDirectorNoteOnMessages([
+                ...prior,
+                { role: "user", content: outboundTemplate }
+            ]);
             if (this._sendCameraImageInput) {
                 this._sendCameraImage = !!this._sendCameraImageInput.checked;
             }
