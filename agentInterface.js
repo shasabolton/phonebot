@@ -8,9 +8,8 @@ class AgentInterface {
     static STORAGE_REMEMBER = "phonebot.agent.remember";
     /** Sentinel `<select>` value: insert live state JSON (not a file path). */
     static TEMPLATE_VALUE_STATE = "__robot_state_json__";
-    static FORTUNE_TELLER_DIRECTOR_EVERY = 5;
-    static FORTUNE_TELLER_DIRECTOR_NOTE =
-        "Director note (do not speak this): Finish your current beat, then ask if they want to hear their fortune now. Stay in character.";
+    static FORTUNE_TELLER_FINALE_EVERY = 8;
+    static FORTUNE_TELLER_FINALE_LINE = "Can you please give me my grand finale fortune now";
 
     /**
      * @param {Robot} robot
@@ -98,32 +97,26 @@ class AgentInterface {
         return String(this.robot?.mode || "").trim().toLowerCase() === "fortuneteller";
     }
 
-    /**
-     * Same note on agent turns 5, 10, 15… Current request only — not stored in history.
-     * @returns {string}
-     */
-    _fortuneTellerDirectorNoteIfDue() {
-        if (!this._isFortuneTellerMode()) return "";
-        const assistantCount = (this.messageHistory || []).filter(
-            (m) => m && m.role === "assistant"
-        ).length;
-        if ((assistantCount + 1) % AgentInterface.FORTUNE_TELLER_DIRECTOR_EVERY !== 0) return "";
-        return AgentInterface.FORTUNE_TELLER_DIRECTOR_NOTE;
+    /** True on player turns 8, 16, 24… before this utterance is stored. */
+    _isFortuneTellerFinaleDue() {
+        if (!this._isFortuneTellerMode()) return false;
+        const userCount = (this.messageHistory || []).filter((m) => m && m.role === "user").length;
+        return (userCount + 1) % AgentInterface.FORTUNE_TELLER_FINALE_EVERY === 0;
     }
 
-    /** Append the director note to this turn's game prompt (Gemini audio path). */
-    _withFortuneTellerDirectorNoteOnIntro(intro) {
-        const note = this._fortuneTellerDirectorNoteIfDue();
-        if (!note) return String(intro || "");
-        const head = String(intro || "").trim();
-        return head ? `${head}\n\n${note}` : note;
+    _joinFortuneTellerFinale(userText) {
+        const finale = AgentInterface.FORTUNE_TELLER_FINALE_LINE;
+        const base = String(userText || "").trim();
+        if (!base) return finale;
+        if (base.includes(finale)) return base;
+        return `${base} ${finale}`;
     }
 
-    /** Prepend a system message for this request only (Groq / Gemini chat). */
-    _withFortuneTellerDirectorNoteOnMessages(messages) {
-        const note = this._fortuneTellerDirectorNoteIfDue();
-        if (!note || !Array.isArray(messages)) return messages;
-        return [{ role: "system", content: note }, ...messages];
+    /** Append the finale line to this player utterance when due. Visible in history. */
+    _withFortuneTellerFinaleIfDue(userText) {
+        const base = String(userText || "");
+        if (!this._isFortuneTellerFinaleDue()) return base;
+        return this._joinFortuneTellerFinale(base);
     }
 
     /** True when Groq Simon Says AI is active (not the local pose-match game). */
@@ -1887,7 +1880,6 @@ class AgentInterface {
                 conversationMessages.push({ role: "user", content: prompt });
             }
         }
-        conversationMessages = this._withFortuneTellerDirectorNoteOnMessages(conversationMessages);
 
         let sendCameraImage;
         if (options.forceCameraImage === true) {
@@ -2007,17 +1999,6 @@ class AgentInterface {
         if (typeof window.GeminiAudioTurn?.generateContent !== "function") {
             throw new Error("Gemini audio helper is not loaded.");
         }
-        const systemParts = [];
-        const chatMessages = [];
-        for (const m of Array.isArray(conversationMessages) ? conversationMessages : []) {
-            if (!m) continue;
-            if (m.role === "system") {
-                const text = String(m.content || "").trim();
-                if (text) systemParts.push(text);
-                continue;
-            }
-            chatMessages.push(m);
-        }
         const temperature = Number.isFinite(agent.temperature)
             ? agent.temperature
             : Number.isFinite(this.config.defaultChatTemperature)
@@ -2041,8 +2022,7 @@ class AgentInterface {
             apiKey,
             baseUrl: window.GeminiAudioTurn.resolveBaseUrl(agent, this.defaultBaseUrl),
             model: model || window.GeminiAudioTurn.DEFAULT_MODEL,
-            contents: window.GeminiAudioTurn.chatMessagesToContents(chatMessages),
-            systemInstruction: systemParts.length ? systemParts.join("\n\n") : undefined,
+            contents: window.GeminiAudioTurn.chatMessagesToContents(conversationMessages),
             generationConfig
         });
         const contentText = this._stripThinkingBlocks(String(result.text || "").trim());
@@ -2337,14 +2317,16 @@ class AgentInterface {
             const stateBlock = this._buildCurrentStateForIntroductionPrompt();
             const intro = await this._fetchIntroductionPromptContent();
             const prior = this._buildPriorConversationMessages();
+            const finaleDue = this._isFortuneTellerFinaleDue();
             const result = await this.sendGeminiAudioTurn({
                 audioBlob: blob,
                 textHistory: prior,
-                systemOrIntro: this._withFortuneTellerDirectorNoteOnIntro(intro),
+                systemOrIntro: intro,
                 stateJson: stateBlock,
-                voice: this._ttsVoice
+                voice: this._ttsVoice,
+                typedUserText: finaleDue ? AgentInterface.FORTUNE_TELLER_FINALE_LINE : ""
             });
-            const userTranscript = String(result?.userTranscript || "").trim();
+            let userTranscript = String(result?.userTranscript || "").trim();
             const assistantTranscript = String(result?.assistantTranscript || "").trim();
             if (!userTranscript) {
                 if (this._statusEl) {
@@ -2360,6 +2342,7 @@ class AgentInterface {
                 }
                 return false;
             }
+            if (finaleDue) userTranscript = this._joinFortuneTellerFinale(userTranscript);
             const fullUserContent = `Current state (json):\n${stateBlock || "[]"}\n\nUser said:\n${userTranscript}`;
             const outboundUser = await this._mergeIntroductionIntoFirstUserMessage(fullUserContent, prior.length);
             this.messageHistory.push({
@@ -2463,13 +2446,14 @@ class AgentInterface {
         let ok = false;
         try {
             const stateBlock = this._buildCurrentStateForIntroductionPrompt();
-            const fullUserContent = `Current state (json):\n${stateBlock || "[]"}\n\nUser said:\n${text}`;
+            const userText = this._withFortuneTellerFinaleIfDue(text);
+            const fullUserContent = `Current state (json):\n${stateBlock || "[]"}\n\nUser said:\n${userText}`;
             const prior = this._buildPriorConversationMessages();
             const outboundUser = await this._mergeIntroductionIntoFirstUserMessage(fullUserContent, prior.length);
             const conversationMessages = [...prior, { role: "user", content: outboundUser }];
             this.messageHistory.push({
                 role: "user",
-                text: prior.length ? text : outboundUser,
+                text: prior.length ? userText : outboundUser,
                 fullPrompt: outboundUser,
                 at: new Date().toISOString()
             });
@@ -2543,16 +2527,14 @@ class AgentInterface {
         try {
             const marker = `__PHONEBOT_TRANSCRIPT_${crypto.randomUUID()}__`;
             const stateBlock = this._buildCurrentStateForIntroductionPrompt();
-            const userTemplate = `Current state (json):\n${stateBlock || "[]"}\n\nUser said:\n${marker}`;
+            const spokenSlot = this._withFortuneTellerFinaleIfDue(marker);
+            const userTemplate = `Current state (json):\n${stateBlock || "[]"}\n\nUser said:\n${spokenSlot}`;
             const prior = this._buildPriorConversationMessages();
             const outboundTemplate = await this._mergeIntroductionIntoFirstUserMessage(
                 userTemplate,
                 prior.length
             );
-            const conversationMessages = this._withFortuneTellerDirectorNoteOnMessages([
-                ...prior,
-                { role: "user", content: outboundTemplate }
-            ]);
+            const conversationMessages = [...prior, { role: "user", content: outboundTemplate }];
             if (this._sendCameraImageInput) {
                 this._sendCameraImage = !!this._sendCameraImageInput.checked;
             }
@@ -2626,12 +2608,13 @@ class AgentInterface {
 
             const transcript = String(result?.transcript || "").trim();
             if (!transcript) throw new Error("No speech was detected.");
+            const userText = this._withFortuneTellerFinaleIfDue(transcript);
             const outboundUser = outboundTemplate.replace(marker, transcript);
             const contentText = String(result?.contentText || "").trim();
             const rawText = JSON.stringify(result?.chat || {});
             this.messageHistory.push({
                 role: "user",
-                text: prior.length ? transcript : outboundUser,
+                text: prior.length ? userText : outboundUser,
                 fullPrompt: outboundUser,
                 at: new Date().toISOString()
             });
@@ -2755,12 +2738,13 @@ class AgentInterface {
                 return;
             }
             const stateBlock = this._buildCurrentStateForIntroductionPrompt();
-            const fullUserContent = `Current state (json):\n${stateBlock || "[]"}\n\nUser:\n${text}`;
+            const userText = this._withFortuneTellerFinaleIfDue(text);
+            const fullUserContent = `Current state (json):\n${stateBlock || "[]"}\n\nUser:\n${userText}`;
             const prior = this._buildPriorConversationMessages();
             const outboundUser = await this._mergeIntroductionIntoFirstUserMessage(fullUserContent, prior.length);
             this.messageHistory.push({
                 role: "user",
-                text: prior.length ? text : outboundUser,
+                text: prior.length ? userText : outboundUser,
                 fullPrompt: outboundUser,
                 at: new Date().toISOString()
             });

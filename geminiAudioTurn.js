@@ -426,7 +426,11 @@ class GeminiAudioTurn {
         if (typed && !hasAudio) {
             lines.push("", "Typed user text:", typed);
         } else if (typed && hasAudio) {
-            lines.push("", "Optional typed hint (clip is authoritative):", typed);
+            lines.push(
+                "",
+                "The user also said this after their spoken words. Append it to userTranscript and reply as if they said both:",
+                typed
+            );
         }
         lines.push(
             "",
