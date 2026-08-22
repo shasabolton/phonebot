@@ -340,6 +340,9 @@ class App {
         } else if (v === "screen light") {
             this.transmitterInstance = new ScreenLightTransmitter(this.transmitterGuiMount);
             this.transmitterInstance.setReadyChangeHandler(() => this.updateStartButtonState());
+        } else if (v === "bluetooth") {
+            this.transmitterInstance = new BluetoothTransmitter(this.transmitterGuiMount);
+            this.transmitterInstance.setReadyChangeHandler(() => this.updateStartButtonState());
         }
         this.updateStartButtonState();
     }
