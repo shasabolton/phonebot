@@ -34,14 +34,15 @@ class Robot {
             typeof options.onModeChange === "function" ? options.onModeChange : null;
         this._onRequestStart =
             typeof options.onRequestStart === "function" ? options.onRequestStart : null;
-        this._onStartFlowPrepare =
-            typeof options.onStartFlowPrepare === "function" ? options.onStartFlowPrepare : null;
+        this._onStartFlowAction =
+            typeof options.onStartFlowAction === "function" ? options.onStartFlowAction : null;
         this._startFlowShouldSkipStep =
             typeof options.startFlowShouldSkipStep === "function"
                 ? options.startFlowShouldSkipStep
                 : null;
         this._startFlowOverlay = null;
         this._startFlowStep = 0;
+        this._startFlowBusy = false;
 
         this.stateMachine = null;
         this.strategies = null;
@@ -976,7 +977,6 @@ class Robot {
         if (!steps.length) return null;
         return {
             autoStart: flow.autoStart !== false,
-            prepareTransmitter: String(flow.prepareTransmitter || "").trim(),
             steps
         };
     }
@@ -988,14 +988,7 @@ class Robot {
 
         this._dismissStartFlowOverlay();
         this._startFlowStep = 0;
-
-        if (typeof this._onStartFlowPrepare === "function") {
-            try {
-                this._onStartFlowPrepare(flow);
-            } catch (err) {
-                console.warn("onStartFlowPrepare failed:", err);
-            }
-        }
+        this._startFlowBusy = false;
 
         const overlay = document.createElement("div");
         overlay.className = "robot-start-flow";
@@ -1077,7 +1070,40 @@ class Robot {
 
     async _advanceStartFlow() {
         const flow = this.getStartFlowConfig();
-        if (!flow) return;
+        if (!flow || this._startFlowBusy) return;
+        const step = flow.steps[this._startFlowStep];
+        if (!step) {
+            await this._finishStartFlow();
+            return;
+        }
+
+        const action = String(step.action || "").trim();
+        if (action && typeof this._onStartFlowAction === "function") {
+            this._startFlowBusy = true;
+            if (this._startFlowBtn) {
+                this._startFlowBtn.disabled = true;
+                const busyLabel = String(step.busyButton || step.busyLabel || "").trim();
+                if (busyLabel) this._startFlowBtn.textContent = busyLabel;
+            }
+            let ok = true;
+            try {
+                ok = await this._onStartFlowAction(action, step);
+            } catch (err) {
+                console.error("Start flow action failed:", err);
+                ok = false;
+            } finally {
+                this._startFlowBusy = false;
+            }
+            if (!ok) {
+                if (this._startFlowBtn) {
+                    this._startFlowBtn.disabled = false;
+                    this._startFlowBtn.textContent =
+                        String(step.button || step.buttonLabel || "Done").trim() || "Done";
+                }
+                return;
+            }
+        }
+
         this._moveToNextApplicableStartFlowStep(this._startFlowStep + 1);
         if (this._startFlowStep >= flow.steps.length) {
             await this._finishStartFlow();
@@ -1112,6 +1138,7 @@ class Robot {
         this._startFlowOverlay = null;
         this._startFlowTextEl = null;
         this._startFlowBtn = null;
+        this._startFlowBusy = false;
     }
 
     _buildDefaultDashboard(container) {
