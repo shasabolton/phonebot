@@ -136,10 +136,13 @@ class App {
                 if (!this._applyingUrl) this.syncUrlParams();
             },
             onRequestStart: () => this.requestStartFromFlow(),
-            onStartFlowAction: (action, step) => this.handleStartFlowAction(action, step),
+            onStartFlowPrepare: (flow) => this.prepareStartFlowTransmitter(flow),
             startFlowShouldSkipStep: (step) => this.startFlowShouldSkipStep(step)
         });
-        void this.preferScreenLightIfNoWifi();
+        const prepareTx = String(robotConfig?.startFlow?.prepareTransmitter || "").trim();
+        if (!prepareTx) {
+            void this.preferScreenLightIfNoWifi();
+        }
         this.updateStartButtonState();
         this._refreshSettingsMenu();
         if (!options.skipUrlSync) this.syncUrlParams();
@@ -185,43 +188,21 @@ class App {
         return false;
     }
 
-    async handleStartFlowAction(action, step) {
-        if (action === "bluetoothPair") {
-            const ok = await this.pairBluetoothFromStartFlow();
-            if (!ok && step?.fallbackScreenLightOnFail) {
-                this._fallbackToScreenLightTransmitter();
-            }
-        }
-    }
-
-    /**
-     * Minimal start-flow pairing: switch to Bluetooth transmitter and open the
-     * browser Web Bluetooth picker (required by the platform). App popups stay
-     * minimal; the OS/browser device list is separate and unavoidable.
-     */
-    async pairBluetoothFromStartFlow() {
-        if (!this.transmitterListEl) return false;
-        if (this.isRadioTransmitterReady()) return true;
-
-        if (this.transmitterListEl.value !== "bluetooth") {
-            this.transmitterListEl.value = "bluetooth";
-            this.onTransmitterSelect();
-        }
-        const tx = this.transmitterInstance;
-        if (!tx || typeof tx.connect !== "function") {
-            return false;
-        }
-        await tx.connect();
-        this.updateStartButtonState();
-        return this.isBluetoothConnected();
-    }
-
-    _fallbackToScreenLightTransmitter() {
+    selectTransmitter(kind) {
         if (!this.transmitterListEl) return;
-        if (this.transmitterListEl.value === "screen light") return;
-        this.transmitterListEl.value = "screen light";
+        const want = String(kind || "").trim();
+        if (!want || this.transmitterListEl.value === want) return;
+        this.transmitterListEl.value = want;
         this.onTransmitterSelect();
-        this.updateStartButtonState();
+    }
+
+    /** Open the built-in transmitter panel when a robot start flow needs pairing first. */
+    prepareStartFlowTransmitter(flow) {
+        if (this.isRadioTransmitterReady()) return;
+        const kind = String(flow?.prepareTransmitter || "").trim();
+        if (!kind) return;
+        this.selectTransmitter(kind);
+        this.openSettings("transmitter");
     }
 
     /** When a robot is chosen and station WiFi/Bluetooth is not ready, default transmitter to screen light. */

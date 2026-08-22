@@ -89,25 +89,8 @@ window.ROBOTS_DATA = {
             dashboard: "talkingHead",
             startFlow: {
                 autoStart: true,
+                prepareTransmitter: "bluetooth",
                 steps: [
-                    {
-                        text: "Turn on Bluetooth",
-                        button: "Next",
-                        skipWhen: "radioReady"
-                    },
-                    {
-                        text: "Select your robot",
-                        button: "Next",
-                        skipWhen: "radioReady"
-                    },
-                    {
-                        text: "Pair with your robot",
-                        button: "Pair",
-                        action: "bluetoothPair",
-                        busyButton: "Pairing…",
-                        skipWhen: "radioReady",
-                        fallbackScreenLightOnFail: true
-                    },
                     {
                         text: "Set your phone to max brightness",
                         button: "Done",
