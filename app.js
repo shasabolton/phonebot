@@ -135,7 +135,9 @@ class App {
             onModeChange: () => {
                 if (!this._applyingUrl) this.syncUrlParams();
             },
-            onRequestStart: () => this.requestStartFromFlow()
+            onRequestStart: () => this.requestStartFromFlow(),
+            onStartFlowAction: (action, step) => this.handleStartFlowAction(action, step),
+            startFlowShouldSkipStep: (step) => this.startFlowShouldSkipStep(step)
         });
         void this.preferScreenLightIfNoWifi();
         this.updateStartButtonState();
@@ -150,33 +152,101 @@ class App {
         await this.onStart();
     }
 
-    isWifiConnected() {
-        if (!this.transmitterListEl || this.transmitterListEl.value !== 'wifi') return false;
-        const tx = this.transmitterInstance;
-        return !!(tx && typeof tx.isReady === 'function' && tx.isReady());
+    getTransmitterKind() {
+        return String(this.transmitterListEl?.value || "").trim();
     }
 
-    /** When a robot is chosen and station WiFi is not ready, default transmitter to screen light. */
+    isTransmitterReady() {
+        const tx = this.transmitterInstance;
+        return !!(tx && typeof tx.isReady === "function" && tx.isReady());
+    }
+
+    isWifiConnected() {
+        return this.getTransmitterKind() === "wifi" && this.isTransmitterReady();
+    }
+
+    isBluetoothConnected() {
+        return this.getTransmitterKind() === "bluetooth" && this.isTransmitterReady();
+    }
+
+    /** True when WiFi or Bluetooth is the active, ready link (skip optical brightness setup). */
+    isRadioTransmitterReady() {
+        return this.isWifiConnected() || this.isBluetoothConnected();
+    }
+
+    startFlowShouldSkipStep(step) {
+        const skipWhen = String(step?.skipWhen || "").trim();
+        if (skipWhen === "radioReady") {
+            return this.isRadioTransmitterReady();
+        }
+        if (skipWhen === "notRadioReady") {
+            return !this.isRadioTransmitterReady();
+        }
+        return false;
+    }
+
+    async handleStartFlowAction(action, step) {
+        if (action === "bluetoothPair") {
+            const ok = await this.pairBluetoothFromStartFlow();
+            if (!ok && step?.fallbackScreenLightOnFail) {
+                this._fallbackToScreenLightTransmitter();
+            }
+        }
+    }
+
+    /**
+     * Minimal start-flow pairing: switch to Bluetooth transmitter and open the
+     * browser Web Bluetooth picker (required by the platform). App popups stay
+     * minimal; the OS/browser device list is separate and unavoidable.
+     */
+    async pairBluetoothFromStartFlow() {
+        if (!this.transmitterListEl) return false;
+        if (this.isRadioTransmitterReady()) return true;
+
+        if (this.transmitterListEl.value !== "bluetooth") {
+            this.transmitterListEl.value = "bluetooth";
+            this.onTransmitterSelect();
+        }
+        const tx = this.transmitterInstance;
+        if (!tx || typeof tx.connect !== "function") {
+            return false;
+        }
+        await tx.connect();
+        this.updateStartButtonState();
+        return this.isBluetoothConnected();
+    }
+
+    _fallbackToScreenLightTransmitter() {
+        if (!this.transmitterListEl) return;
+        if (this.transmitterListEl.value === "screen light") return;
+        this.transmitterListEl.value = "screen light";
+        this.onTransmitterSelect();
+        this.updateStartButtonState();
+    }
+
+    /** When a robot is chosen and station WiFi/Bluetooth is not ready, default transmitter to screen light. */
     async preferScreenLightIfNoWifi() {
         if (!this.transmitterListEl) return;
         const robotStillSelected = !!this.robot;
         if (!robotStillSelected) return;
 
-        if (this.transmitterListEl.value === 'wifi' && this.transmitterInstance) {
+        if (this.transmitterListEl.value === "wifi" && this.transmitterInstance) {
             const wifiTx = this.transmitterInstance;
-            if (typeof wifiTx.waitForDetectMode === 'function') {
+            if (typeof wifiTx.waitForDetectMode === "function") {
                 await wifiTx.waitForDetectMode();
             }
             if (!this.robot) return;
             if (this.transmitterInstance !== wifiTx) return;
-            if (typeof wifiTx.isReady === 'function' && wifiTx.isReady()) return;
+            if (typeof wifiTx.isReady === "function" && wifiTx.isReady()) return;
         } else if (this.isWifiConnected()) {
+            return;
+        } else if (this.isBluetoothConnected()) {
             return;
         }
 
         if (!this.robot) return;
-        if (this.transmitterListEl.value === 'screen light') return;
-        this.transmitterListEl.value = 'screen light';
+        if (this.transmitterListEl.value === "screen light") return;
+        this.transmitterListEl.value = "screen light";
         this.onTransmitterSelect();
     }
 

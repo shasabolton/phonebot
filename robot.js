@@ -34,8 +34,15 @@ class Robot {
             typeof options.onModeChange === "function" ? options.onModeChange : null;
         this._onRequestStart =
             typeof options.onRequestStart === "function" ? options.onRequestStart : null;
+        this._onStartFlowAction =
+            typeof options.onStartFlowAction === "function" ? options.onStartFlowAction : null;
+        this._startFlowShouldSkipStep =
+            typeof options.startFlowShouldSkipStep === "function"
+                ? options.startFlowShouldSkipStep
+                : null;
         this._startFlowOverlay = null;
         this._startFlowStep = 0;
+        this._startFlowBusy = false;
 
         this.stateMachine = null;
         this.strategies = null;
@@ -981,6 +988,7 @@ class Robot {
 
         this._dismissStartFlowOverlay();
         this._startFlowStep = 0;
+        this._startFlowBusy = false;
 
         const overlay = document.createElement("div");
         overlay.className = "robot-start-flow";
@@ -1007,15 +1015,47 @@ class Robot {
         this._startFlowOverlay = overlay;
         this._startFlowTextEl = textEl;
         this._startFlowBtn = btn;
+        this._moveToNextApplicableStartFlowStep(0);
         this._renderStartFlowStep();
+    }
+
+    _shouldSkipStartFlowStep(step) {
+        if (!step || typeof step !== "object") return true;
+        if (typeof this._startFlowShouldSkipStep === "function") {
+            try {
+                return !!this._startFlowShouldSkipStep(step);
+            } catch (err) {
+                console.warn("startFlowShouldSkipStep failed:", err);
+            }
+        }
+        return false;
+    }
+
+    /** Find the next step index >= fromIndex that should be shown, or steps.length if done. */
+    _moveToNextApplicableStartFlowStep(fromIndex) {
+        const flow = this.getStartFlowConfig();
+        if (!flow) {
+            this._startFlowStep = 0;
+            return;
+        }
+        let i = Math.max(0, fromIndex | 0);
+        while (i < flow.steps.length && this._shouldSkipStartFlowStep(flow.steps[i])) {
+            i += 1;
+        }
+        this._startFlowStep = i;
     }
 
     _renderStartFlowStep() {
         const flow = this.getStartFlowConfig();
         if (!flow || !this._startFlowOverlay) return;
-        const step = flow.steps[this._startFlowStep];
-        if (!step) {
+        if (this._startFlowStep >= flow.steps.length) {
             void this._finishStartFlow();
+            return;
+        }
+        const step = flow.steps[this._startFlowStep];
+        if (!step || this._shouldSkipStartFlowStep(step)) {
+            this._moveToNextApplicableStartFlowStep(this._startFlowStep + 1);
+            this._renderStartFlowStep();
             return;
         }
         const text = String(step.text || step.message || "").trim() || "Continue";
@@ -1030,8 +1070,31 @@ class Robot {
 
     async _advanceStartFlow() {
         const flow = this.getStartFlowConfig();
-        if (!flow) return;
-        this._startFlowStep += 1;
+        if (!flow || this._startFlowBusy) return;
+        const step = flow.steps[this._startFlowStep];
+        if (!step) {
+            await this._finishStartFlow();
+            return;
+        }
+
+        const action = String(step.action || "").trim();
+        if (action && typeof this._onStartFlowAction === "function") {
+            this._startFlowBusy = true;
+            if (this._startFlowBtn) {
+                this._startFlowBtn.disabled = true;
+                const busyLabel = String(step.busyButton || step.busyLabel || "").trim();
+                if (busyLabel) this._startFlowBtn.textContent = busyLabel;
+            }
+            try {
+                await this._onStartFlowAction(action, step);
+            } catch (err) {
+                console.error("Start flow action failed:", err);
+            } finally {
+                this._startFlowBusy = false;
+            }
+        }
+
+        this._moveToNextApplicableStartFlowStep(this._startFlowStep + 1);
         if (this._startFlowStep >= flow.steps.length) {
             await this._finishStartFlow();
             return;
@@ -1065,6 +1128,7 @@ class Robot {
         this._startFlowOverlay = null;
         this._startFlowTextEl = null;
         this._startFlowBtn = null;
+        this._startFlowBusy = false;
     }
 
     _buildDefaultDashboard(container) {
