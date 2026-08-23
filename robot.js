@@ -1006,15 +1006,24 @@ class Robot {
         btn.addEventListener("click", () => {
             void this._advanceStartFlow();
         });
+        const cancelBtn = document.createElement("button");
+        cancelBtn.type = "button";
+        cancelBtn.className = "robot-start-flow-btn robot-start-flow-btn--cancel";
+        cancelBtn.hidden = true;
+        cancelBtn.addEventListener("click", () => {
+            void this._skipStartFlowStep();
+        });
 
         card.appendChild(textEl);
         card.appendChild(btn);
+        card.appendChild(cancelBtn);
         overlay.appendChild(card);
         host.appendChild(overlay);
 
         this._startFlowOverlay = overlay;
         this._startFlowTextEl = textEl;
         this._startFlowBtn = btn;
+        this._startFlowCancelBtn = cancelBtn;
         this._moveToNextApplicableStartFlowStep(0);
         this._renderStartFlowStep();
     }
@@ -1065,7 +1074,28 @@ class Robot {
             this._startFlowBtn.textContent = label;
             this._startFlowBtn.disabled = false;
         }
+        const cancelLabel = String(step.cancelButton || "").trim();
+        if (this._startFlowCancelBtn) {
+            if (cancelLabel) {
+                this._startFlowCancelBtn.textContent = cancelLabel;
+                this._startFlowCancelBtn.hidden = false;
+                this._startFlowCancelBtn.disabled = false;
+            } else {
+                this._startFlowCancelBtn.hidden = true;
+            }
+        }
         this._startFlowOverlay.hidden = false;
+    }
+
+    async _skipStartFlowStep() {
+        const flow = this.getStartFlowConfig();
+        if (!flow || this._startFlowBusy) return;
+        this._moveToNextApplicableStartFlowStep(this._startFlowStep + 1);
+        if (this._startFlowStep >= flow.steps.length) {
+            await this._finishStartFlow();
+            return;
+        }
+        this._renderStartFlowStep();
     }
 
     async _advanceStartFlow() {
@@ -1085,6 +1115,7 @@ class Robot {
                 const busyLabel = String(step.busyButton || step.busyLabel || "").trim();
                 if (busyLabel) this._startFlowBtn.textContent = busyLabel;
             }
+            if (this._startFlowCancelBtn) this._startFlowCancelBtn.disabled = true;
             let ok = true;
             try {
                 ok = await this._onStartFlowAction(action, step);
@@ -1100,6 +1131,7 @@ class Robot {
                     this._startFlowBtn.textContent =
                         String(step.button || step.buttonLabel || "Done").trim() || "Done";
                 }
+                if (this._startFlowCancelBtn) this._startFlowCancelBtn.disabled = false;
                 return;
             }
         }
@@ -1138,6 +1170,7 @@ class Robot {
         this._startFlowOverlay = null;
         this._startFlowTextEl = null;
         this._startFlowBtn = null;
+        this._startFlowCancelBtn = null;
         this._startFlowBusy = false;
     }
 

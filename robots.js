@@ -94,6 +94,7 @@ window.ROBOTS_DATA = {
                     {
                         text: "Pair with your robot",
                         button: "Pair",
+                        cancelButton: "Cancel",
                         action: "bluetoothPair",
                         busyButton: "Pairing…",
                         skipWhen: "radioReady"
