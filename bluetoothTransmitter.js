@@ -13,9 +13,11 @@ const PHONEBOT_BLE = {
 };
 
 class BluetoothTransmitter {
-  constructor(container) {
+  constructor(container, options = {}) {
     /** @type {HTMLElement} */
     this.container = container;
+    /** @type {object|null} */
+    this.deviceFilter = options.deviceFilter || null;
     this.ready = false;
     this._readyChangeHandler = null;
     /** @type {BluetoothDevice|null} */
@@ -74,17 +76,35 @@ class BluetoothTransmitter {
     return this.container.querySelector("#" + id);
   }
 
+  setDeviceFilter(filter) {
+    this.deviceFilter = filter || null;
+    this._refreshAvailability();
+  }
+
+  _deviceHintHtml() {
+    if (this.deviceFilter) {
+      return (
+        "This link is scoped to <b>" +
+        escapeHtml(this.deviceFilter.bleName) +
+        "</b>. Only that robot should appear in the Bluetooth list."
+      );
+    }
+    return (
+      "Look for a device named <b>robot-</b> followed by six hex digits (same id as the WiFi AP). " +
+      "Keep the phone within a few metres of the ESP32. Bluetooth control works without WiFi."
+    );
+  }
+
   buildDom() {
     this.container.innerHTML = `
 <div id="bleStatus" class="box">Checking Bluetooth support…</div>
 <button type="button" id="bleConnectBtn" data-action="ble-connect">Connect to robot</button>
 <button type="button" id="bleDisconnectBtn" style="display:none;">Disconnect</button>
-<p class="muted">
-  Look for a device named <b>robot-</b> followed by six hex digits (same id as the WiFi AP).
-  Keep the phone within a few metres of the ESP32. Bluetooth control works without WiFi.
-</p>
+<p id="bleDeviceHint" class="muted"></p>
 <div id="bleDeviceInfo" class="muted" style="margin-top:8px;word-break:break-all;"></div>
 `;
+    const hint = this.el("bleDeviceHint");
+    if (hint) hint.innerHTML = this._deviceHintHtml();
   }
 
   _bindControls() {
@@ -114,10 +134,26 @@ class BluetoothTransmitter {
       return;
     }
 
-    status.innerHTML =
-      "<span class='muted'>Not connected.</span> Tap Connect and pick your robot from the list.";
+    status.innerHTML = this.deviceFilter
+      ? "<span class='muted'>Not connected.</span> Tap Connect to pair with <b>" +
+        escapeHtml(this.deviceFilter.bleName) +
+        "</b>."
+      : "<span class='muted'>Not connected.</span> Tap Connect and pick your robot from the list.";
     connectBtn.disabled = false;
     this.setReady(false);
+  }
+
+  _buildRequestDeviceOptions() {
+    if (typeof PhonebotDeviceFilter !== "undefined") {
+      return PhonebotDeviceFilter.buildBluetoothRequestOptions(
+        this.deviceFilter,
+        PHONEBOT_BLE.serviceUuid
+      );
+    }
+    return {
+      filters: [{ services: [PHONEBOT_BLE.serviceUuid] }],
+      optionalServices: [PHONEBOT_BLE.serviceUuid]
+    };
   }
 
   _setStatus(html) {
@@ -155,13 +191,16 @@ class BluetoothTransmitter {
     this._connectBusy = true;
     const connectBtn = this.el("bleConnectBtn");
     if (connectBtn) connectBtn.disabled = true;
-    this._setStatus("Opening Bluetooth device picker…");
+    this._setStatus(
+      this.deviceFilter
+        ? "Opening Bluetooth picker for <b>" + escapeHtml(this.deviceFilter.bleName) + "</b>…"
+        : "Opening Bluetooth device picker…"
+    );
 
     try {
-      const device = await navigator.bluetooth.requestDevice({
-        filters: [{ services: [PHONEBOT_BLE.serviceUuid] }],
-        optionalServices: [PHONEBOT_BLE.serviceUuid]
-      });
+      const device = await navigator.bluetooth.requestDevice(
+        this._buildRequestDeviceOptions()
+      );
 
       this._clearConnection(false);
       this._device = device;

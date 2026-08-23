@@ -19,6 +19,7 @@ class App {
         this._settingsOpen = false;
         this._settingsPages = null;
         this._applyingUrl = false;
+        this._refreshDeviceFilterFromUrl();
         this.buildGUI();
     }
 
@@ -54,10 +55,36 @@ class App {
         const params = new URLSearchParams(window.location.search);
         const robot = params.get("robot");
         const mode = params.get("mode");
+        const device = params.get("device");
         return {
             robot: robot != null && String(robot).trim() ? String(robot).trim() : null,
-            mode: mode != null && String(mode).trim() ? String(mode).trim() : null
+            mode: mode != null && String(mode).trim() ? String(mode).trim() : null,
+            device: device != null && String(device).trim() ? String(device).trim() : null
         };
+    }
+
+    /** Physical robot id from ?device= (robot-XXXXXX), or null for all devices. */
+    getDeviceFilter() {
+        return this.deviceFilter || null;
+    }
+
+    _refreshDeviceFilterFromUrl() {
+        const { device } = this.readUrlSelection();
+        this.deviceFilter =
+            typeof PhonebotDeviceFilter !== "undefined"
+                ? PhonebotDeviceFilter.fromParam(device)
+                : null;
+    }
+
+    _getTransmitterOptions() {
+        return { deviceFilter: this.getDeviceFilter() };
+    }
+
+    _applyDeviceFilterToTransmitter() {
+        const filter = this.getDeviceFilter();
+        const tx = this.transmitterInstance;
+        if (!tx || typeof tx.setDeviceFilter !== "function") return;
+        tx.setDeviceFilter(filter);
     }
 
     syncUrlParams() {
@@ -83,6 +110,7 @@ class App {
         if (this._applyingUrl) return;
         this._applyingUrl = true;
         try {
+            this._refreshDeviceFilterFromUrl();
             const { robot: robotParam, mode: modeParam } = this.readUrlSelection();
             if (!robotParam) {
                 if (this.robotListEl.value !== "") {
@@ -107,6 +135,7 @@ class App {
                 this.robot.setMode(modeParam);
             }
             this.syncUrlParams();
+            this._applyDeviceFilterToTransmitter();
         } finally {
             this._applyingUrl = false;
         }
@@ -399,13 +428,19 @@ class App {
         this.transmitterInstance = null;
         const v = this.transmitterListEl.value;
         if (v === "wifi") {
-            this.transmitterInstance = new WifiTransmitter(this.transmitterGuiMount);
+            this.transmitterInstance = new WifiTransmitter(
+                this.transmitterGuiMount,
+                this._getTransmitterOptions()
+            );
             this.transmitterInstance.setReadyChangeHandler(() => this.updateStartButtonState());
         } else if (v === "screen light") {
             this.transmitterInstance = new ScreenLightTransmitter(this.transmitterGuiMount);
             this.transmitterInstance.setReadyChangeHandler(() => this.updateStartButtonState());
         } else if (v === "bluetooth") {
-            this.transmitterInstance = new BluetoothTransmitter(this.transmitterGuiMount);
+            this.transmitterInstance = new BluetoothTransmitter(
+                this.transmitterGuiMount,
+                this._getTransmitterOptions()
+            );
             this.transmitterInstance.setReadyChangeHandler(() => this.updateStartButtonState());
         }
         this.updateStartButtonState();

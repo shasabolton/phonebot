@@ -116,7 +116,7 @@ window.ROBOTS_DATA = {
             },
             bodyPlan: "A face with one sevro for mouth and one for eye yaw",
             controlPlan:
-                "Eyes track MoveNet nose x (random glances when no nose). Games: Menu / Simon Says Basic (local MoveNet + pre-recorded Austin clips) / Simon Says Advanced (pose countdown) / Philosophy / 20 Questions / Fortune Teller. Groq Orpheus or Gemini TTS / Mp3 → audioPlayer → audioMouthFilter → mouth servo.",
+                "Eyes track MoveNet nose x ~70% of the time; otherwise random glances with held positions. Games: Menu / Simon Says Basic (local MoveNet + pre-recorded Austin clips) / Simon Says Advanced (pose countdown) / Philosophy / 20 Questions / Fortune Teller. Groq Orpheus or Gemini TTS / Mp3 → audioPlayer → audioMouthFilter → mouth servo.",
             actuators: [
                 {
                     type: "servo",
@@ -138,30 +138,81 @@ window.ROBOTS_DATA = {
                     maxMicroseconds: 2000,
                     deadbandMicrosecondsMin: 1480,
                     deadbandMicrosecondsMax: 1520,
-                    mix: ({ processing, robot }) => {
-                        const poses = processing.computervision?.poses;
-                        const keypoints = poses?.[0]?.keypoints;
-                        const nose = Array.isArray(keypoints)
-                            ? keypoints.find((kp) => String(kp?.name || "").toLowerCase() === "nose")
-                            : null;
-                        if (nose && Number.isFinite(nose.x) && (nose.score || 0) >= 0.3) {
+                    mix: (() => {
+                        const TRACK_PROB = 0.7;
+                        const RANDOM_JITTER_PROB = 0.05;
+                        const TRACK_HOLD_MS = [800, 3500];
+                        const RANDOM_HOLD_MS = [400, 1800];
+                        const NOSE_SCORE_MIN = 0.3;
+
+                        let mode = "track";
+                        let modeUntil = 0;
+                        let randomUs = 1500;
+
+                        const randMs = ([lo, hi]) => lo + Math.random() * (hi - lo);
+
+                        const resolveServoRange = (robot) => {
                             const servo =
                                 robot?.actuators?.find(
                                     (a) => String(a?.name || "").toLowerCase() === "eye yaw"
                                 ) || null;
-                            const minUs = Number.isFinite(servo?.minMicroseconds)
-                                ? servo.minMicroseconds
-                                : 1000;
-                            const maxUs = Number.isFinite(servo?.maxMicroseconds)
-                                ? servo.maxMicroseconds
-                                : 2000;
-                            const xRaw = Math.max(0, Math.min(1, Number(nose.x)));
-                            // Camera preview is mirrored; invert so eyes follow the person on screen.
-                            const x = xRaw;//1-xRaw
-                            return minUs + x * (maxUs - minUs);
-                        }
-                        if (Math.random() > 0.95) return Math.random() * 1000 + 1000;
-                    }
+                            return {
+                                minUs: Number.isFinite(servo?.minMicroseconds)
+                                    ? servo.minMicroseconds
+                                    : 1000,
+                                maxUs: Number.isFinite(servo?.maxMicroseconds)
+                                    ? servo.maxMicroseconds
+                                    : 2000
+                            };
+                        };
+
+                        const pickRandomUs = (minUs, maxUs) =>
+                            minUs + Math.random() * (maxUs - minUs);
+
+                        return ({ processing, robot }) => {
+                            const poses = processing.computervision?.poses;
+                            const keypoints = poses?.[0]?.keypoints;
+                            const nose = Array.isArray(keypoints)
+                                ? keypoints.find(
+                                      (kp) => String(kp?.name || "").toLowerCase() === "nose"
+                                  )
+                                : null;
+                            const hasNose = !!(
+                                nose &&
+                                Number.isFinite(nose.x) &&
+                                (nose.score || 0) >= NOSE_SCORE_MIN
+                            );
+                            const { minUs, maxUs } = resolveServoRange(robot);
+                            const now = Date.now();
+
+                            if (now >= modeUntil) {
+                                if (hasNose && Math.random() < TRACK_PROB) {
+                                    mode = "track";
+                                    modeUntil = now + randMs(TRACK_HOLD_MS);
+                                } else {
+                                    mode = "random";
+                                    randomUs = pickRandomUs(minUs, maxUs);
+                                    modeUntil = now + randMs(RANDOM_HOLD_MS);
+                                }
+                            }
+
+                            if (mode === "random") {
+                                if (Math.random() < RANDOM_JITTER_PROB) {
+                                    randomUs = pickRandomUs(minUs, maxUs);
+                                }
+                                return randomUs;
+                            }
+
+                            if (hasNose) {
+                                const xRaw = Math.max(0, Math.min(1, Number(nose.x)));
+                                // Camera preview is mirrored; invert so eyes follow the person on screen.
+                                const x = xRaw; // 1 - xRaw
+                                return minUs + x * (maxUs - minUs);
+                            }
+
+                            if (Math.random() > 0.95) return pickRandomUs(minUs, maxUs);
+                        };
+                    })()
                 }
             ],
             sensors: [

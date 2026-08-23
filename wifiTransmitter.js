@@ -71,9 +71,11 @@ async function ping(url) {
 }
 
 class WifiTransmitter {
-  constructor(container) {
+  constructor(container, options = {}) {
     /** @type {HTMLElement} */
     this.container = container;
+    /** @type {object|null} */
+    this.deviceFilter = options.deviceFilter || null;
     /** Base URL of robot when reachable on LAN/WiFi (station), e.g. http://192.168.1.5 */
     this.robotStaBaseUrl = null;
     this.ready = false;
@@ -213,6 +215,23 @@ class WifiTransmitter {
     if (send) send.addEventListener("click", () => this.sendCreds());
   }
 
+  setDeviceFilter(filter) {
+    this.deviceFilter = filter || null;
+    this.refreshRobotPicker();
+  }
+
+  _filteredRobots(robots) {
+    if (!this.deviceFilter || typeof PhonebotDeviceFilter === "undefined") {
+      return robots;
+    }
+    return robots.filter((r) => PhonebotDeviceFilter.matchesRobot(r, this.deviceFilter));
+  }
+
+  _identityMatchesFilter(identity) {
+    if (!this.deviceFilter || typeof PhonebotDeviceFilter === "undefined") return true;
+    return PhonebotDeviceFilter.matchesRobot(identity, this.deviceFilter);
+  }
+
   mergeRobot(entry) {
     if (!entry || !entry.chipId) return;
     const list = loadRobots();
@@ -237,9 +256,16 @@ class WifiTransmitter {
     const hint = this.el("knownRobotStoredIp");
     const sel = this.el("knownRobotSelect");
     if (!hint || !sel) return;
-    const robots = loadRobots();
+    const robots = this._filteredRobots(loadRobots());
     if (robots.length === 0) {
-      hint.textContent = "";
+      if (this.deviceFilter) {
+        hint.textContent =
+          "URL is scoped to " +
+          this.deviceFilter.hostname +
+          ". Connect to its WiFi AP or pair once to save it here.";
+      } else {
+        hint.textContent = "";
+      }
       return;
     }
     const id = sel.value;
@@ -262,7 +288,21 @@ class WifiTransmitter {
     const sel = this.el("knownRobotSelect");
     if (!wrap || !sel) return;
     const robots = loadRobots();
-    if (robots.length === 0) {
+    const visible = this._filteredRobots(robots);
+    if (visible.length === 0) {
+      if (this.deviceFilter) {
+        wrap.style.display = "block";
+        sel.innerHTML = "";
+        const pending = document.createElement("option");
+        pending.value = "";
+        pending.textContent =
+          "(No saved entry for " + this.deviceFilter.hostname + " yet)";
+        pending.disabled = true;
+        pending.selected = true;
+        sel.appendChild(pending);
+        this.updateKnownRobotStoredIpHint();
+        return;
+      }
       wrap.style.display = "none";
       sel.innerHTML = "";
       const hint = this.el("knownRobotStoredIp");
@@ -271,13 +311,15 @@ class WifiTransmitter {
     }
     wrap.style.display = "block";
     sel.innerHTML = "";
-    const allOpt = document.createElement("option");
-    allOpt.value = "";
-    allOpt.textContent = "(All saved — try each)";
-    allOpt.title = "Try every saved robot; see stored IPs below.";
-    sel.appendChild(allOpt);
+    if (!this.deviceFilter) {
+      const allOpt = document.createElement("option");
+      allOpt.value = "";
+      allOpt.textContent = "(All saved — try each)";
+      allOpt.title = "Try every saved robot; see stored IPs below.";
+      sel.appendChild(allOpt);
+    }
 
-    robots.forEach((r) => {
+    visible.forEach((r) => {
       const opt = document.createElement("option");
       opt.value = r.chipId;
       const ipPart = r.lastIp ? r.lastIp : "(no IP saved)";
@@ -289,14 +331,18 @@ class WifiTransmitter {
       opt.title = label;
       sel.appendChild(opt);
     });
+    if (this.deviceFilter && visible.length === 1) {
+      sel.value = visible[0].chipId;
+    }
     this.updateKnownRobotStoredIpHint();
   }
 
   async fetchRobotIdentityFromAp() {
     try {
       const res = await fetch(ESP_AP_IP + "/status", { method: "GET" });
-      if (!res.ok) return;
+      if (!res.ok) return null;
       const data = await res.json();
+      this._lastApIdentity = data;
       this.mergeRobot({
         chipId: data.chipId,
         apSsid: data.apSsid,
@@ -304,7 +350,10 @@ class WifiTransmitter {
         mdnsHost: data.mdnsHost,
         lastIp: data.ip || ""
       });
-    } catch (e) {}
+      return data;
+    } catch (e) {
+      return null;
+    }
   }
 
   buildStaTargets() {
@@ -314,7 +363,7 @@ class WifiTransmitter {
       if (urls.indexOf(u) === -1) urls.push(u);
     };
 
-    const robots = loadRobots();
+    const robots = this._filteredRobots(loadRobots());
     const sel = this.el("knownRobotSelect");
     const preferredId = sel ? sel.value : "";
 
@@ -331,11 +380,24 @@ class WifiTransmitter {
       if (r.lastIp) add("http://" + r.lastIp);
     }
 
-    add("http://esp8266.local");
+    if (this.deviceFilter) {
+      add("http://" + this.deviceFilter.hostname + ".local");
+    } else {
+      add("http://esp8266.local");
+    }
     return urls;
   }
 
   apSsidHintHtml() {
+    if (this.deviceFilter) {
+      return (
+        "Connect to WiFi <b>" +
+        this.deviceFilter.apSsid +
+        "</b> (password <b>" +
+        ESP_AP_PASS +
+        "</b>)."
+      );
+    }
     const robots = loadRobots();
     if (robots.length === 0) {
       return (
@@ -387,6 +449,13 @@ class WifiTransmitter {
 
       networks.forEach((network) => {
         if (!network || !network.ssid) return;
+        if (
+          this.deviceFilter &&
+          typeof PhonebotDeviceFilter !== "undefined" &&
+          !PhonebotDeviceFilter.matchesApSsid(network.ssid, this.deviceFilter)
+        ) {
+          return;
+        }
         const option = document.createElement("option");
         option.value = network.ssid;
         option.textContent = network.rssi !== undefined
@@ -394,6 +463,17 @@ class WifiTransmitter {
           : network.ssid;
         networkList.appendChild(option);
       });
+
+      if (
+        this.deviceFilter &&
+        networkList.options.length <= 1
+      ) {
+        scanStatus.innerHTML =
+          "<span class='warn'>Only <b>" +
+          this.deviceFilter.apSsid +
+          "</b> is shown for this link. Join that network on the robot first, or type its home WiFi SSID below.</span>";
+        return;
+      }
 
       scanStatus.innerHTML = "<span class='ok'>Network list updated.</span>";
     } catch (e) {
@@ -652,9 +732,17 @@ class WifiTransmitter {
     if (switchBtn) switchBtn.style.display = "none";
 
     if (apOk) {
-      status.innerHTML = "<span class='warn'>Connected to robot access point.</span>";
       wifiSetup.style.display = "block";
-      await this.fetchRobotIdentityFromAp();
+      const identity = await this.fetchRobotIdentityFromAp();
+      if (this.deviceFilter && identity && !this._identityMatchesFilter(identity)) {
+        status.innerHTML =
+          "<span class='error'>Wrong robot access point.</span> This link expects <b>" +
+          this.deviceFilter.apSsid +
+          "</b>.";
+        wifiSetup.style.display = "none";
+        return;
+      }
+      status.innerHTML = "<span class='warn'>Connected to robot access point.</span>";
       this.scanNetworks();
       return;
     }
@@ -667,7 +755,7 @@ class WifiTransmitter {
       this.setFirmwarePanelVisible(true);
       const switchBtnSta = this.el("wifiDisconnectBtn");
       if (switchBtnSta) switchBtnSta.style.display = "block";
-      const robots = loadRobots();
+      const robots = this._filteredRobots(loadRobots());
       const match = robots.find(
         (r) =>
           (r.mdnsHost && base.indexOf(r.mdnsHost) !== -1) ||
