@@ -116,7 +116,7 @@ window.ROBOTS_DATA = {
             },
             bodyPlan: "A face with one sevro for mouth and one for eye yaw",
             controlPlan:
-                "Eyes track MoveNet nose x ~70% of the time; otherwise random glances with held positions. Games: Menu / Simon Says Basic (local MoveNet + pre-recorded Austin clips) / Simon Says Advanced (pose countdown) / Philosophy / 20 Questions / Fortune Teller. Groq Orpheus or Gemini TTS / Mp3 → audioPlayer → audioMouthFilter → mouth servo.",
+                "Eyes track BlazeFace/MoveNet nose x ~70% of the time; otherwise random glances with held positions. Games: Menu / Simon Says Basic (local MoveNet + pre-recorded Austin clips) / Simon Says Advanced (pose countdown) / Philosophy / 20 Questions / Fortune Teller. Lean in to speak on conversation games. Groq Orpheus or Gemini TTS / Mp3 → audioPlayer → audioMouthFilter → mouth servo.",
             actuators: [
                 {
                     type: "servo",
@@ -172,6 +172,7 @@ window.ROBOTS_DATA = {
                         return ({ processing, robot }) => {
                             const poses = processing.computervision?.poses;
                             const keypoints = poses?.[0]?.keypoints;
+                            // Nose from active vision model (BlazeFace or MoveNet).
                             const nose = Array.isArray(keypoints)
                                 ? keypoints.find(
                                       (kp) => String(kp?.name || "").toLowerCase() === "nose"
@@ -225,7 +226,7 @@ window.ROBOTS_DATA = {
                 {
                     type: "computervision",
                     on: true,
-                    model: "movenet",
+                    model: "blazeface",
                     frequencyHz: 15,
                     name: "Computer vision"
                 }
@@ -237,12 +238,14 @@ window.ROBOTS_DATA = {
                     game: "menuMode",
                     priceCents: 0,
                     currency: "aud",
-                    free: true
+                    free: true,
+                    computervisionModel: "blazeface"
                 },
                 simonSaysPoseMatch: {
                     label: "Simon Says Basic",
                     game: "simonSaysPoseMatch",
                     endCondition: "gameFinished",
+                    computervisionModel: "movenet"
                 },
                 simonSaysAi: {
                     label: "Simon Says Advanced",
@@ -251,7 +254,8 @@ window.ROBOTS_DATA = {
                     currency: "aud",
                     endCondition: "gameFinished",
                     aiBudgetCents: 50,
-                    continuePriceCents: 200
+                    continuePriceCents: 200,
+                    computervisionModel: "blazeface"
                 },
                 philosophy: {
                     label: "Philosophy",
@@ -260,7 +264,8 @@ window.ROBOTS_DATA = {
                     currency: "aud",
                     endCondition: "manualOrTimeout",
                     aiBudgetCents: 50,
-                    continuePriceCents: 200
+                    continuePriceCents: 200,
+                    computervisionModel: "blazeface"
                 },
                 twentyQuestions: {
                     label: "20 Questions",
@@ -269,7 +274,8 @@ window.ROBOTS_DATA = {
                     currency: "aud",
                     endCondition: "gameFinished",
                     aiBudgetCents: 50,
-                    continuePriceCents: 200
+                    continuePriceCents: 200,
+                    computervisionModel: "blazeface"
                 },
                 fortuneTeller: {
                     label: "Fortune Teller",
@@ -278,7 +284,8 @@ window.ROBOTS_DATA = {
                     currency: "aud",
                     endCondition: "manualOrTimeout",
                     aiBudgetCents: 50,
-                    continuePriceCents: 200
+                    continuePriceCents: 200,
+                    computervisionModel: "blazeface"
                 }
             },
             agentInterface: {

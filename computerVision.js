@@ -1,6 +1,6 @@
 /**
  * Computer vision fusion model:
- * - Modes: opencv (COCO + optical flow), coco (COCO only), movenet (pose).
+ * - Modes: opencv (COCO + optical flow), coco (COCO only), movenet (pose), blazeface (face).
  * - Lower-frequency Groq updates for stronger labels (opencv/coco).
  * - Optical-flow between informer updates to reduce flicker (opencv).
  * - Optional tap-to-track ORB cluster (fixed fingerprint, homography updates).
@@ -13,6 +13,8 @@ class ComputerVisionAiModel {
     static _poseDetectionLoadPromise = null;
     static _moveNetLoadPromise = null;
     static _moveNetInstance = null;
+    static _blazeFaceLoadPromise = null;
+    static _blazeFaceInstance = null;
 
     static MIN_FREQUENCY_HZ = 1;
     static MAX_FREQUENCY_HZ = 30;
@@ -23,7 +25,27 @@ class ComputerVisionAiModel {
     static MAX_SCORE = 0.99;
 
     /** @type {readonly string[]} */
-    static MODEL_OPTIONS = Object.freeze(["opencv", "coco", "movenet"]);
+    static MODEL_OPTIONS = Object.freeze(["opencv", "coco", "movenet", "blazeface"]);
+
+    /** BlazeFace landmark order from estimateFaces(). */
+    static BLAZEFACE_LANDMARK_NAMES = Object.freeze([
+        "right_eye",
+        "left_eye",
+        "nose",
+        "mouth",
+        "right_ear",
+        "left_ear"
+    ]);
+
+    /** Lightweight face mesh edges for BlazeFace overlay. */
+    static BLAZEFACE_SKELETON = Object.freeze([
+        ["right_eye", "left_eye"],
+        ["right_eye", "nose"],
+        ["left_eye", "nose"],
+        ["nose", "mouth"],
+        ["right_ear", "right_eye"],
+        ["left_ear", "left_eye"]
+    ]);
 
     /** MoveNet / COCO-17 skeleton edges by keypoint name. */
     static MOVENET_SKELETON = Object.freeze([
@@ -65,6 +87,7 @@ class ComputerVisionAiModel {
             .toLowerCase()
             .replace(/[\s_-]+/g, "");
         if (raw === "movenet" || raw === "pose" || raw === "posenet") return "movenet";
+        if (raw === "blazeface" || raw === "blaze" || raw === "face") return "blazeface";
         if (raw === "coco" || raw === "cocossd") return "coco";
         if (raw === "opencv" || raw === "cv" || raw === "flow") return "opencv";
         return "opencv";
@@ -206,6 +229,8 @@ class ComputerVisionAiModel {
         this._frameHeight = 0;
         this._detections = [];
         this._poses = [];
+        /** Face box width / frame width (0–1), set by BlazeFace; null when no face. */
+        this._faceScale = null;
         /**
          * Simon Says / pose-match overlay: target keypoints in red + match-distance bubbles.
          * @type {{ names: Set<string>, eyeTolerance: number, fallbackEyeSpacing: number }|null}
@@ -332,6 +357,26 @@ class ComputerVisionAiModel {
             })();
         }
         return this._moveNetLoadPromise;
+    }
+
+    static async _loadBlazeFace() {
+        if (this._blazeFaceInstance) return this._blazeFaceInstance;
+        await this._loadTfJs();
+        if (!this._blazeFaceLoadPromise) {
+            this._blazeFaceLoadPromise = (async () => {
+                if (!window.blazeface) {
+                    await this._loadScript(
+                        "https://cdn.jsdelivr.net/npm/@tensorflow-models/blazeface@0.0.7/dist/blazeface.min.js"
+                    );
+                }
+                if (!window.blazeface?.load) {
+                    throw new Error("blazeface loaded but window.blazeface.load is missing.");
+                }
+                this._blazeFaceInstance = await window.blazeface.load({ maxFaces: 1 });
+                return this._blazeFaceInstance;
+            })();
+        }
+        return this._blazeFaceLoadPromise;
     }
 
     static async _loadOpenCv() {
@@ -1514,7 +1559,7 @@ class ComputerVisionAiModel {
         ctx.font = "12px Arial";
         ctx.textBaseline = "top";
 
-        if (this.model === "movenet") {
+        if (this.model === "movenet" || this.model === "blazeface") {
             this._drawPoses(ctx, t, this._poses);
         } else {
             list.forEach((item) => {
@@ -1631,9 +1676,13 @@ class ComputerVisionAiModel {
                 byName.set(name, kp);
             }
 
-            ctx.strokeStyle = "#33ff99";
+            const skeleton =
+                this.model === "blazeface"
+                    ? ComputerVisionAiModel.BLAZEFACE_SKELETON
+                    : ComputerVisionAiModel.MOVENET_SKELETON;
+            ctx.strokeStyle = this.model === "blazeface" ? "#66ccff" : "#33ff99";
             ctx.lineWidth = 2;
-            for (const [aName, bName] of ComputerVisionAiModel.MOVENET_SKELETON) {
+            for (const [aName, bName] of skeleton) {
                 const a = byName.get(aName);
                 const b = byName.get(bName);
                 if (!a || !b) continue;
@@ -1642,6 +1691,14 @@ class ComputerVisionAiModel {
                 ctx.moveTo(t.offsetX + a.x * t.scale, t.offsetY + a.y * t.scale);
                 ctx.lineTo(t.offsetX + b.x * t.scale, t.offsetY + b.y * t.scale);
                 ctx.stroke();
+            }
+
+            if (this.model === "blazeface" && Array.isArray(pose.bbox) && pose.bbox.length >= 4) {
+                const [bx, by, bw, bh] = pose.bbox;
+                const r = ComputerVisionAiModel.intrinsicBboxToVideoElementLocalRect([bx, by, bw, bh], t);
+                ctx.strokeStyle = "rgba(102, 204, 255, 0.85)";
+                ctx.lineWidth = 2;
+                ctx.strokeRect(r.x, r.y, r.w, r.h);
             }
 
             const matchDiameterPx =
@@ -1681,7 +1738,10 @@ class ComputerVisionAiModel {
 
             const nose = byName.get("nose");
             if (nose && (nose.score || 0) >= minKp) {
-                const label = `pose ${(pose.score * 100).toFixed(0)}%`;
+                const label =
+                    this.model === "blazeface"
+                        ? `face ${(pose.score * 100).toFixed(0)}%`
+                        : `pose ${(pose.score * 100).toFixed(0)}%`;
                 const lx = t.offsetX + nose.x * t.scale;
                 const ly = t.offsetY + nose.y * t.scale;
                 ctx.font = "12px Arial";
@@ -1689,7 +1749,7 @@ class ComputerVisionAiModel {
                 const labelW = ctx.measureText(label).width + 8;
                 ctx.fillStyle = "rgba(0, 0, 0, 0.7)";
                 ctx.fillRect(lx - 4, ly - 18, labelW, 16);
-                ctx.fillStyle = "#33ff99";
+                ctx.fillStyle = this.model === "blazeface" ? "#66ccff" : "#33ff99";
                 ctx.fillText(label, lx, ly - 4);
             }
         }
@@ -1770,6 +1830,7 @@ class ComputerVisionAiModel {
             detectedAt: new Date().toISOString(),
             objectCount: this._detections.length,
             poseCount: this._poses.length,
+            faceScale: this._faceScale,
             groqFeed: this.groqFeedType,
             groqRefreshMs: this.groqRefreshMs,
             cocoFeed: "internal",
@@ -1800,6 +1861,10 @@ class ComputerVisionAiModel {
             await ComputerVisionAiModel._loadMoveNet();
             return;
         }
+        if (this.model === "blazeface") {
+            await ComputerVisionAiModel._loadBlazeFace();
+            return;
+        }
         if (this.model === "coco") {
             await ComputerVisionAiModel._loadCocoModel();
             return;
@@ -1819,6 +1884,7 @@ class ComputerVisionAiModel {
         this._tracks = [];
         this._detections = [];
         this._poses = [];
+        this._faceScale = null;
         this._clearOverlay();
     }
 
@@ -1854,6 +1920,7 @@ class ComputerVisionAiModel {
         }
 
         this._poses = poses;
+        this._faceScale = null;
         this._detections = detections;
         this._tracks = detections.map((d, i) => ({
             id: i + 1,
@@ -1866,6 +1933,76 @@ class ComputerVisionAiModel {
         this._renderResponseOutput();
         if (this._statusEl && this._canAutoUpdateStatus()) {
             this._setStatus(`MoveNet: ${poses.length} pose(s) at ${this.frequencyHz} Hz`, "muted");
+        }
+    }
+
+    /**
+     * BlazeFace → MoveNet-shaped pose (named nose/eyes/…) plus faceScale for lean-in.
+     * Landmark pixels match MoveNet intrinsic coords so poses getter stays 0–1.
+     */
+    async _tickBlazeFace(videoEl) {
+        const detector = await ComputerVisionAiModel._loadBlazeFace();
+        this._ensureOverlay();
+        this._frameWidth = videoEl.videoWidth || 0;
+        this._frameHeight = videoEl.videoHeight || 0;
+        const fw = this._frameWidth;
+        const fh = this._frameHeight;
+
+        const rawFaces = await detector.estimateFaces(videoEl, false, false, true);
+        const poses = [];
+        const detections = [];
+        let faceScale = null;
+
+        for (let i = 0; i < (rawFaces || []).length; i++) {
+            const face = rawFaces[i];
+            const probRaw = Array.isArray(face.probability) ? face.probability[0] : face.probability;
+            const score = Number.isFinite(Number(probRaw)) ? Number(probRaw) : 0;
+            if (score < this.minScore * 0.5 && score < 0.5) continue;
+
+            const topLeft = face.topLeft;
+            const bottomRight = face.bottomRight;
+            const tlX = Number(Array.isArray(topLeft) ? topLeft[0] : topLeft?.x) || 0;
+            const tlY = Number(Array.isArray(topLeft) ? topLeft[1] : topLeft?.y) || 0;
+            const brX = Number(Array.isArray(bottomRight) ? bottomRight[0] : bottomRight?.x) || 0;
+            const brY = Number(Array.isArray(bottomRight) ? bottomRight[1] : bottomRight?.y) || 0;
+            const bbox = this._clampBbox([tlX, tlY, Math.max(1, brX - tlX), Math.max(1, brY - tlY)], fw, fh);
+            const widthNorm = bbox[2] / Math.max(1, fw);
+            if (faceScale == null || widthNorm > faceScale) faceScale = widthNorm;
+
+            const landmarks = Array.isArray(face.landmarks) ? face.landmarks : [];
+            const names = ComputerVisionAiModel.BLAZEFACE_LANDMARK_NAMES;
+            const keypoints = names.map((name, idx) => {
+                const pt = landmarks[idx];
+                const x = Number(Array.isArray(pt) ? pt[0] : pt?.x) || 0;
+                const y = Number(Array.isArray(pt) ? pt[1] : pt?.y) || 0;
+                return { name, x, y, score };
+            });
+
+            const entry = { id: i + 1, score, keypoints, bbox: [...bbox] };
+            poses.push(entry);
+            detections.push({
+                class: "face",
+                score,
+                bbox: [...bbox],
+                labelSource: "blazeface"
+            });
+        }
+
+        this._poses = poses;
+        this._faceScale = faceScale;
+        this._detections = detections;
+        this._tracks = detections.map((d, i) => ({
+            id: i + 1,
+            class: d.class,
+            score: d.score,
+            bbox: [...d.bbox],
+            labelSource: "blazeface"
+        }));
+        this._drawDetections(videoEl, this._detections);
+        this._renderResponseOutput();
+        if (this._statusEl && this._canAutoUpdateStatus()) {
+            const scaleTxt = faceScale != null ? ` scale=${faceScale.toFixed(2)}` : "";
+            this._setStatus(`BlazeFace: ${poses.length} face(s)${scaleTxt} at ${this.frequencyHz} Hz`, "muted");
         }
     }
 
@@ -1896,6 +2033,7 @@ class ComputerVisionAiModel {
                 labelSource: "coco"
             }));
             this._poses = [];
+            this._faceScale = null;
         }
 
         this._drawDetections(videoEl, this._detections);
@@ -1984,6 +2122,7 @@ class ComputerVisionAiModel {
             gray = null;
 
             this._poses = [];
+            this._faceScale = null;
             this._syncDetectionsFromTracks();
             this._drawDetections(videoEl, this._detections);
             this._renderResponseOutput();
@@ -2022,6 +2161,8 @@ class ComputerVisionAiModel {
         try {
             if (this.model === "movenet") {
                 await this._tickMoveNet(videoEl);
+            } else if (this.model === "blazeface") {
+                await this._tickBlazeFace(videoEl);
             } else if (this.model === "coco") {
                 await this._tickCoco(videoEl);
             } else {
@@ -2103,6 +2244,9 @@ class ComputerVisionAiModel {
     _modelHintText() {
         if (this.model === "movenet") {
             return "MoveNet pose model: draws keypoints + skeleton. Exported poses use normalized 0–1 keypoints; person bbox is derived for filters.";
+        }
+        if (this.model === "blazeface") {
+            return "BlazeFace: lightweight face box + 6 landmarks (nose/eyes/…). Exported poses use normalized 0–1 keypoints; faceScale is box width / frame width for lean-in.";
         }
         if (this.model === "coco") {
             return "COCO-SSD only: object boxes without OpenCV optical flow. Exported detections/results use bbox 0–1.";
@@ -2270,9 +2414,17 @@ class ComputerVisionAiModel {
         }));
     }
 
-    /** Normalized MoveNet poses (keypoints 0–1). Empty unless vision model is movenet. */
+    /** Normalized poses (keypoints 0–1). Populated for movenet and blazeface. */
     get poses() {
         return this._normalizePosesForOutput(this._poses, this._frameWidth || 1, this._frameHeight || 1);
+    }
+
+    /**
+     * Largest face box width / frame width (0–1), or null when BlazeFace sees no face.
+     * Used for lean-in-to-speak.
+     */
+    get faceScale() {
+        return Number.isFinite(this._faceScale) ? this._faceScale : null;
     }
 
     getFrameSize() {
@@ -2306,7 +2458,8 @@ class ComputerVisionAiModel {
         const modelLabels = {
             opencv: "OpenCV (COCO + flow)",
             coco: "COCO-SSD",
-            movenet: "MoveNet (pose)"
+            movenet: "MoveNet (pose)",
+            blazeface: "BlazeFace (face)"
         };
         for (const value of ComputerVisionAiModel.MODEL_OPTIONS) {
             const opt = document.createElement("option");
@@ -2469,6 +2622,7 @@ class ComputerVisionAiModel {
         this._captureCtx = null;
         this._detections = [];
         this._poses = [];
+        this._faceScale = null;
     }
 }
 

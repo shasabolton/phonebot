@@ -83,7 +83,7 @@ class AgentInterface {
         this._voiceOn = this._resolveVoiceDefault(null);
     }
 
-    /** True when a hand-up-to-talk game is active (Philosophy, 20 Questions, Fortune Teller). */
+    /** True when a lean-in-to-talk game is active (Philosophy, 20 Questions, Fortune Teller). */
     _isConversationMode() {
         const mode = String(this.robot?.mode || "").trim().toLowerCase();
         return (
@@ -941,65 +941,75 @@ class AgentInterface {
     }
 
     /**
-     * MoveNet image coords: x/y in 0–1, y=0 at top of frame (sky).
-     * Hand raised = either wrist y is smaller than nose y (closer to top).
-     * Score floor matches the skeleton overlay (~0.1) so a drawn wrist can still gate talk.
-     * @param {{ hold?: boolean }} [options] When `hold` is true, use a looser exit band so
-     *   brief MoveNet jitter while recording does not count as hand-down.
-     * @returns {boolean|null} true/false, or null when pose/nose is missing (unknown — not down).
+     * Lean-in-to-speak: BlazeFace faceScale (face box width / frame width) rises when closer.
+     * Enter when clearly close; hold uses a looser exit band so brief jitter does not end recording.
+     * @param {{ hold?: boolean }} [options]
+     * @returns {boolean|null} true/false, or null when face is missing (unknown — not out).
      */
-    _isHandRaisedAboveNose(options = {}) {
+    _isLeanedIn(options = {}) {
         const cv =
             this.robot && typeof this.robot.getProcessingByType === "function"
                 ? this.robot.getProcessingByType("computervision")
                 : null;
-        if (!cv || String(cv.model || "").toLowerCase() !== "movenet") return null;
-        const poses = typeof cv.poses !== "undefined" ? cv.poses : null;
-        const keypoints = poses?.[0]?.keypoints;
-        if (!Array.isArray(keypoints) || !keypoints.length) return null;
+        if (!cv) return null;
 
-        const byName = (name) =>
-            keypoints.find((kp) => String(kp?.name || "").toLowerCase() === name) || null;
-        // Overlay draws keypoints from ~0.1; keep talk gate in the same ballpark.
-        const minScore = 0.15;
-        const nose = byName("nose");
-        if (!nose || (nose.score || 0) < minScore || !Number.isFinite(Number(nose.y))) return null;
-        const noseY = Number(nose.y);
-        // Enter: clearly above nose. Hold: stay raised until clearly below (hysteresis).
-        const yThreshold = options.hold ? noseY + 0.04 : noseY - 0.02;
+        const model = String(cv.model || "").toLowerCase();
+        let scale = null;
 
-        let sawWrist = false;
-        for (const handName of ["left_wrist", "right_wrist"]) {
-            const hand = byName(handName);
-            if (!hand || (hand.score || 0) < minScore || !Number.isFinite(Number(hand.y))) continue;
-            sawWrist = true;
-            // Smaller y = higher in frame (toward sky).
-            if (Number(hand.y) < yThreshold) return true;
+        if (model === "blazeface") {
+            const raw = typeof cv.faceScale !== "undefined" ? cv.faceScale : cv._faceScale;
+            if (Number.isFinite(Number(raw))) scale = Number(raw);
+        } else if (model === "movenet") {
+            // Fallback: approximate closeness from eye span when MoveNet is active.
+            const poses = typeof cv.poses !== "undefined" ? cv.poses : null;
+            const keypoints = poses?.[0]?.keypoints;
+            if (Array.isArray(keypoints) && keypoints.length) {
+                const byName = (name) =>
+                    keypoints.find((kp) => String(kp?.name || "").toLowerCase() === name) || null;
+                const left = byName("left_eye");
+                const right = byName("right_eye");
+                const minScore = 0.15;
+                if (
+                    left &&
+                    right &&
+                    (left.score || 0) >= minScore &&
+                    (right.score || 0) >= minScore &&
+                    Number.isFinite(Number(left.x)) &&
+                    Number.isFinite(Number(right.x))
+                ) {
+                    scale = Math.abs(Number(left.x) - Number(right.x)) * 2.8;
+                }
+            }
         }
-        // Wrists briefly unscored while the skeleton still draws them — treat as unknown, not down.
-        if (!sawWrist) return null;
-        return false;
+
+        if (!Number.isFinite(scale) || scale <= 0) return null;
+
+        // Absolute face-width fractions; hold exits later so short dips don't cut the clip.
+        const enterScale = 0.36;
+        const exitScale = 0.26;
+        const threshold = options.hold ? exitScale : enterScale;
+        return scale >= threshold;
     }
 
     /**
-     * Poll MoveNet until hand-raised matches `wantRaised` for a few stable samples.
-     * Unknown pose frames do not reset the streak.
-     * @param {boolean} wantRaised
+     * Poll vision until lean-in matches `wantLeanedIn` for a few stable samples.
+     * Unknown face frames do not reset the streak.
+     * @param {boolean} wantLeanedIn
      * @param {number} generation
      * @param {{ needed?: number, pollMs?: number, onTick?: function, hold?: boolean }} [options]
      * @returns {Promise<boolean>}
      */
-    async _waitForStableHandRaised(wantRaised, generation, options = {}) {
-        const needed = Math.max(1, Math.round(Number(options.needed) || 3));
-        const pollMs = Math.max(50, Math.round(Number(options.pollMs) || 100));
+    async _waitForStableLeanIn(wantLeanedIn, generation, options = {}) {
+        const needed = Math.max(1, Number(options.needed) || 3);
+        const pollMs = Math.max(50, Number(options.pollMs) || 100);
         let streak = 0;
         while (generation === this._speakGeneration) {
-            if (!this._agentEnabled || !this._isConversationMode()) return false;
             if (typeof options.onTick === "function") options.onTick();
-            const raised = this._isHandRaisedAboveNose({ hold: !!options.hold });
-            if (raised === null) {
+            if (!this._agentEnabled || !this._isConversationMode()) return false;
+            const leaned = this._isLeanedIn({ hold: !!options.hold });
+            if (leaned === null) {
                 // Keep waiting; do not reset streak on missing/low-confidence frames.
-            } else if (raised === wantRaised) {
+            } else if (leaned === wantLeanedIn) {
                 streak += 1;
                 if (streak >= needed) return true;
             } else {
@@ -1011,12 +1021,11 @@ class AgentInterface {
     }
 
     /**
-     * Conversation listen: wait for hand-up (wrist above nose), record until hand drops, return blob.
-     * Image y increases downward — "higher" means smaller y (top of frame).
+     * Conversation listen: wait for lean-in, record until lean-out, return blob.
      * @param {number} generation
      * @returns {Promise<Blob|null>}
      */
-    async _recordMicrophoneWhileHandRaised(generation) {
+    async _recordMicrophoneWhileLeanedIn(generation) {
         if (typeof MediaRecorder === "undefined") {
             throw new Error("MediaRecorder is not supported in this browser.");
         }
@@ -1058,38 +1067,37 @@ class AgentInterface {
             });
 
         try {
-            // Rising edge: lower hand first (if already up), then raise to start.
-            this._ensureCameraCountdownOverlay("Hand up to talk");
+            // Rising edge: lean back first (if already close), then lean in to start.
+            this._ensureCameraCountdownOverlay("Lean in to talk");
             if (this._countdownNumberEl) this._countdownNumberEl.textContent = "—";
 
-            const readyDown = await this._waitForStableHandRaised(false, generation, {
+            const readyOut = await this._waitForStableLeanIn(false, generation, {
                 needed: 3,
                 onTick: () => {
-                    // Re-attach if the camera frame was not ready on first try, or was rebuilt.
-                    this._ensureCameraCountdownOverlay("Hand up to talk");
+                    this._ensureCameraCountdownOverlay("Lean in to talk");
                     if (this._countdownNumberEl) this._countdownNumberEl.textContent = "—";
                     if (this._statusEl) {
-                        this._statusEl.textContent = this._isHandRaisedAboveNose()
-                            ? "Lower your hand to arm the mic…"
-                            : "Raise a hand above your nose to record…";
+                        this._statusEl.textContent = this._isLeanedIn()
+                            ? "Lean back to arm the mic…"
+                            : "Lean in toward the camera to record…";
                         this._statusEl.className = "muted";
                     }
                 }
             });
-            if (!readyDown) return null;
+            if (!readyOut) return null;
 
-            const raised = await this._waitForStableHandRaised(true, generation, {
+            const leaned = await this._waitForStableLeanIn(true, generation, {
                 needed: 2,
                 onTick: () => {
-                    this._ensureCameraCountdownOverlay("Hand up to talk");
+                    this._ensureCameraCountdownOverlay("Lean in to talk");
                     if (this._countdownNumberEl) this._countdownNumberEl.textContent = "—";
                     if (this._statusEl) {
-                        this._statusEl.textContent = "Raise a hand above your nose to record…";
+                        this._statusEl.textContent = "Lean in toward the camera to record…";
                         this._statusEl.className = "muted";
                     }
                 }
             });
-            if (!raised || generation !== this._speakGeneration) return null;
+            if (!leaned || generation !== this._speakGeneration) return null;
 
             stream = await navigator.mediaDevices.getUserMedia({
                 audio: {
@@ -1099,52 +1107,43 @@ class AgentInterface {
                 },
                 video: false
             });
-            if (generation !== this._speakGeneration) {
-                stopTracks();
-                return null;
-            }
 
             const mimeType = this._pickRecorderMimeType();
             mediaRecorder = mimeType
                 ? new MediaRecorder(stream, { mimeType })
                 : new MediaRecorder(stream);
-            mediaRecorder.addEventListener("dataavailable", (e) => {
-                if (e.data && e.data.size > 0) chunks.push(e.data);
+            mediaRecorder.addEventListener("dataavailable", (ev) => {
+                if (ev.data && ev.data.size) chunks.push(ev.data);
             });
-            mediaRecorder.start(250);
+            mediaRecorder.start(200);
 
-            const startedAt = Date.now();
-            this._ensureCameraCountdownOverlay("Recording");
             if (this._statusEl) {
-                this._statusEl.textContent = "Recording — lower your hand when done…";
+                this._statusEl.textContent = "Recording — lean back when done…";
                 this._statusEl.className = "muted";
             }
 
-            // Record until hand drops below nose, cancel, or max duration.
-            // ~800ms of clear "down" — brief MoveNet flickers used to end recording at ~200ms.
+            // Record until lean-out, cancel, or max duration.
+            const startedAt = Date.now();
             const pollMs = 100;
             const neededDown = 8;
             let downStreak = 0;
             let hitMax = false;
             while (generation === this._speakGeneration) {
                 if (!this._agentEnabled || !this._isConversationMode()) break;
-                const elapsedMs = Date.now() - startedAt;
-                const elapsedSec = Math.max(1, Math.round(elapsedMs / 1000));
-                if (this._countdownLabelEl) this._countdownLabelEl.textContent = "Recording";
-                if (this._countdownNumberEl) this._countdownNumberEl.textContent = String(elapsedSec);
+                const elapsedSec = Math.floor((Date.now() - startedAt) / 1000);
                 if (this._statusEl) {
-                    this._statusEl.textContent = `Recording ${elapsedSec}s — lower your hand when done…`;
+                    this._statusEl.textContent = `Recording ${elapsedSec}s — lean back when done…`;
                     this._statusEl.className = "muted";
                 }
-                if (elapsedMs >= maxRecordMs) {
+                if (Date.now() - startedAt >= maxRecordMs) {
                     hitMax = true;
                     break;
                 }
-                const raised = this._isHandRaisedAboveNose({ hold: true });
-                if (raised === false) {
+                const stillIn = this._isLeanedIn({ hold: true });
+                if (stillIn === false) {
                     downStreak += 1;
                     if (downStreak >= neededDown) break;
-                } else if (raised === true) {
+                } else if (stillIn === true) {
                     downStreak = 0;
                 }
                 await new Promise((r) => setTimeout(r, pollMs));
@@ -1175,7 +1174,7 @@ class AgentInterface {
     }
 
     /**
-     * After TTS finishes: conversation mode starts hand-gesture listen; Simon Says queues pose capture.
+     * After TTS finishes: conversation mode starts lean-in listen; Simon Says queues pose capture.
      * Queued (not nested) so the parent send can finish and new sends are not blocked forever.
      * @param {string} spoken
      */
@@ -1208,7 +1207,7 @@ class AgentInterface {
     }
 
     /**
-     * Conversation mode: hand-up mic record → Whisper+chat (Groq) or Gemini audio turn.
+     * Conversation mode: lean-in mic record → Whisper+chat (Groq) or Gemini audio turn.
      * @param {number} generation
      */
     async _runConversationListen(generation) {
@@ -1228,11 +1227,11 @@ class AgentInterface {
         try {
             if (this._statusEl) {
                 this._statusEl.textContent =
-                    "Raise a hand above your nose to talk — nothing is sent to the AI until you speak.";
+                    "Lean in toward the camera to talk — nothing is sent to the AI until you speak.";
                 this._statusEl.className = "muted";
             }
 
-            const blob = await this._recordMicrophoneWhileHandRaised(generation);
+            const blob = await this._recordMicrophoneWhileLeanedIn(generation);
             if (generation !== this._speakGeneration || !this._agentEnabled || !this._isConversationMode()) {
                 return;
             }
@@ -1783,7 +1782,7 @@ class AgentInterface {
         return `${head}\n\n${body}`;
     }
 
-    /** True once any user/assistant turn is in history (first hand-raise send completed). */
+    /** True once any user/assistant turn is in history (first lean-in send completed). */
     _hasConversationHistory() {
         return (this.messageHistory || []).some(
             (m) => m && (m.role === "user" || m.role === "assistant")
@@ -1791,7 +1790,7 @@ class AgentInterface {
     }
 
     /**
-     * Hand-up modes must not call the LLM until the person raises a hand and speaks.
+     * Lean-in modes must not call the LLM until the person leans in and speaks.
      * Blocks Send / robot notices that would otherwise fire the start prompt alone.
      * @param {string} userText
      * @param {{ fromSpeech?: boolean }} [options]
@@ -1808,7 +1807,7 @@ class AgentInterface {
         if (isIntroOnly) {
             if (this._statusEl) {
                 this._statusEl.textContent =
-                    "Raise a hand and speak first — your words are sent with the start prompt.";
+                    "Lean in and speak first — your words are sent with the start prompt.";
                 this._statusEl.className = "warn";
             }
             return false;
@@ -2287,7 +2286,7 @@ class AgentInterface {
             }
             return false;
         }
-        // Gemini audio turn is always driven by a hand-raised mic clip.
+        // Gemini audio turn is always driven by a lean-in mic clip.
         if (!(await this._allowConversationOutbound("(speech)", { fromSpeech: true }))) {
             return false;
         }
@@ -2710,7 +2709,7 @@ class AgentInterface {
         }
         const text = String(this._promptInput.value || "").trim();
         if (!(await this._allowConversationOutbound(text, { fromSpeech: false }))) {
-            // _stopSpeaking may have cancelled hand-up listen — resume waiting for speech.
+            // _stopSpeaking may have cancelled lean-in listen — resume waiting for speech.
             if (this._agentEnabled && this._isConversationMode()) {
                 this._queueConversationListen(this._speakGeneration);
             }

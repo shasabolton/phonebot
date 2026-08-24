@@ -593,11 +593,38 @@ class Robot {
 
     _applyModeBehavior() {
         this._applyActiveModePromptTemplate();
+        this._syncComputerVisionForMode();
         if (this.agentInterface && typeof this.agentInterface.onRobotModeChanged === "function") {
             this.agentInterface.onRobotModeChanged(this.mode);
         }
         if (!this.getStartFlowConfig() || !this._startFlowOverlay) {
             this._syncLocalGameForMode();
+        }
+    }
+
+    /**
+     * Per-mode vision model (e.g. talking head: BlazeFace by default, MoveNet for Simon Says Basic).
+     */
+    _syncComputerVisionForMode() {
+        const cv =
+            typeof this.getProcessingByType === "function"
+                ? this.getProcessingByType("computervision")
+                : null;
+        if (!cv || typeof cv.setModel !== "function") return;
+
+        const modeConfig = this._getActiveModeConfig();
+        const fromMode = modeConfig?.computervisionModel;
+        if (fromMode != null && String(fromMode).trim()) {
+            void cv.setModel(fromMode);
+            return;
+        }
+
+        const procList = Array.isArray(this.config?.processing) ? this.config.processing : [];
+        const procCfg = procList.find(
+            (p) => String(p?.type || "").trim().toLowerCase() === "computervision"
+        );
+        if (procCfg?.model != null && String(procCfg.model).trim()) {
+            void cv.setModel(procCfg.model);
         }
     }
 
