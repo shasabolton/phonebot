@@ -75,13 +75,26 @@ class AgentInterface {
         /** When true, attach current camera JPEG to the last user message on send. */
         this._sendCameraImage = this.config.sendCameraImage !== false;
         this._sendCameraImageInput = null;
-        /** DOM overlay for camera countdown (Simon pose / conversation record). */
+        /** DOM overlay for camera countdown (Simon pose). */
         this._countdownOverlayEl = null;
         this._countdownNumberEl = null;
         this._countdownLabelEl = null;
+        /** Lean-in proximity gauge overlay (conversation listen). */
+        this._leanOverlayEl = null;
+        this._leanFillEl = null;
+        this._leanMarkEl = null;
+        this._leanLabelEl = null;
+        this._leanHintEl = null;
+        this._leanRecEl = null;
         this._loadSavedKeyPreference();
         this._voiceOn = this._resolveVoiceDefault(null);
     }
+
+    /** Face-width / frame-width: lean-in enter / lean-out exit (hysteresis). */
+    static LEAN_ENTER_SCALE = 0.36;
+    static LEAN_EXIT_SCALE = 0.26;
+    /** Gauge reads empty at/below this scale. */
+    static LEAN_GAUGE_FLOOR = 0.12;
 
     /** True when a lean-in-to-talk game is active (Philosophy, 20 Questions, Fortune Teller). */
     _isConversationMode() {
@@ -591,6 +604,7 @@ class AgentInterface {
         this._speakGeneration += 1;
         window.__phonebotTtsSpeaking = false;
         this._clearCameraCountdownOverlay();
+        this._clearLeanOverlay();
         if (window.speechSynthesis) {
             try {
                 window.speechSynthesis.cancel();
@@ -691,8 +705,14 @@ class AgentInterface {
         if (!content) return false;
         this._stopSpeaking();
         const generation = this._speakGeneration;
-        await this._speakSynthesizedAsync(content, generation);
-        return generation === this._speakGeneration;
+        const showListenPrompt = this._isConversationMode();
+        if (showListenPrompt) this._updateLeanOverlay("listen");
+        try {
+            await this._speakSynthesizedAsync(content, generation);
+            return generation === this._speakGeneration;
+        } finally {
+            if (showListenPrompt) this._clearLeanOverlay();
+        }
     }
 
     async _speakSynthesizedAsync(content, generation) {
@@ -858,6 +878,206 @@ class AgentInterface {
         this._countdownLabelEl = null;
     }
 
+    _clearLeanOverlay() {
+        if (this._leanOverlayEl && this._leanOverlayEl.parentNode) {
+            this._leanOverlayEl.parentNode.removeChild(this._leanOverlayEl);
+        }
+        this._leanOverlayEl = null;
+        this._leanFillEl = null;
+        this._leanMarkEl = null;
+        this._leanLabelEl = null;
+        this._leanHintEl = null;
+        this._leanRecEl = null;
+    }
+
+    /**
+     * Build (or reuse) the lean-in proximity gauge on the camera frame.
+     * @returns {HTMLElement|null}
+     */
+    _ensureLeanOverlay() {
+        if (this._leanOverlayEl && this._leanOverlayEl.isConnected) return this._leanOverlayEl;
+        this._clearLeanOverlay();
+        const camera = this._getCameraSensor();
+        const frameEl = camera?.getFrameElement?.();
+        if (!frameEl) return null;
+
+        const overlay = document.createElement("div");
+        overlay.className = "sensor-camera-lean-overlay";
+        overlay.setAttribute("aria-live", "polite");
+
+        const rec = document.createElement("div");
+        rec.className = "sensor-camera-lean-rec";
+        const recDot = document.createElement("span");
+        recDot.className = "sensor-camera-lean-rec-dot";
+        recDot.setAttribute("aria-hidden", "true");
+        const recText = document.createElement("span");
+        recText.textContent = "Recording";
+        rec.appendChild(recDot);
+        rec.appendChild(recText);
+
+        const meter = document.createElement("div");
+        meter.className = "sensor-camera-lean-meter";
+        meter.setAttribute("role", "meter");
+        meter.setAttribute("aria-valuemin", "0");
+        meter.setAttribute("aria-valuemax", "100");
+
+        const fill = document.createElement("div");
+        fill.className = "sensor-camera-lean-fill";
+        const mark = document.createElement("div");
+        mark.className = "sensor-camera-lean-mark";
+        const enter = AgentInterface.LEAN_ENTER_SCALE;
+        const floor = AgentInterface.LEAN_GAUGE_FLOOR;
+        const markAlong = Math.max(
+            0,
+            Math.min(100, ((enter - floor) / Math.max(0.01, enter - floor + 0.12)) * 100)
+        );
+        mark.style.left = `${markAlong}%`;
+        meter.appendChild(fill);
+        meter.appendChild(mark);
+
+        const label = document.createElement("div");
+        label.className = "sensor-camera-lean-label";
+        const hint = document.createElement("div");
+        hint.className = "sensor-camera-lean-hint";
+
+        overlay.appendChild(rec);
+        overlay.appendChild(meter);
+        overlay.appendChild(label);
+        overlay.appendChild(hint);
+        frameEl.appendChild(overlay);
+
+        this._leanOverlayEl = overlay;
+        this._leanFillEl = fill;
+        this._leanMarkEl = mark;
+        this._leanLabelEl = label;
+        this._leanHintEl = hint;
+        this._leanRecEl = rec;
+        meter.setAttribute("aria-valuenow", "0");
+        return overlay;
+    }
+
+    /**
+     * @returns {number|null} Current lean scale (face width / frame), or null if unknown.
+     */
+    _getLeanScale() {
+        const cv =
+            this.robot && typeof this.robot.getProcessingByType === "function"
+                ? this.robot.getProcessingByType("computervision")
+                : null;
+        if (!cv) return null;
+
+        const model = String(cv.model || "").toLowerCase();
+        if (model === "blazeface") {
+            const raw = typeof cv.faceScale !== "undefined" ? cv.faceScale : cv._faceScale;
+            return Number.isFinite(Number(raw)) && Number(raw) > 0 ? Number(raw) : null;
+        }
+        if (model === "movenet") {
+            const poses = typeof cv.poses !== "undefined" ? cv.poses : null;
+            const keypoints = poses?.[0]?.keypoints;
+            if (!Array.isArray(keypoints) || !keypoints.length) return null;
+            const byName = (name) =>
+                keypoints.find((kp) => String(kp?.name || "").toLowerCase() === name) || null;
+            const left = byName("left_eye");
+            const right = byName("right_eye");
+            const minScore = 0.15;
+            if (
+                left &&
+                right &&
+                (left.score || 0) >= minScore &&
+                (right.score || 0) >= minScore &&
+                Number.isFinite(Number(left.x)) &&
+                Number.isFinite(Number(right.x))
+            ) {
+                return Math.abs(Number(left.x) - Number(right.x)) * 2.8;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Update lean gauge UI.
+     * @param {"arm"|"lean"|"recording"|"listen"} phase
+     * @param {{ elapsedSec?: number }} [options]
+     */
+    _updateLeanOverlay(phase, options = {}) {
+        const overlay = this._ensureLeanOverlay();
+        if (!overlay) return;
+
+        const enter = AgentInterface.LEAN_ENTER_SCALE;
+        const floor = AgentInterface.LEAN_GAUGE_FLOOR;
+        const scale = this._getLeanScale();
+        const denom = Math.max(0.01, enter - floor + 0.12);
+        let fillPct = 0;
+        if (Number.isFinite(scale)) {
+            fillPct = Math.max(0, Math.min(1.15, (scale - floor) / denom)) * 100;
+            fillPct = Math.min(100, fillPct);
+        }
+
+        if (this._leanFillEl) this._leanFillEl.style.width = `${fillPct}%`;
+        const meter = this._leanFillEl?.parentElement;
+        if (meter) meter.setAttribute("aria-valuenow", String(Math.round(fillPct)));
+
+        const atTalk = Number.isFinite(scale) && scale >= enter;
+        const phaseKey = String(phase || "lean");
+        overlay.classList.remove(
+            "sensor-camera-lean-overlay--arm",
+            "sensor-camera-lean-overlay--leaning",
+            "sensor-camera-lean-overlay--ready",
+            "sensor-camera-lean-overlay--armed",
+            "sensor-camera-lean-overlay--recording",
+            "sensor-camera-lean-overlay--listen"
+        );
+
+        let label = "";
+        let hint = "";
+        if (phaseKey === "listen") {
+            overlay.classList.add("sensor-camera-lean-overlay--listen");
+            label = "Lean back to listen";
+            hint = "Stay back while the robot talks — lean in again when it is your turn";
+            if (this._leanFillEl) this._leanFillEl.style.width = "0%";
+        } else if (phaseKey === "recording") {
+            overlay.classList.add("sensor-camera-lean-overlay--recording");
+            const sec = Math.max(0, Math.floor(Number(options.elapsedSec) || 0));
+            label = "Lean back to listen";
+            hint =
+                sec > 0
+                    ? `Recording ${sec}s — lean back when you are done speaking`
+                    : "Recording — lean back when you are done speaking";
+        } else if (phaseKey === "arm") {
+            overlay.classList.add("sensor-camera-lean-overlay--arm");
+            if (!Number.isFinite(scale)) {
+                label = "Face the camera";
+                hint = "Then lean back so the mic can arm";
+            } else if (atTalk || this._isLeanedIn()) {
+                label = "Lean back to listen";
+                hint = "Move back until the bar drops below the talk mark";
+                overlay.classList.add("sensor-camera-lean-overlay--ready");
+            } else {
+                label = "Ready — lean in to talk";
+                hint = "Fill the bar past the talk mark to record";
+                overlay.classList.add("sensor-camera-lean-overlay--armed");
+            }
+        } else {
+            // Waiting for lean-in to start recording.
+            if (!Number.isFinite(scale)) {
+                label = "Face the camera";
+                hint = "Lean in until the bar reaches the talk mark";
+                overlay.classList.add("sensor-camera-lean-overlay--leaning");
+            } else if (atTalk) {
+                label = "Hold there…";
+                hint = "Keep leaning in — recording will start";
+                overlay.classList.add("sensor-camera-lean-overlay--ready");
+            } else {
+                label = "Lean in to talk";
+                hint = "Move closer until the bar reaches the talk mark";
+                overlay.classList.add("sensor-camera-lean-overlay--leaning");
+            }
+        }
+
+        if (this._leanLabelEl) this._leanLabelEl.textContent = label;
+        if (this._leanHintEl) this._leanHintEl.textContent = hint;
+    }
+
     /**
      * @param {string} [label]
      */
@@ -947,46 +1167,10 @@ class AgentInterface {
      * @returns {boolean|null} true/false, or null when face is missing (unknown — not out).
      */
     _isLeanedIn(options = {}) {
-        const cv =
-            this.robot && typeof this.robot.getProcessingByType === "function"
-                ? this.robot.getProcessingByType("computervision")
-                : null;
-        if (!cv) return null;
-
-        const model = String(cv.model || "").toLowerCase();
-        let scale = null;
-
-        if (model === "blazeface") {
-            const raw = typeof cv.faceScale !== "undefined" ? cv.faceScale : cv._faceScale;
-            if (Number.isFinite(Number(raw))) scale = Number(raw);
-        } else if (model === "movenet") {
-            // Fallback: approximate closeness from eye span when MoveNet is active.
-            const poses = typeof cv.poses !== "undefined" ? cv.poses : null;
-            const keypoints = poses?.[0]?.keypoints;
-            if (Array.isArray(keypoints) && keypoints.length) {
-                const byName = (name) =>
-                    keypoints.find((kp) => String(kp?.name || "").toLowerCase() === name) || null;
-                const left = byName("left_eye");
-                const right = byName("right_eye");
-                const minScore = 0.15;
-                if (
-                    left &&
-                    right &&
-                    (left.score || 0) >= minScore &&
-                    (right.score || 0) >= minScore &&
-                    Number.isFinite(Number(left.x)) &&
-                    Number.isFinite(Number(right.x))
-                ) {
-                    scale = Math.abs(Number(left.x) - Number(right.x)) * 2.8;
-                }
-            }
-        }
-
+        const scale = this._getLeanScale();
         if (!Number.isFinite(scale) || scale <= 0) return null;
-
-        // Absolute face-width fractions; hold exits later so short dips don't cut the clip.
-        const enterScale = 0.36;
-        const exitScale = 0.26;
+        const enterScale = AgentInterface.LEAN_ENTER_SCALE;
+        const exitScale = AgentInterface.LEAN_EXIT_SCALE;
         const threshold = options.hold ? exitScale : enterScale;
         return scale >= threshold;
     }
@@ -1068,18 +1252,19 @@ class AgentInterface {
 
         try {
             // Rising edge: lean back first (if already close), then lean in to start.
-            this._ensureCameraCountdownOverlay("Lean in to talk");
-            if (this._countdownNumberEl) this._countdownNumberEl.textContent = "—";
+            this._updateLeanOverlay("arm");
 
             const readyOut = await this._waitForStableLeanIn(false, generation, {
                 needed: 3,
                 onTick: () => {
-                    this._ensureCameraCountdownOverlay("Lean in to talk");
-                    if (this._countdownNumberEl) this._countdownNumberEl.textContent = "—";
+                    this._updateLeanOverlay("arm");
                     if (this._statusEl) {
-                        this._statusEl.textContent = this._isLeanedIn()
-                            ? "Lean back to arm the mic…"
-                            : "Lean in toward the camera to record…";
+                        const leaned = this._isLeanedIn();
+                        this._statusEl.textContent = leaned
+                            ? "Lean back to listen — mic arms when you are back…"
+                            : Number.isFinite(this._getLeanScale())
+                              ? "Ready — lean in to talk…"
+                              : "Face the camera, then lean in to talk…";
                         this._statusEl.className = "muted";
                     }
                 }
@@ -1089,10 +1274,9 @@ class AgentInterface {
             const leaned = await this._waitForStableLeanIn(true, generation, {
                 needed: 2,
                 onTick: () => {
-                    this._ensureCameraCountdownOverlay("Lean in to talk");
-                    if (this._countdownNumberEl) this._countdownNumberEl.textContent = "—";
+                    this._updateLeanOverlay("lean");
                     if (this._statusEl) {
-                        this._statusEl.textContent = "Lean in toward the camera to record…";
+                        this._statusEl.textContent = "Lean in to talk — fill the bar to the talk mark…";
                         this._statusEl.className = "muted";
                     }
                 }
@@ -1117,8 +1301,9 @@ class AgentInterface {
             });
             mediaRecorder.start(200);
 
+            this._updateLeanOverlay("recording", { elapsedSec: 0 });
             if (this._statusEl) {
-                this._statusEl.textContent = "Recording — lean back when done…";
+                this._statusEl.textContent = "Recording — lean back to listen when done…";
                 this._statusEl.className = "muted";
             }
 
@@ -1131,8 +1316,9 @@ class AgentInterface {
             while (generation === this._speakGeneration) {
                 if (!this._agentEnabled || !this._isConversationMode()) break;
                 const elapsedSec = Math.floor((Date.now() - startedAt) / 1000);
+                this._updateLeanOverlay("recording", { elapsedSec });
                 if (this._statusEl) {
-                    this._statusEl.textContent = `Recording ${elapsedSec}s — lean back when done…`;
+                    this._statusEl.textContent = `Recording ${elapsedSec}s — lean back to listen when done…`;
                     this._statusEl.className = "muted";
                 }
                 if (Date.now() - startedAt >= maxRecordMs) {
@@ -1169,7 +1355,7 @@ class AgentInterface {
                 } catch (_) {}
             }
             stopTracks();
-            this._clearCameraCountdownOverlay();
+            this._clearLeanOverlay();
         }
     }
 
@@ -1227,7 +1413,7 @@ class AgentInterface {
         try {
             if (this._statusEl) {
                 this._statusEl.textContent =
-                    "Lean in toward the camera to talk — nothing is sent to the AI until you speak.";
+                    "Lean in to talk — fill the bar to the talk mark. Nothing is sent until you speak.";
                 this._statusEl.className = "muted";
             }
 
