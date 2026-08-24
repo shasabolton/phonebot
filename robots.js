@@ -242,10 +242,7 @@ window.ROBOTS_DATA = {
                 simonSaysPoseMatch: {
                     label: "Simon Says Basic",
                     game: "simonSaysPoseMatch",
-                    priceCents: 200,
-                    currency: "aud",
                     endCondition: "gameFinished",
-                    aiBudgetCents: 0
                 },
                 simonSaysAi: {
                     label: "Simon Says Advanced",
