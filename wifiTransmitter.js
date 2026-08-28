@@ -449,13 +449,6 @@ class WifiTransmitter {
 
       networks.forEach((network) => {
         if (!network || !network.ssid) return;
-        if (
-          this.deviceFilter &&
-          typeof PhonebotDeviceFilter !== "undefined" &&
-          !PhonebotDeviceFilter.matchesApSsid(network.ssid, this.deviceFilter)
-        ) {
-          return;
-        }
         const option = document.createElement("option");
         option.value = network.ssid;
         option.textContent = network.rssi !== undefined
@@ -463,17 +456,6 @@ class WifiTransmitter {
           : network.ssid;
         networkList.appendChild(option);
       });
-
-      if (
-        this.deviceFilter &&
-        networkList.options.length <= 1
-      ) {
-        scanStatus.innerHTML =
-          "<span class='warn'>Only <b>" +
-          this.deviceFilter.apSsid +
-          "</b> is shown for this link. Join that network on the robot first, or type its home WiFi SSID below.</span>";
-        return;
-      }
 
       scanStatus.innerHTML = "<span class='ok'>Network list updated.</span>";
     } catch (e) {
@@ -806,6 +788,50 @@ class WifiTransmitter {
 
     result.innerHTML = "Sending credentials...";
 
+    const showConnectedResult = (ip) => {
+      const ipText = ip ? "<b>" + ip + "</b>" : "your network";
+      result.innerHTML =
+        "<span class='ok'>Robot connected to WiFi.</span><br>" +
+        "Robot IP: " + ipText + "<br><br>" +
+        "Now reconnect your computer to the same WiFi, pick this robot above, and click Check connection.<br><br>" +
+        "<button type=\"button\" data-action=\"detect-mode\">I switched networks — check robot</button>";
+    };
+
+    const mergeStatusFromAp = async (ipHint) => {
+      try {
+        const stRes = await fetch(ESP_AP_IP + "/status", { method: "GET" });
+        if (stRes.ok) {
+          const st = await stRes.json();
+          this.mergeRobot({
+            chipId: st.chipId,
+            apSsid: st.apSsid,
+            hostname: st.hostname,
+            mdnsHost: st.mdnsHost,
+            lastIp: ipHint || st.ip || ""
+          });
+        }
+      } catch (e) {}
+    };
+
+    const waitForStaConnect = async () => {
+      result.innerHTML = "Credentials saved. Robot is connecting to WiFi...";
+      for (let attempt = 0; attempt < 25; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        try {
+          const stRes = await fetch(ESP_AP_IP + "/status", { method: "GET" });
+          if (!stRes.ok) continue;
+          const st = await stRes.json();
+          if (st.connected) {
+            await mergeStatusFromAp(st.ip || "");
+            showConnectedResult(st.ip || "");
+            this.refreshRobotPicker();
+            return true;
+          }
+        } catch (e) {}
+      }
+      return false;
+    };
+
     try {
       const res = await fetch(ESP_AP_IP + "/config", {
         method: "POST",
@@ -818,32 +844,24 @@ class WifiTransmitter {
 
       if (res.ok) {
         const data = await res.json();
-        try {
-          const stRes = await fetch(ESP_AP_IP + "/status", { method: "GET" });
-          if (stRes.ok) {
-            const st = await stRes.json();
-            this.mergeRobot({
-              chipId: st.chipId,
-              apSsid: st.apSsid,
-              hostname: st.hostname,
-              mdnsHost: st.mdnsHost,
-              lastIp: (data && data.ip) || st.ip || ""
-            });
+        if (data && data.connecting) {
+          const connected = await waitForStaConnect();
+          if (!connected) {
+            result.innerHTML =
+              "<span class='warn'>Credentials saved, but robot could not connect yet.</span><br>" +
+              "Check SSID/password and try again. The setup AP stays on.";
+            this.refreshRobotPicker();
           }
-        } catch (e) {}
-        if (data && data.connected) {
-          const ipText = data.ip ? "<b>" + data.ip + "</b>" : "your network";
-          result.innerHTML =
-            "<span class='ok'>Robot connected to WiFi.</span><br>" +
-            "Robot IP: " + ipText + "<br><br>" +
-            "Now reconnect your computer to the same WiFi, pick this robot above, and click Check connection.<br><br>" +
-            "<button type=\"button\" data-action=\"detect-mode\">I switched networks — check robot</button>";
+        } else if (data && data.connected) {
+          await mergeStatusFromAp((data && data.ip) || "");
+          showConnectedResult(data.ip || "");
+          this.refreshRobotPicker();
         } else {
           result.innerHTML =
             "<span class='warn'>Credentials saved, but robot could not connect yet.</span><br>" +
             "Check SSID/password and try again. The setup AP stays on.";
+          this.refreshRobotPicker();
         }
-        this.refreshRobotPicker();
       } else {
         result.innerHTML = "<span class='error'>Failed to send credentials.</span>";
       }

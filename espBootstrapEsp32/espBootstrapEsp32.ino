@@ -12,7 +12,7 @@
 
 // ===== CONFIG =====
 /** Bump this when releasing firmware; keep version.json in the repo in sync (manual for now). */
-#define FW_VERSION "1.2.3"
+#define FW_VERSION "1.2.4"
 
 /**
  * BUILD (ESP32 Dev Module, 4MB flash): sketch + BLE exceeds the default 1.2MB app slot.
@@ -60,6 +60,10 @@ enum ControlSource : uint8_t {
 ControlSource controlSource = CONTROL_LIGHT;
 bool staWasConnected = false;
 bool bleClientConnected = false;
+bool bleActive = false;
+bool wifiConnectPending = false;
+uint32_t wifiConnectStartedMs = 0;
+const uint32_t WIFI_CONNECT_TIMEOUT_MS = 20000;
 BLEServer* bleServer = nullptr;
 BLECharacteristic* bleStatusChar = nullptr;
 uint32_t lastLightUpdateMs = 0;
@@ -550,8 +554,55 @@ void startBLE() {
   advertising->setMinPreferred(0x06);
   advertising->setMaxPreferred(0x12);
   BLEDevice::startAdvertising();
+  bleActive = true;
   Serial.print("BLE advertising as ");
   Serial.println(robotHostname);
+}
+
+/** WiFi scan/connect needs exclusive radio time; pause BLE advertising while STA is busy. */
+void pauseBleForWifi() {
+  if (!bleActive) return;
+  BLEDevice::stopAdvertising();
+  delay(100);
+}
+
+void resumeBleAfterWifi() {
+  if (!bleActive || bleClientConnected) return;
+  BLEDevice::startAdvertising();
+}
+
+void beginWifiConnect() {
+  pauseBleForWifi();
+  WiFi.mode(WIFI_AP_STA);
+  WiFi.setHostname(robotHostname.c_str());
+  WiFi.disconnect(true);
+  delay(100);
+  WiFi.begin(ssid.c_str(), password.c_str());
+  wifiConnectStartedMs = millis();
+  wifiConnectPending = true;
+  Serial.print("Connecting to ");
+  Serial.println(ssid);
+}
+
+void tickWifiConnect() {
+  if (!wifiConnectPending) return;
+
+  if (WiFi.status() == WL_CONNECTED) {
+    wifiConnectPending = false;
+    resumeBleAfterWifi();
+    Serial.println("Connected!");
+    Serial.println(WiFi.localIP());
+    applyStaServices();
+    setControlSource(CONTROL_WIFI);
+    staWasConnected = true;
+    return;
+  }
+
+  if (millis() - wifiConnectStartedMs >= WIFI_CONNECT_TIMEOUT_MS) {
+    wifiConnectPending = false;
+    resumeBleAfterWifi();
+    Serial.println("Failed to connect (timeout)");
+  }
 }
 
 // ===== FUNCTIONS =====
@@ -620,6 +671,7 @@ void startAP() {
 
 bool connectToWiFi() {
   // Keep setup AP available while trying station connection.
+  pauseBleForWifi();
   WiFi.mode(WIFI_AP_STA);
   WiFi.setHostname(robotHostname.c_str());
   WiFi.begin(ssid.c_str(), password.c_str());
@@ -637,10 +689,12 @@ bool connectToWiFi() {
     Serial.println("\nConnected!");
     Serial.println(WiFi.localIP());
     applyStaServices();
+    resumeBleAfterWifi();
     return true;
   }
 
   Serial.println("\nFailed to connect");
+  resumeBleAfterWifi();
   return false;
 }
 
@@ -677,7 +731,11 @@ void handleVersion() {
 void handleScan() {
   sendCORSHeaders();
 
-  int n = WiFi.scanNetworks();
+  pauseBleForWifi();
+  WiFi.scanDelete();
+  int n = WiFi.scanNetworks(false, true);
+  resumeBleAfterWifi();
+
   String json = "[";
 
   for (int i = 0; i < n; i++) {
@@ -720,10 +778,8 @@ void handleConfig() {
       password = body.substring(p1, p2);
 
       saveCredentials(ssid, password);
-      bool connected = connectToWiFi();
-      String staIp = connected ? WiFi.localIP().toString() : "";
-      String json = "{\"saved\":true,\"connected\":" + String(connected ? "true" : "false") +
-                    ",\"ip\":\"" + staIp + "\"}";
+      beginWifiConnect();
+      String json = "{\"saved\":true,\"connected\":false,\"connecting\":true}";
       server.send(200, "application/json", json);
       return;
     }
@@ -843,6 +899,7 @@ void setup() {
 
 void loop() {
   server.handleClient();
+  tickWifiConnect();
 
   bool staConnected = WiFi.status() == WL_CONNECTED;
   if (staWasConnected && !staConnected) {
