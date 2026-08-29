@@ -159,7 +159,7 @@ class AgentInterface {
      */
     onRobotModeChanged(_modeId) {
         this._stopSpeaking();
-        if (this._isSimonSaysPoseMatchMode()) return;
+        if (this._isSimonSaysPoseMatchMode() || this._isParrotMode()) return;
         if (this._agentEnabled && this._isConversationMode()) {
             this._queueConversationListen(this._speakGeneration);
         }
@@ -168,6 +168,26 @@ class AgentInterface {
     /** Local MoveNet + agent-TTS Simon Says (no chat LLM). */
     _isSimonSaysPoseMatchMode() {
         return String(this.robot?.mode || "").trim().toLowerCase() === "simonsaysposematch";
+    }
+
+    /** Local lean-in echo (no LLM / TTS). */
+    _isParrotMode() {
+        return String(this.robot?.mode || "").trim().toLowerCase() === "parrot";
+    }
+
+    /**
+     * Lean-in mic capture for local games (e.g. Parrot). Reuses the conversation lean UI.
+     * Cancels when `isActive()` is false or speaking is stopped.
+     * @param {{ isActive?: () => boolean }} [options]
+     * @returns {Promise<Blob|null>}
+     */
+    async captureLeanInRecording(options = {}) {
+        const generation = this._speakGeneration;
+        const isActive =
+            typeof options.isActive === "function"
+                ? () => generation === this._speakGeneration && !!options.isActive()
+                : () => generation === this._speakGeneration;
+        return this._recordMicrophoneWhileLeanedIn(generation, { isActive });
     }
 
     _billingContext() {
@@ -1186,10 +1206,14 @@ class AgentInterface {
     async _waitForStableLeanIn(wantLeanedIn, generation, options = {}) {
         const needed = Math.max(1, Number(options.needed) || 3);
         const pollMs = Math.max(50, Number(options.pollMs) || 100);
+        const isActive =
+            typeof options.isActive === "function"
+                ? options.isActive
+                : () => this._agentEnabled && this._isConversationMode();
         let streak = 0;
         while (generation === this._speakGeneration) {
             if (typeof options.onTick === "function") options.onTick();
-            if (!this._agentEnabled || !this._isConversationMode()) return false;
+            if (!isActive()) return false;
             const leaned = this._isLeanedIn({ hold: !!options.hold });
             if (leaned === null) {
                 // Keep waiting; do not reset streak on missing/low-confidence frames.
@@ -1207,9 +1231,10 @@ class AgentInterface {
     /**
      * Conversation listen: wait for lean-in, record until lean-out, return blob.
      * @param {number} generation
+     * @param {{ isActive?: () => boolean }} [options]
      * @returns {Promise<Blob|null>}
      */
-    async _recordMicrophoneWhileLeanedIn(generation) {
+    async _recordMicrophoneWhileLeanedIn(generation, options = {}) {
         if (typeof MediaRecorder === "undefined") {
             throw new Error("MediaRecorder is not supported in this browser.");
         }
@@ -1217,6 +1242,10 @@ class AgentInterface {
             throw new Error("Microphone capture is not available.");
         }
 
+        const isActive =
+            typeof options.isActive === "function"
+                ? options.isActive
+                : () => this._agentEnabled && this._isConversationMode();
         const maxRecordMs = 20000;
         let stream = null;
         let mediaRecorder = null;
@@ -1256,6 +1285,7 @@ class AgentInterface {
 
             const readyOut = await this._waitForStableLeanIn(false, generation, {
                 needed: 3,
+                isActive,
                 onTick: () => {
                     this._updateLeanOverlay("arm");
                     if (this._statusEl) {
@@ -1273,6 +1303,7 @@ class AgentInterface {
 
             const leaned = await this._waitForStableLeanIn(true, generation, {
                 needed: 2,
+                isActive,
                 onTick: () => {
                     this._updateLeanOverlay("lean");
                     if (this._statusEl) {
@@ -1281,7 +1312,7 @@ class AgentInterface {
                     }
                 }
             });
-            if (!leaned || generation !== this._speakGeneration) return null;
+            if (!leaned || generation !== this._speakGeneration || !isActive()) return null;
 
             stream = await navigator.mediaDevices.getUserMedia({
                 audio: {
@@ -1314,7 +1345,7 @@ class AgentInterface {
             let downStreak = 0;
             let hitMax = false;
             while (generation === this._speakGeneration) {
-                if (!this._agentEnabled || !this._isConversationMode()) break;
+                if (!isActive()) break;
                 const elapsedSec = Math.floor((Date.now() - startedAt) / 1000);
                 this._updateLeanOverlay("recording", { elapsedSec });
                 if (this._statusEl) {

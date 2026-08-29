@@ -286,6 +286,14 @@ window.ROBOTS_DATA = {
                     aiBudgetCents: 50,
                     continuePriceCents: 200,
                     computervisionModel: "blazeface"
+                },
+                parrot: {
+                    label: "Parrot",
+                    game: "parrot",
+                    priceCents: 0,
+                    currency: "aud",
+                    free: true,
+                    computervisionModel: "blazeface"
                 }
             },
             agentInterface: {

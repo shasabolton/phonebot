@@ -676,6 +676,16 @@ class Robot {
             }
             this._localGame = new GameClass(this);
             this._localGame.start();
+            return;
+        }
+        if (gameId === "parrot") {
+            const GameClass = window.ParrotGame;
+            if (typeof GameClass !== "function") {
+                console.error("ParrotGame is unavailable. Check games/parrot/parrot.js loading.");
+                return;
+            }
+            this._localGame = new GameClass(this);
+            this._localGame.start();
         }
     }
 
