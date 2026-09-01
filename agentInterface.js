@@ -79,24 +79,28 @@ class AgentInterface {
         this._countdownOverlayEl = null;
         this._countdownNumberEl = null;
         this._countdownLabelEl = null;
-        /** Lean-in proximity gauge overlay (conversation listen). */
-        this._leanOverlayEl = null;
-        this._leanFillEl = null;
-        this._leanMarkEl = null;
-        this._leanLabelEl = null;
-        this._leanHintEl = null;
-        this._leanRecEl = null;
+        /** Hold-to-speak overlay on the camera frame (conversation + Parrot). */
+        this._pttOverlayEl = null;
+        this._pttBtnEl = null;
+        this._pttLabelEl = null;
+        this._pttHintEl = null;
+        this._pttState = "hidden";
+        this._pttRecording = false;
+        this._pttRecordStream = null;
+        this._pttMediaRecorder = null;
+        this._pttRecordChunks = [];
+        this._pttRecordStartedAt = 0;
+        this._pttMaxTimer = null;
+        this._pttWaitResolve = null;
+        this._pttWaitGeneration = 0;
         this._loadSavedKeyPreference();
         this._voiceOn = this._resolveVoiceDefault(null);
     }
 
-    /** Face-width / frame-width: lean-in enter / lean-out exit (hysteresis). */
-    static LEAN_ENTER_SCALE = 0.36;
-    static LEAN_EXIT_SCALE = 0.26;
-    /** Gauge reads empty at/below this scale. */
-    static LEAN_GAUGE_FLOOR = 0.12;
+  static PTT_MIN_HOLD_MS = 250;
+    static PTT_MAX_RECORD_MS = 20000;
 
-    /** True when a lean-in-to-talk game is active (Philosophy, 20 Questions, Fortune Teller). */
+    /** True when a hold-to-speak game is active (Philosophy, 20 Questions, Fortune Teller). */
     _isConversationMode() {
         const mode = String(this.robot?.mode || "").trim().toLowerCase();
         return (
@@ -159,10 +163,17 @@ class AgentInterface {
      */
     onRobotModeChanged(_modeId) {
         this._stopSpeaking();
-        if (this._isSimonSaysPoseMatchMode() || this._isParrotMode()) return;
-        if (this._agentEnabled && this._isConversationMode()) {
-            this._queueConversationListen(this._speakGeneration);
+        if (this._isSimonSaysPoseMatchMode()) return;
+        if (this._agentEnabled && this._usesPttInput()) {
+            this._armConversationPtt();
+        } else {
+            this._clearPttOverlay();
         }
+    }
+
+    /** Conversation games and Parrot use the hold-to-speak button. */
+    _usesPttInput() {
+        return this._isConversationMode() || this._isParrotMode();
     }
 
     /** Local MoveNet + agent-TTS Simon Says (no chat LLM). */
@@ -170,24 +181,29 @@ class AgentInterface {
         return String(this.robot?.mode || "").trim().toLowerCase() === "simonsaysposematch";
     }
 
-    /** Local lean-in echo (no LLM / TTS). */
+    /** Local hold-to-speak echo (no LLM / TTS). */
     _isParrotMode() {
         return String(this.robot?.mode || "").trim().toLowerCase() === "parrot";
     }
 
     /**
-     * Lean-in mic capture for local games (e.g. Parrot). Reuses the conversation lean UI.
+     * Hold-to-speak mic capture for local games (e.g. Parrot).
      * Cancels when `isActive()` is false or speaking is stopped.
      * @param {{ isActive?: () => boolean }} [options]
      * @returns {Promise<Blob|null>}
      */
-    async captureLeanInRecording(options = {}) {
+    async captureHoldRecording(options = {}) {
         const generation = this._speakGeneration;
         const isActive =
             typeof options.isActive === "function"
                 ? () => generation === this._speakGeneration && !!options.isActive()
                 : () => generation === this._speakGeneration;
-        return this._recordMicrophoneWhileLeanedIn(generation, { isActive });
+        return this._recordMicrophoneWhileHeld(generation, { isActive });
+    }
+
+    /** @deprecated Use captureHoldRecording */
+    async captureLeanInRecording(options = {}) {
+        return this.captureHoldRecording(options);
     }
 
     _billingContext() {
@@ -301,8 +317,10 @@ class AgentInterface {
         }
         if (!this._agentEnabled) {
             this._stopSpeaking();
-        } else if (this._isConversationMode()) {
-            this._queueConversationListen(this._speakGeneration);
+        } else if (this._usesPttInput()) {
+            this._armConversationPtt();
+        } else {
+            this._clearPttOverlay();
         }
         this._syncSendButtonState();
     }
@@ -624,7 +642,8 @@ class AgentInterface {
         this._speakGeneration += 1;
         window.__phonebotTtsSpeaking = false;
         this._clearCameraCountdownOverlay();
-        this._clearLeanOverlay();
+        this._abortPttRecording();
+        this._cancelPttWait();
         if (window.speechSynthesis) {
             try {
                 window.speechSynthesis.cancel();
@@ -633,6 +652,11 @@ class AgentInterface {
         const player = this._getAudioPlayer();
         if (player && typeof player.stop === "function") {
             player.stop();
+        }
+        if (this._usesPttInput() && this._agentEnabled) {
+            this._armConversationPtt();
+        } else {
+            this._clearPttOverlay();
         }
     }
 
@@ -725,13 +749,15 @@ class AgentInterface {
         if (!content) return false;
         this._stopSpeaking();
         const generation = this._speakGeneration;
-        const showListenPrompt = this._isConversationMode();
-        if (showListenPrompt) this._updateLeanOverlay("listen");
+        const showPtt = this._isConversationMode();
+        if (showPtt) this._setPttState("talking");
         try {
             await this._speakSynthesizedAsync(content, generation);
             return generation === this._speakGeneration;
         } finally {
-            if (showListenPrompt) this._clearLeanOverlay();
+            if (showPtt && generation === this._speakGeneration) {
+                this._armConversationPtt();
+            }
         }
     }
 
@@ -808,20 +834,27 @@ class AgentInterface {
         if (!player || typeof player.playBlob !== "function") {
             throw new Error("Audio player unavailable.");
         }
+        const showPtt = this._isConversationMode();
+        if (showPtt) this._setPttState("talking");
         this._setVoiceStatus(labels.speakingLabel);
         window.__phonebotTtsSpeaking = true;
         const playTimeoutMs = 60000;
-        await Promise.race([
-            player.playBlob(blob, labels.playLabel),
-            new Promise((_, reject) =>
-                setTimeout(
-                    () => reject(new Error(`TTS playback timed out after ${playTimeoutMs / 1000}s.`)),
-                    playTimeoutMs
+        try {
+            await Promise.race([
+                player.playBlob(blob, labels.playLabel),
+                new Promise((_, reject) =>
+                    setTimeout(
+                        () => reject(new Error(`TTS playback timed out after ${playTimeoutMs / 1000}s.`)),
+                        playTimeoutMs
+                    )
                 )
-            )
-        ]);
-        if (generation === this._speakGeneration) {
-            this._setVoiceStatus(labels.idleLabel);
+            ]);
+        } finally {
+            window.__phonebotTtsSpeaking = false;
+            if (generation === this._speakGeneration) {
+                this._setVoiceStatus(labels.idleLabel);
+                if (showPtt) this._armConversationPtt();
+            }
         }
     }
 
@@ -898,204 +931,444 @@ class AgentInterface {
         this._countdownLabelEl = null;
     }
 
-    _clearLeanOverlay() {
-        if (this._leanOverlayEl && this._leanOverlayEl.parentNode) {
-            this._leanOverlayEl.parentNode.removeChild(this._leanOverlayEl);
+    _clearPttOverlay() {
+        this._abortPttRecording();
+        this._cancelPttWait();
+        if (this._pttOverlayEl && this._pttOverlayEl.parentNode) {
+            this._pttOverlayEl.parentNode.removeChild(this._pttOverlayEl);
         }
-        this._leanOverlayEl = null;
-        this._leanFillEl = null;
-        this._leanMarkEl = null;
-        this._leanLabelEl = null;
-        this._leanHintEl = null;
-        this._leanRecEl = null;
+        this._pttOverlayEl = null;
+        this._pttBtnEl = null;
+        this._pttLabelEl = null;
+        this._pttHintEl = null;
+        this._pttState = "hidden";
     }
 
     /**
-     * Build (or reuse) the lean-in proximity gauge on the camera frame.
+     * Build (or reuse) the hold-to-speak button on the camera frame.
      * @returns {HTMLElement|null}
      */
-    _ensureLeanOverlay() {
-        if (this._leanOverlayEl && this._leanOverlayEl.isConnected) return this._leanOverlayEl;
-        this._clearLeanOverlay();
+    _ensurePttOverlay() {
+        if (this._pttOverlayEl && this._pttOverlayEl.isConnected) return this._pttOverlayEl;
+        this._clearPttOverlay();
         const camera = this._getCameraSensor();
         const frameEl = camera?.getFrameElement?.();
         if (!frameEl) return null;
 
         const overlay = document.createElement("div");
-        overlay.className = "sensor-camera-lean-overlay";
+        overlay.className = "sensor-camera-ptt-overlay sensor-camera-ptt-overlay--idle";
         overlay.setAttribute("aria-live", "polite");
 
-        const rec = document.createElement("div");
-        rec.className = "sensor-camera-lean-rec";
-        const recDot = document.createElement("span");
-        recDot.className = "sensor-camera-lean-rec-dot";
-        recDot.setAttribute("aria-hidden", "true");
-        const recText = document.createElement("span");
-        recText.textContent = "Recording";
-        rec.appendChild(recDot);
-        rec.appendChild(recText);
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "sensor-camera-ptt-btn";
+        btn.setAttribute("aria-label", "Hold to speak");
 
-        const meter = document.createElement("div");
-        meter.className = "sensor-camera-lean-meter";
-        meter.setAttribute("role", "meter");
-        meter.setAttribute("aria-valuemin", "0");
-        meter.setAttribute("aria-valuemax", "100");
+        const icon = document.createElement("span");
+        icon.className = "sensor-camera-ptt-icon";
+        icon.setAttribute("aria-hidden", "true");
+        icon.textContent = "🎤";
 
-        const fill = document.createElement("div");
-        fill.className = "sensor-camera-lean-fill";
-        const mark = document.createElement("div");
-        mark.className = "sensor-camera-lean-mark";
-        const enter = AgentInterface.LEAN_ENTER_SCALE;
-        const floor = AgentInterface.LEAN_GAUGE_FLOOR;
-        const markAlong = Math.max(
-            0,
-            Math.min(100, ((enter - floor) / Math.max(0.01, enter - floor + 0.12)) * 100)
-        );
-        mark.style.left = `${markAlong}%`;
-        meter.appendChild(fill);
-        meter.appendChild(mark);
+        const label = document.createElement("span");
+        label.className = "sensor-camera-ptt-label";
+        label.textContent = "Hold to speak";
 
-        const label = document.createElement("div");
-        label.className = "sensor-camera-lean-label";
-        const hint = document.createElement("div");
-        hint.className = "sensor-camera-lean-hint";
+        btn.appendChild(icon);
+        btn.appendChild(label);
 
-        overlay.appendChild(rec);
-        overlay.appendChild(meter);
-        overlay.appendChild(label);
+        const hint = document.createElement("p");
+        hint.className = "sensor-camera-ptt-hint";
+        hint.textContent = "Release when you are done";
+
+        const endHold = (ev) => {
+            if (ev?.pointerId != null && btn.hasPointerCapture(ev.pointerId)) {
+                try {
+                    btn.releasePointerCapture(ev.pointerId);
+                } catch (_) {}
+            }
+            void this._onPttPointerUp(ev);
+        };
+
+        btn.addEventListener("pointerdown", (e) => {
+            if (e.button !== 0 && e.pointerType === "mouse") return;
+            try {
+                btn.setPointerCapture(e.pointerId);
+            } catch (_) {}
+            void this._onPttPointerDown(e);
+        });
+        btn.addEventListener("pointerup", endHold);
+        btn.addEventListener("pointercancel", endHold);
+        btn.addEventListener("lostpointercapture", () => {
+            if (this._pttRecording) void this._onPttPointerUp({ type: "lostpointercapture" });
+        });
+
+        overlay.appendChild(btn);
         overlay.appendChild(hint);
         frameEl.appendChild(overlay);
 
-        this._leanOverlayEl = overlay;
-        this._leanFillEl = fill;
-        this._leanMarkEl = mark;
-        this._leanLabelEl = label;
-        this._leanHintEl = hint;
-        this._leanRecEl = rec;
-        meter.setAttribute("aria-valuenow", "0");
+        this._pttOverlayEl = overlay;
+        this._pttBtnEl = btn;
+        this._pttLabelEl = label;
+        this._pttHintEl = hint;
         return overlay;
     }
 
     /**
-     * @returns {number|null} Current lean scale (face width / frame), or null if unknown.
+     * @param {"idle"|"listening"|"processing"|"thinking"|"talking"} state
+     * @param {{ hint?: string }} [options]
      */
-    _getLeanScale() {
-        const cv =
-            this.robot && typeof this.robot.getProcessingByType === "function"
-                ? this.robot.getProcessingByType("computervision")
-                : null;
-        if (!cv) return null;
+    _setPttState(state, options = {}) {
+        const phase = String(state || "idle").trim().toLowerCase();
+        this._pttState = phase;
+        const overlay = this._ensurePttOverlay();
+        if (!overlay) return;
 
-        const model = String(cv.model || "").toLowerCase();
-        if (model === "blazeface") {
-            const raw = typeof cv.faceScale !== "undefined" ? cv.faceScale : cv._faceScale;
-            return Number.isFinite(Number(raw)) && Number(raw) > 0 ? Number(raw) : null;
+        const labels = {
+            idle: "Hold to speak",
+            listening: "Listening",
+            processing: "Processing…",
+            thinking: "Thinking",
+            talking: "Talking"
+        };
+        const hints = {
+            idle: "Release when you are done",
+            listening: "Release to send",
+            processing: "Transcribing your words",
+            thinking: "Waiting for a reply",
+            talking: "Wait for your turn"
+        };
+
+        overlay.classList.remove(
+            "sensor-camera-ptt-overlay--idle",
+            "sensor-camera-ptt-overlay--listening",
+            "sensor-camera-ptt-overlay--processing",
+            "sensor-camera-ptt-overlay--thinking",
+            "sensor-camera-ptt-overlay--talking"
+        );
+        overlay.classList.add(`sensor-camera-ptt-overlay--${phase}`);
+
+        if (this._pttLabelEl) {
+            this._pttLabelEl.textContent = labels[phase] || labels.idle;
         }
-        if (model === "movenet") {
-            const poses = typeof cv.poses !== "undefined" ? cv.poses : null;
-            const keypoints = poses?.[0]?.keypoints;
-            if (!Array.isArray(keypoints) || !keypoints.length) return null;
-            const byName = (name) =>
-                keypoints.find((kp) => String(kp?.name || "").toLowerCase() === name) || null;
-            const left = byName("left_eye");
-            const right = byName("right_eye");
-            const minScore = 0.15;
-            if (
-                left &&
-                right &&
-                (left.score || 0) >= minScore &&
-                (right.score || 0) >= minScore &&
-                Number.isFinite(Number(left.x)) &&
-                Number.isFinite(Number(right.x))
-            ) {
-                return Math.abs(Number(left.x) - Number(right.x)) * 2.8;
+        if (this._pttHintEl) {
+            const customHint = String(options.hint || "").trim();
+            this._pttHintEl.textContent = customHint || hints[phase] || hints.idle;
+        }
+        if (this._pttBtnEl) {
+            const disabled =
+                phase === "processing" ||
+                phase === "thinking" ||
+                phase === "talking" ||
+                (phase === "idle" && !this._pttCanInteract());
+            this._pttBtnEl.disabled = disabled;
+            this._pttBtnEl.setAttribute("aria-pressed", phase === "listening" ? "true" : "false");
+        }
+    }
+
+    _armConversationPtt() {
+        if (!this._usesPttInput() || !this._agentEnabled) {
+            this._clearPttOverlay();
+            return;
+        }
+        this._ensurePttOverlay();
+        this._setPttState("idle");
+    }
+
+    _pttCanInteract() {
+        return (
+            this._agentEnabled &&
+            !this._pttRecording &&
+            !this._sendInProgress &&
+            !this._simonPoseCycleRunning &&
+            !this._conversationListenRunning &&
+            (this._pttState === "idle" || this._pttState === "hidden") &&
+            (this._isConversationMode() || this._isParrotMode() || !!this._pttWaitResolve)
+        );
+    }
+
+    _cancelPttWait() {
+        if (typeof this._pttWaitResolve === "function") {
+            const resolve = this._pttWaitResolve;
+            this._pttWaitResolve = null;
+            this._pttWaitGeneration = 0;
+            resolve(null);
+        }
+    }
+
+    _abortPttRecording() {
+        if (this._pttMaxTimer) {
+            clearTimeout(this._pttMaxTimer);
+            this._pttMaxTimer = null;
+        }
+        if (this._pttMediaRecorder && this._pttMediaRecorder.state !== "inactive") {
+            try {
+                this._pttMediaRecorder.stop();
+            } catch (_) {}
+        }
+        this._pttMediaRecorder = null;
+        this._pttRecordChunks = [];
+        if (this._pttRecordStream) {
+            for (const track of this._pttRecordStream.getTracks()) {
+                try {
+                    track.stop();
+                } catch (_) {}
+            }
+        }
+        this._pttRecordStream = null;
+        this._pttRecording = false;
+        this._pttRecordStartedAt = 0;
+    }
+
+    async _onPttPointerDown(_ev) {
+        if (this._pttRecording) return;
+        if (!this._pttCanInteract() && !this._pttWaitResolve) return;
+        try {
+            await this._startPttRecording();
+        } catch (err) {
+            console.error("PTT recording start failed:", err);
+            this._abortPttRecording();
+            if (this._statusEl) {
+                this._statusEl.textContent = err?.message || "Could not open microphone.";
+                this._statusEl.className = "error";
+            }
+            this._armConversationPtt();
+        }
+    }
+
+    async _onPttPointerUp(_ev) {
+        if (!this._pttRecording) return;
+        const blob = await this._finishPttRecording();
+        const waitResolve = this._pttWaitResolve;
+        if (typeof waitResolve === "function") {
+            this._pttWaitResolve = null;
+            this._pttWaitGeneration = 0;
+            waitResolve(blob);
+            return;
+        }
+        if (this._isConversationMode() && this._agentEnabled) {
+            void this._handleConversationPttBlob(blob);
+        } else if (this._usesPttInput()) {
+            this._armConversationPtt();
+        }
+    }
+
+    async _startPttRecording() {
+        if (typeof MediaRecorder === "undefined") {
+            throw new Error("MediaRecorder is not supported in this browser.");
+        }
+        if (!navigator.mediaDevices?.getUserMedia) {
+            throw new Error("Microphone capture is not available.");
+        }
+        this._abortPttRecording();
+        const stream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true
+            },
+            video: false
+        });
+        const mimeType = this._pickRecorderMimeType();
+        const mediaRecorder = mimeType
+            ? new MediaRecorder(stream, { mimeType })
+            : new MediaRecorder(stream);
+        const chunks = [];
+        mediaRecorder.addEventListener("dataavailable", (ev) => {
+            if (ev.data && ev.data.size) chunks.push(ev.data);
+        });
+
+        this._pttRecordStream = stream;
+        this._pttMediaRecorder = mediaRecorder;
+        this._pttRecordChunks = chunks;
+        this._pttRecording = true;
+        this._pttRecordStartedAt = Date.now();
+        mediaRecorder.start(200);
+        this._setPttState("listening");
+        this._pttMaxTimer = setTimeout(() => {
+            void this._onPttPointerUp({ type: "maxduration" });
+        }, AgentInterface.PTT_MAX_RECORD_MS);
+    }
+
+    async _finishPttRecording() {
+        if (!this._pttRecording) return null;
+        if (this._pttMaxTimer) {
+            clearTimeout(this._pttMaxTimer);
+            this._pttMaxTimer = null;
+        }
+
+        const holdMs = Date.now() - (this._pttRecordStartedAt || Date.now());
+        const mediaRecorder = this._pttMediaRecorder;
+        const chunks = this._pttRecordChunks;
+        const stream = this._pttRecordStream;
+        const mimeType = mediaRecorder?.mimeType || this._pickRecorderMimeType() || "audio/webm";
+
+        const blob = await new Promise((resolve) => {
+            const finish = () => {
+                const type = mediaRecorder?.mimeType || mimeType;
+                resolve(chunks.length ? new Blob(chunks, { type }) : null);
+            };
+            if (!mediaRecorder || mediaRecorder.state === "inactive") {
+                finish();
+                return;
+            }
+            mediaRecorder.addEventListener("stop", finish, { once: true });
+            try {
+                mediaRecorder.stop();
+            } catch (_) {
+                finish();
+            }
+        });
+
+        if (stream) {
+            for (const track of stream.getTracks()) {
+                try {
+                    track.stop();
+                } catch (_) {}
+            }
+        }
+        this._pttMediaRecorder = null;
+        this._pttRecordStream = null;
+        this._pttRecordChunks = [];
+        this._pttRecording = false;
+        this._pttRecordStartedAt = 0;
+
+        if (holdMs < AgentInterface.PTT_MIN_HOLD_MS) return null;
+        return blob;
+    }
+
+    /**
+     * Parrot mode: wait for hold-to-speak, return clip on release.
+     * @param {number} generation
+     * @param {{ isActive?: () => boolean }} [options]
+     * @returns {Promise<Blob|null>}
+     */
+    async _recordMicrophoneWhileHeld(generation, options = {}) {
+        const isActive =
+            typeof options.isActive === "function"
+                ? options.isActive
+                : () => this._agentEnabled && this._usesPttInput();
+
+        while (generation === this._speakGeneration && isActive()) {
+            this._ensurePttOverlay();
+            this._setPttState("idle");
+            const blob = await new Promise((resolve) => {
+                this._pttWaitResolve = resolve;
+                this._pttWaitGeneration = generation;
+            });
+            if (generation !== this._speakGeneration || !isActive()) return null;
+            if (blob && blob.size >= 32) return blob;
+            if (blob) {
+                this._setPttState("idle", { hint: "Didn't catch that — try again" });
+                await new Promise((r) => setTimeout(r, 900));
             }
         }
         return null;
     }
 
     /**
-     * Update lean gauge UI.
-     * @param {"arm"|"lean"|"recording"|"listen"} phase
-     * @param {{ elapsedSec?: number }} [options]
+     * Process a hold-to-speak clip in conversation mode.
+     * @param {Blob|null} blob
      */
-    _updateLeanOverlay(phase, options = {}) {
-        const overlay = this._ensureLeanOverlay();
-        if (!overlay) return;
+    async _handleConversationPttBlob(blob) {
+        const generation = this._speakGeneration;
+        if (!this._isConversationMode() || !this._agentEnabled) return;
+        if (this._conversationListenRunning || this._sendInProgress) return;
 
-        const enter = AgentInterface.LEAN_ENTER_SCALE;
-        const floor = AgentInterface.LEAN_GAUGE_FLOOR;
-        const scale = this._getLeanScale();
-        const denom = Math.max(0.01, enter - floor + 0.12);
-        let fillPct = 0;
-        if (Number.isFinite(scale)) {
-            fillPct = Math.max(0, Math.min(1.15, (scale - floor) / denom)) * 100;
-            fillPct = Math.min(100, fillPct);
+        if (!blob || blob.size < 32) {
+            this._setPttState("idle", { hint: "Didn't catch that — hold a little longer" });
+            if (this._statusEl) {
+                this._statusEl.textContent = "No audio captured — hold the button while you speak.";
+                this._statusEl.className = "warn";
+            }
+            return;
         }
 
-        if (this._leanFillEl) this._leanFillEl.style.width = `${fillPct}%`;
-        const meter = this._leanFillEl?.parentElement;
-        if (meter) meter.setAttribute("aria-valuenow", String(Math.round(fillPct)));
-
-        const atTalk = Number.isFinite(scale) && scale >= enter;
-        const phaseKey = String(phase || "lean");
-        overlay.classList.remove(
-            "sensor-camera-lean-overlay--arm",
-            "sensor-camera-lean-overlay--leaning",
-            "sensor-camera-lean-overlay--ready",
-            "sensor-camera-lean-overlay--armed",
-            "sensor-camera-lean-overlay--recording",
-            "sensor-camera-lean-overlay--listen"
-        );
-
-        let label = "";
-        let hint = "";
-        if (phaseKey === "listen") {
-            overlay.classList.add("sensor-camera-lean-overlay--listen");
-            label = "Lean back to listen";
-            hint = "Stay back while the robot talks — lean in again when it is your turn";
-            if (this._leanFillEl) this._leanFillEl.style.width = "0%";
-        } else if (phaseKey === "recording") {
-            overlay.classList.add("sensor-camera-lean-overlay--recording");
-            const sec = Math.max(0, Math.floor(Number(options.elapsedSec) || 0));
-            label = "Lean back to listen";
-            hint =
-                sec > 0
-                    ? `Recording ${sec}s — lean back when you are done speaking`
-                    : "Recording — lean back when you are done speaking";
-        } else if (phaseKey === "arm") {
-            overlay.classList.add("sensor-camera-lean-overlay--arm");
-            if (!Number.isFinite(scale)) {
-                label = "Face the camera";
-                hint = "Then lean back so the mic can arm";
-            } else if (atTalk || this._isLeanedIn()) {
-                label = "Lean back to listen";
-                hint = "Move back until the bar drops below the talk mark";
-                overlay.classList.add("sensor-camera-lean-overlay--ready");
-            } else {
-                label = "Ready — lean in to talk";
-                hint = "Fill the bar past the talk mark to record";
-                overlay.classList.add("sensor-camera-lean-overlay--armed");
+        this._conversationListenRunning = true;
+        this._syncSendButtonState();
+        try {
+            this._setPttState("processing");
+            if (this._statusEl) {
+                this._statusEl.textContent = "Processing…";
+                this._statusEl.className = "muted";
             }
-        } else {
-            // Waiting for lean-in to start recording.
-            if (!Number.isFinite(scale)) {
-                label = "Face the camera";
-                hint = "Lean in until the bar reaches the talk mark";
-                overlay.classList.add("sensor-camera-lean-overlay--leaning");
-            } else if (atTalk) {
-                label = "Hold there…";
-                hint = "Keep leaning in — recording will start";
-                overlay.classList.add("sensor-camera-lean-overlay--ready");
-            } else {
-                label = "Lean in to talk";
-                hint = "Move closer until the bar reaches the talk mark";
-                overlay.classList.add("sensor-camera-lean-overlay--leaning");
+
+            this._apiKey = this._keyInput?.value?.trim() || "";
+            const agent = this.getSelectedAgent();
+            if (this._rememberInput) this._rememberKey = !!this._rememberInput.checked;
+            if (agent) this._persistKeyForAgent(agent.name, this._apiKey);
+
+            if (generation !== this._speakGeneration || !this._agentEnabled || !this._isConversationMode()) {
+                return;
             }
+
+            if (this._isGeminiAudioTurn(agent)) {
+                this._setPttState("thinking");
+                await this._submitGeminiAudioTurnFromBlob(blob, {
+                    speechTranscriber: "Gemini audio turn"
+                });
+                return;
+            }
+
+            if (
+                this._useHostedAi() &&
+                typeof window.playBilling?.fetchHostedVoiceTurn === "function"
+            ) {
+                this._setPttState("thinking");
+                await this._submitHostedVoiceTurnFromBlob(blob, {
+                    filename: `speech.${this._extensionForRecorderMime(blob.type)}`
+                });
+                return;
+            }
+
+            const model = this.getTranscriptionModelLabel();
+            let text = "";
+            try {
+                text = await this.transcribeSpeechBlob(blob, {
+                    filename: `speech.${this._extensionForRecorderMime(blob.type)}`
+                });
+            } catch (err) {
+                console.error("Conversation transcription error:", err);
+                if (this._statusEl) {
+                    this._statusEl.textContent = err?.message || "Transcription failed";
+                    this._statusEl.className = "error";
+                }
+                this._armConversationPtt();
+                return;
+            }
+            if (generation !== this._speakGeneration || !this._agentEnabled || !this._isConversationMode()) {
+                return;
+            }
+
+            text = String(text || "").trim();
+            if (!text) {
+                this._setPttState("idle", { hint: "Didn't catch that — try again" });
+                if (this._statusEl) {
+                    this._statusEl.textContent = "No speech heard — hold the button and speak clearly.";
+                    this._statusEl.className = "warn";
+                }
+                this._armConversationPtt();
+                return;
+            }
+
+            this._setPttState("thinking");
+            if (this._statusEl) {
+                this._statusEl.textContent = "Sending transcript…";
+                this._statusEl.className = "muted";
+            }
+            await this._submitSpeechPrompt(text, {
+                speechTranscriber: `API transcription (${model})`
+            });
+        } catch (err) {
+            console.error("Conversation PTT error:", err);
+            if (this._statusEl) {
+                this._statusEl.textContent = err?.message || "Voice input failed";
+                this._statusEl.className = "error";
+            }
+            this._armConversationPtt();
+        } finally {
+            this._conversationListenRunning = false;
+            this._syncSendButtonState();
         }
-
-        if (this._leanLabelEl) this._leanLabelEl.textContent = label;
-        if (this._leanHintEl) this._leanHintEl.textContent = hint;
     }
 
     /**
@@ -1181,218 +1454,7 @@ class AgentInterface {
     }
 
     /**
-     * Lean-in-to-speak: BlazeFace faceScale (face box width / frame width) rises when closer.
-     * Enter when clearly close; hold uses a looser exit band so brief jitter does not end recording.
-     * @param {{ hold?: boolean }} [options]
-     * @returns {boolean|null} true/false, or null when face is missing (unknown — not out).
-     */
-    _isLeanedIn(options = {}) {
-        const scale = this._getLeanScale();
-        if (!Number.isFinite(scale) || scale <= 0) return null;
-        const enterScale = AgentInterface.LEAN_ENTER_SCALE;
-        const exitScale = AgentInterface.LEAN_EXIT_SCALE;
-        const threshold = options.hold ? exitScale : enterScale;
-        return scale >= threshold;
-    }
-
-    /**
-     * Poll vision until lean-in matches `wantLeanedIn` for a few stable samples.
-     * Unknown face frames do not reset the streak.
-     * @param {boolean} wantLeanedIn
-     * @param {number} generation
-     * @param {{ needed?: number, pollMs?: number, onTick?: function, hold?: boolean }} [options]
-     * @returns {Promise<boolean>}
-     */
-    async _waitForStableLeanIn(wantLeanedIn, generation, options = {}) {
-        const needed = Math.max(1, Number(options.needed) || 3);
-        const pollMs = Math.max(50, Number(options.pollMs) || 100);
-        const isActive =
-            typeof options.isActive === "function"
-                ? options.isActive
-                : () => this._agentEnabled && this._isConversationMode();
-        let streak = 0;
-        while (generation === this._speakGeneration) {
-            if (typeof options.onTick === "function") options.onTick();
-            if (!isActive()) return false;
-            const leaned = this._isLeanedIn({ hold: !!options.hold });
-            if (leaned === null) {
-                // Keep waiting; do not reset streak on missing/low-confidence frames.
-            } else if (leaned === wantLeanedIn) {
-                streak += 1;
-                if (streak >= needed) return true;
-            } else {
-                streak = 0;
-            }
-            await new Promise((r) => setTimeout(r, pollMs));
-        }
-        return false;
-    }
-
-    /**
-     * Conversation listen: wait for lean-in, record until lean-out, return blob.
-     * @param {number} generation
-     * @param {{ isActive?: () => boolean }} [options]
-     * @returns {Promise<Blob|null>}
-     */
-    async _recordMicrophoneWhileLeanedIn(generation, options = {}) {
-        if (typeof MediaRecorder === "undefined") {
-            throw new Error("MediaRecorder is not supported in this browser.");
-        }
-        if (!navigator.mediaDevices?.getUserMedia) {
-            throw new Error("Microphone capture is not available.");
-        }
-
-        const isActive =
-            typeof options.isActive === "function"
-                ? options.isActive
-                : () => this._agentEnabled && this._isConversationMode();
-        const maxRecordMs = 20000;
-        let stream = null;
-        let mediaRecorder = null;
-        const chunks = [];
-
-        const stopTracks = () => {
-            if (!stream) return;
-            for (const track of stream.getTracks()) {
-                try {
-                    track.stop();
-                } catch (_) {}
-            }
-            stream = null;
-        };
-
-        const finishRecorder = (mimeType) =>
-            new Promise((resolve) => {
-                const finish = () => {
-                    const type = mediaRecorder?.mimeType || mimeType || "audio/webm";
-                    resolve(chunks.length ? new Blob(chunks, { type }) : null);
-                };
-                if (!mediaRecorder || mediaRecorder.state === "inactive") {
-                    finish();
-                    return;
-                }
-                mediaRecorder.addEventListener("stop", finish, { once: true });
-                try {
-                    mediaRecorder.stop();
-                } catch (_) {
-                    finish();
-                }
-            });
-
-        try {
-            // Rising edge: lean back first (if already close), then lean in to start.
-            this._updateLeanOverlay("arm");
-
-            const readyOut = await this._waitForStableLeanIn(false, generation, {
-                needed: 3,
-                isActive,
-                onTick: () => {
-                    this._updateLeanOverlay("arm");
-                    if (this._statusEl) {
-                        const leaned = this._isLeanedIn();
-                        this._statusEl.textContent = leaned
-                            ? "Lean back to listen — mic arms when you are back…"
-                            : Number.isFinite(this._getLeanScale())
-                              ? "Ready — lean in to talk…"
-                              : "Face the camera, then lean in to talk…";
-                        this._statusEl.className = "muted";
-                    }
-                }
-            });
-            if (!readyOut) return null;
-
-            const leaned = await this._waitForStableLeanIn(true, generation, {
-                needed: 2,
-                isActive,
-                onTick: () => {
-                    this._updateLeanOverlay("lean");
-                    if (this._statusEl) {
-                        this._statusEl.textContent = "Lean in to talk — fill the bar to the talk mark…";
-                        this._statusEl.className = "muted";
-                    }
-                }
-            });
-            if (!leaned || generation !== this._speakGeneration || !isActive()) return null;
-
-            stream = await navigator.mediaDevices.getUserMedia({
-                audio: {
-                    echoCancellation: true,
-                    noiseSuppression: true,
-                    autoGainControl: true
-                },
-                video: false
-            });
-
-            const mimeType = this._pickRecorderMimeType();
-            mediaRecorder = mimeType
-                ? new MediaRecorder(stream, { mimeType })
-                : new MediaRecorder(stream);
-            mediaRecorder.addEventListener("dataavailable", (ev) => {
-                if (ev.data && ev.data.size) chunks.push(ev.data);
-            });
-            mediaRecorder.start(200);
-
-            this._updateLeanOverlay("recording", { elapsedSec: 0 });
-            if (this._statusEl) {
-                this._statusEl.textContent = "Recording — lean back to listen when done…";
-                this._statusEl.className = "muted";
-            }
-
-            // Record until lean-out, cancel, or max duration.
-            const startedAt = Date.now();
-            const pollMs = 100;
-            const neededDown = 8;
-            let downStreak = 0;
-            let hitMax = false;
-            while (generation === this._speakGeneration) {
-                if (!isActive()) break;
-                const elapsedSec = Math.floor((Date.now() - startedAt) / 1000);
-                this._updateLeanOverlay("recording", { elapsedSec });
-                if (this._statusEl) {
-                    this._statusEl.textContent = `Recording ${elapsedSec}s — lean back to listen when done…`;
-                    this._statusEl.className = "muted";
-                }
-                if (Date.now() - startedAt >= maxRecordMs) {
-                    hitMax = true;
-                    break;
-                }
-                const stillIn = this._isLeanedIn({ hold: true });
-                if (stillIn === false) {
-                    downStreak += 1;
-                    if (downStreak >= neededDown) break;
-                } else if (stillIn === true) {
-                    downStreak = 0;
-                }
-                await new Promise((r) => setTimeout(r, pollMs));
-            }
-
-            if (generation !== this._speakGeneration) {
-                await finishRecorder(mimeType);
-                mediaRecorder = null;
-                return null;
-            }
-            if (hitMax && this._statusEl) {
-                this._statusEl.textContent = "Max recording length — transcribing…";
-                this._statusEl.className = "muted";
-            }
-
-            const blob = await finishRecorder(mimeType);
-            mediaRecorder = null;
-            return blob;
-        } finally {
-            if (mediaRecorder && mediaRecorder.state !== "inactive") {
-                try {
-                    mediaRecorder.stop();
-                } catch (_) {}
-            }
-            stopTracks();
-            this._clearLeanOverlay();
-        }
-    }
-
-    /**
-     * After TTS finishes: conversation mode starts lean-in listen; Simon Says queues pose capture.
-     * Queued (not nested) so the parent send can finish and new sends are not blocked forever.
+     * After TTS finishes: conversation mode shows hold-to-speak; Simon Says queues pose capture.
      * @param {string} spoken
      */
     async _afterAgentSpoke(spoken) {
@@ -1401,160 +1463,24 @@ class AgentInterface {
         const finished = await this._speakAsync(content);
         if (!finished || !this._agentEnabled) return;
         if (this._isConversationMode()) {
-            this._queueConversationListen(this._speakGeneration);
+            this._armConversationPtt();
             return;
         }
         if (!this._isSimonSaysMode()) return;
         this._queueSimonSaysPoseCapture(this._speakGeneration);
     }
 
-    /** Queue next conversation listen after the current send/TTS stack unwinds. */
+    /** Show hold-to-speak when a conversation turn completes without TTS. */
     _maybeQueueConversationListenAfterTurn() {
         if (!this._agentEnabled || !this._isConversationMode()) return;
-        this._queueConversationListen(this._speakGeneration);
+        this._armConversationPtt();
     }
 
     /**
      * @param {number} generation Cancel if `_speakGeneration` changes
      */
-    _queueConversationListen(generation) {
-        setTimeout(() => {
-            void this._runConversationListen(generation);
-        }, 0);
-    }
-
-    /**
-     * Conversation mode: lean-in mic record → Whisper+chat (Groq) or Gemini audio turn.
-     * @param {number} generation
-     */
-    async _runConversationListen(generation) {
-        if (generation !== this._speakGeneration) return;
-        if (!this._isConversationMode() || !this._agentEnabled) return;
-        if (this._conversationListenRunning) return;
-        if (this._sendInProgress || this._simonPoseCycleRunning) {
-            setTimeout(() => {
-                void this._runConversationListen(generation);
-            }, 300);
-            return;
-        }
-
-        this._conversationListenRunning = true;
-        this._syncSendButtonState();
-        let shouldRetry = false;
-        try {
-            if (this._statusEl) {
-                this._statusEl.textContent =
-                    "Lean in to talk — fill the bar to the talk mark. Nothing is sent until you speak.";
-                this._statusEl.className = "muted";
-            }
-
-            const blob = await this._recordMicrophoneWhileLeanedIn(generation);
-            if (generation !== this._speakGeneration || !this._agentEnabled || !this._isConversationMode()) {
-                return;
-            }
-            if (!blob || blob.size < 32) {
-                if (this._statusEl) {
-                    this._statusEl.textContent = "No audio captured — listening again…";
-                    this._statusEl.className = "warn";
-                }
-                shouldRetry = true;
-                return;
-            }
-
-            this._apiKey = this._keyInput?.value?.trim() || "";
-            const agent = this.getSelectedAgent();
-            if (this._rememberInput) this._rememberKey = !!this._rememberInput.checked;
-            if (agent) this._persistKeyForAgent(agent.name, this._apiKey);
-
-            if (this._isGeminiAudioTurn(agent)) {
-                const sent = await this._submitGeminiAudioTurnFromBlob(blob, {
-                    speechTranscriber: "Gemini audio turn"
-                });
-                if (!sent) shouldRetry = true;
-                return;
-            }
-
-            if (
-                this._useHostedAi() &&
-                typeof window.playBilling?.fetchHostedVoiceTurn === "function"
-            ) {
-                const sent = await this._submitHostedVoiceTurnFromBlob(blob, {
-                    filename: `speech.${this._extensionForRecorderMime(blob.type)}`
-                });
-                if (!sent && !this._billingPaused) shouldRetry = true;
-                return;
-            }
-
-            if (this._statusEl) {
-                this._statusEl.textContent = "Transcribing…";
-                this._statusEl.className = "muted";
-            }
-            const model = this.getTranscriptionModelLabel();
-            let text = "";
-            try {
-                text = await this.transcribeSpeechBlob(blob, {
-                    filename: `speech.${this._extensionForRecorderMime(blob.type)}`
-                });
-            } catch (err) {
-                console.error("Conversation transcription error:", err);
-                if (this._statusEl) {
-                    this._statusEl.textContent = err?.message || "Transcription failed";
-                    this._statusEl.className = "error";
-                }
-                shouldRetry = true;
-                return;
-            }
-            if (generation !== this._speakGeneration || !this._agentEnabled || !this._isConversationMode()) {
-                return;
-            }
-
-            text = String(text || "").trim();
-            if (!text) {
-                if (this._statusEl) {
-                    this._statusEl.textContent = "No speech heard — listening again…";
-                    this._statusEl.className = "warn";
-                }
-                shouldRetry = true;
-                return;
-            }
-
-            if (this._statusEl) {
-                this._statusEl.textContent = "Sending transcript…";
-                this._statusEl.className = "muted";
-            }
-            const sent = await this.submitPrompt(text, {
-                fromSpeech: true,
-                speechTranscriber: `API transcription (${model})`
-            });
-            if (!sent) shouldRetry = true;
-        } catch (err) {
-            console.error("Conversation listen error:", err);
-            if (this._statusEl) {
-                this._statusEl.textContent = err?.message || "Conversation listen failed";
-                this._statusEl.className = "error";
-            }
-            shouldRetry = true;
-        } finally {
-            this._conversationListenRunning = false;
-            this._syncSendButtonState();
-            if (
-                shouldRetry &&
-                !this._billingPaused &&
-                generation === this._speakGeneration &&
-                this._agentEnabled &&
-                this._isConversationMode()
-            ) {
-                setTimeout(() => {
-                    if (
-                        generation === this._speakGeneration &&
-                        this._agentEnabled &&
-                        this._isConversationMode()
-                    ) {
-                        this._queueConversationListen(generation);
-                    }
-                }, 1500);
-            }
-        }
+    _queueConversationListen(_generation) {
+        this._armConversationPtt();
     }
 
     /**
@@ -1999,7 +1925,7 @@ class AgentInterface {
         return `${head}\n\n${body}`;
     }
 
-    /** True once any user/assistant turn is in history (first lean-in send completed). */
+    /** True once any user/assistant turn is in history (first hold-to-speak send completed). */
     _hasConversationHistory() {
         return (this.messageHistory || []).some(
             (m) => m && (m.role === "user" || m.role === "assistant")
@@ -2007,7 +1933,7 @@ class AgentInterface {
     }
 
     /**
-     * Lean-in modes must not call the LLM until the person leans in and speaks.
+     * Hold-to-speak modes must not call the LLM until the person records and sends speech.
      * Blocks Send / robot notices that would otherwise fire the start prompt alone.
      * @param {string} userText
      * @param {{ fromSpeech?: boolean }} [options]
@@ -2024,7 +1950,7 @@ class AgentInterface {
         if (isIntroOnly) {
             if (this._statusEl) {
                 this._statusEl.textContent =
-                    "Lean in and speak first — your words are sent with the start prompt.";
+                    "Hold the button and speak first — your words are sent with the start prompt.";
                 this._statusEl.className = "warn";
             }
             return false;
@@ -2503,7 +2429,7 @@ class AgentInterface {
             }
             return false;
         }
-        // Gemini audio turn is always driven by a lean-in mic clip.
+        // Gemini audio turn is driven by a hold-to-speak mic clip.
         if (!(await this._allowConversationOutbound("(speech)", { fromSpeech: true }))) {
             return false;
         }
@@ -2522,8 +2448,9 @@ class AgentInterface {
 
         this._sendInProgress = true;
         this._syncSendButtonState();
+        if (this._isConversationMode()) this._setPttState("thinking");
         if (this._statusEl) {
-            this._statusEl.textContent = "Gemini audio turn…";
+            this._statusEl.textContent = "Thinking…";
             this._statusEl.className = "muted";
         }
         let spokenForFollowUp = "";
@@ -2546,16 +2473,18 @@ class AgentInterface {
             const assistantTranscript = String(result?.assistantTranscript || "").trim();
             if (!userTranscript) {
                 if (this._statusEl) {
-                    this._statusEl.textContent = "No speech heard — listening again…";
+                    this._statusEl.textContent = "No speech heard — hold the button and speak clearly.";
                     this._statusEl.className = "warn";
                 }
+                this._armConversationPtt();
                 return false;
             }
             if (!assistantTranscript && !(result?.audioBlob && result.audioBlob.size >= 44)) {
                 if (this._statusEl) {
-                    this._statusEl.textContent = "Gemini returned no reply — listening again…";
+                    this._statusEl.textContent = "Gemini returned no reply — try again.";
                     this._statusEl.className = "error";
                 }
+                this._armConversationPtt();
                 return false;
             }
             if (finaleDue) userTranscript = this._joinFortuneTellerFinale(userTranscript);
@@ -2590,6 +2519,7 @@ class AgentInterface {
                 this._statusEl.className = "error";
             }
             ok = false;
+            this._armConversationPtt();
         } finally {
             this._sendInProgress = false;
             this._syncSendButtonState();
@@ -2654,8 +2584,9 @@ class AgentInterface {
 
         this._sendInProgress = true;
         this._syncSendButtonState();
+        if (this._isConversationMode()) this._setPttState("thinking");
         if (this._statusEl) {
-            this._statusEl.textContent = "Sending…";
+            this._statusEl.textContent = "Thinking…";
             this._statusEl.className = "muted";
         }
         let spokenForFollowUp = "";
@@ -2732,8 +2663,9 @@ class AgentInterface {
 
         this._sendInProgress = true;
         this._syncSendButtonState();
+        if (this._isConversationMode()) this._setPttState("thinking");
         if (this._statusEl) {
-            this._statusEl.textContent = "Processing voice turn…";
+            this._statusEl.textContent = "Thinking…";
             this._statusEl.className = "muted";
         }
 
@@ -2926,9 +2858,9 @@ class AgentInterface {
         }
         const text = String(this._promptInput.value || "").trim();
         if (!(await this._allowConversationOutbound(text, { fromSpeech: false }))) {
-            // _stopSpeaking may have cancelled lean-in listen — resume waiting for speech.
+            // _stopSpeaking may have cancelled an in-progress recording — show hold-to-speak again.
             if (this._agentEnabled && this._isConversationMode()) {
-                this._queueConversationListen(this._speakGeneration);
+                this._armConversationPtt();
             }
             return;
         }

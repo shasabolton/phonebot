@@ -1,5 +1,5 @@
 /**
- * Parrot — lean-in to record, then play the clip back through the robot mouth (no AI).
+ * Parrot — hold to record, then play the clip back through the robot mouth (no AI).
  */
 class ParrotGame {
     /**
@@ -84,8 +84,8 @@ class ParrotGame {
         }
 
         const agent = this._getAgent();
-        if (agent && typeof agent._updateLeanOverlay === "function") {
-            agent._updateLeanOverlay("listen");
+        if (agent && typeof agent._setPttState === "function") {
+            agent._setPttState("talking");
         }
 
         this._audioBusy = true;
@@ -97,8 +97,8 @@ class ParrotGame {
             return false;
         } finally {
             this._audioBusy = false;
-            if (agent && typeof agent._clearLeanOverlay === "function") {
-                agent._clearLeanOverlay();
+            if (agent && typeof agent._armConversationPtt === "function") {
+                agent._armConversationPtt();
             }
         }
     }
@@ -106,14 +106,14 @@ class ParrotGame {
     async _runLoop(generation) {
         while (this._isActive(generation)) {
             const agent = this._getAgent();
-            if (!agent || typeof agent.captureLeanInRecording !== "function") {
-                console.warn("Parrot: lean-in capture unavailable.");
+            if (!agent || typeof agent.captureHoldRecording !== "function") {
+                console.warn("Parrot: hold-to-speak capture unavailable.");
                 return;
             }
 
             let blob = null;
             try {
-                blob = await agent.captureLeanInRecording({
+                blob = await agent.captureHoldRecording({
                     isActive: () => this._isActive(generation)
                 });
             } catch (err) {
