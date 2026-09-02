@@ -83,7 +83,6 @@ class AgentInterface {
         this._pttOverlayEl = null;
         this._pttBtnEl = null;
         this._pttLabelEl = null;
-        this._pttHintEl = null;
         this._pttState = "hidden";
         this._pttRecording = false;
         this._pttRecordStream = null;
@@ -940,8 +939,36 @@ class AgentInterface {
         this._pttOverlayEl = null;
         this._pttBtnEl = null;
         this._pttLabelEl = null;
-        this._pttHintEl = null;
         this._pttState = "hidden";
+    }
+
+    /**
+     * @returns {SVGElement}
+     */
+    _createPttMicIcon() {
+        const ns = "http://www.w3.org/2000/svg";
+        const svg = document.createElementNS(ns, "svg");
+        svg.setAttribute("class", "sensor-camera-ptt-icon");
+        svg.setAttribute("viewBox", "0 0 24 24");
+        svg.setAttribute("aria-hidden", "true");
+        const body = document.createElementNS(ns, "rect");
+        body.setAttribute("x", "9");
+        body.setAttribute("y", "3");
+        body.setAttribute("width", "6");
+        body.setAttribute("height", "11");
+        body.setAttribute("rx", "3");
+        const stand = document.createElementNS(ns, "path");
+        stand.setAttribute(
+            "d",
+            "M7 11a5 5 0 0 0 10 0M12 16v3"
+        );
+        stand.setAttribute("fill", "none");
+        stand.setAttribute("stroke", "currentColor");
+        stand.setAttribute("stroke-width", "2");
+        stand.setAttribute("stroke-linecap", "round");
+        svg.appendChild(body);
+        svg.appendChild(stand);
+        return svg;
     }
 
     /**
@@ -959,26 +986,18 @@ class AgentInterface {
         overlay.className = "sensor-camera-ptt-overlay sensor-camera-ptt-overlay--idle";
         overlay.setAttribute("aria-live", "polite");
 
+        const stack = document.createElement("div");
+        stack.className = "sensor-camera-ptt-stack";
+
+        const label = document.createElement("p");
+        label.className = "sensor-camera-ptt-label";
+        label.textContent = "Hold to speak";
+
         const btn = document.createElement("button");
         btn.type = "button";
         btn.className = "sensor-camera-ptt-btn";
         btn.setAttribute("aria-label", "Hold to speak");
-
-        const icon = document.createElement("span");
-        icon.className = "sensor-camera-ptt-icon";
-        icon.setAttribute("aria-hidden", "true");
-        icon.textContent = "🎤";
-
-        const label = document.createElement("span");
-        label.className = "sensor-camera-ptt-label";
-        label.textContent = "Hold to speak";
-
-        btn.appendChild(icon);
-        btn.appendChild(label);
-
-        const hint = document.createElement("p");
-        hint.className = "sensor-camera-ptt-hint";
-        hint.textContent = "Release when you are done";
+        btn.appendChild(this._createPttMicIcon());
 
         const endHold = (ev) => {
             if (ev?.pointerId != null && btn.hasPointerCapture(ev.pointerId)) {
@@ -1002,20 +1021,20 @@ class AgentInterface {
             if (this._pttRecording) void this._onPttPointerUp({ type: "lostpointercapture" });
         });
 
-        overlay.appendChild(btn);
-        overlay.appendChild(hint);
+        stack.appendChild(label);
+        stack.appendChild(btn);
+        overlay.appendChild(stack);
         frameEl.appendChild(overlay);
 
         this._pttOverlayEl = overlay;
         this._pttBtnEl = btn;
         this._pttLabelEl = label;
-        this._pttHintEl = hint;
         return overlay;
     }
 
     /**
      * @param {"idle"|"listening"|"processing"|"thinking"|"talking"} state
-     * @param {{ hint?: string }} [options]
+     * @param {{ hint?: string, label?: string }} [options]
      */
     _setPttState(state, options = {}) {
         const phase = String(state || "idle").trim().toLowerCase();
@@ -1030,13 +1049,6 @@ class AgentInterface {
             thinking: "Thinking",
             talking: "Talking"
         };
-        const hints = {
-            idle: "Release when you are done",
-            listening: "Release to send",
-            processing: "Transcribing your words",
-            thinking: "Waiting for a reply",
-            talking: "Wait for your turn"
-        };
 
         overlay.classList.remove(
             "sensor-camera-ptt-overlay--idle",
@@ -1047,12 +1059,10 @@ class AgentInterface {
         );
         overlay.classList.add(`sensor-camera-ptt-overlay--${phase}`);
 
+        const labelText =
+            String(options.label || options.hint || "").trim() || labels[phase] || labels.idle;
         if (this._pttLabelEl) {
-            this._pttLabelEl.textContent = labels[phase] || labels.idle;
-        }
-        if (this._pttHintEl) {
-            const customHint = String(options.hint || "").trim();
-            this._pttHintEl.textContent = customHint || hints[phase] || hints.idle;
+            this._pttLabelEl.textContent = labelText;
         }
         if (this._pttBtnEl) {
             const disabled =
@@ -1061,6 +1071,7 @@ class AgentInterface {
                 phase === "talking" ||
                 (phase === "idle" && !this._pttCanInteract());
             this._pttBtnEl.disabled = disabled;
+            this._pttBtnEl.setAttribute("aria-label", labelText);
             this._pttBtnEl.setAttribute("aria-pressed", phase === "listening" ? "true" : "false");
         }
     }
