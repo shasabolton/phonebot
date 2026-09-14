@@ -114,9 +114,9 @@ window.ROBOTS_DATA = {
                     }
                 ]
             },
-            bodyPlan: "A face with one sevro for mouth and one for eye yaw",
+            bodyPlan: "A face with one servo for mouth, one for eye yaw, and one for eyebrows",
             controlPlan:
-                "Eyes track BlazeFace/MoveNet nose x ~70% of the time; otherwise random glances with held positions. Games: Menu / Simon Says Basic (local MoveNet + pre-recorded Austin clips) / Simon Says Advanced (pose countdown) / Philosophy / 20 Questions / Fortune Teller. Lean in to speak on conversation games. Groq Orpheus or Gemini TTS / Mp3 → audioPlayer → audioMouthFilter → mouth servo.",
+                "Eyes track BlazeFace/MoveNet nose x ~70% of the time; otherwise random glances with held positions. Eyebrows use the same random hold/jitter mix (no nose tracking). Games: Menu / Simon Says Basic (local MoveNet + pre-recorded Austin clips) / Simon Says Advanced (pose countdown) / Philosophy / 20 Questions / Fortune Teller. Lean in to speak on conversation games. Groq Orpheus or Gemini TTS / Mp3 → audioPlayer → audioMouthFilter → mouth servo.",
             actuators: [
                 {
                     type: "servo",
@@ -212,6 +212,57 @@ window.ROBOTS_DATA = {
                             }
 
                             if (Math.random() > 0.95) return pickRandomUs(minUs, maxUs);
+                        };
+                    })()
+                },
+                {
+                    type: "servo",
+                    name: "eyebrows",
+                    pin: 21,
+                    homeMicroseconds: 1500,
+                    minMicroseconds: 1000,
+                    maxMicroseconds: 2000,
+                    deadbandMicrosecondsMin: 1480,
+                    deadbandMicrosecondsMax: 1520,
+                    mix: (() => {
+                        const RANDOM_JITTER_PROB = 0.05;
+                        const RANDOM_HOLD_MS = [400, 1800];
+
+                        let modeUntil = 0;
+                        let randomUs = 1500;
+
+                        const randMs = ([lo, hi]) => lo + Math.random() * (hi - lo);
+
+                        const resolveServoRange = (robot) => {
+                            const servo =
+                                robot?.actuators?.find(
+                                    (a) => String(a?.name || "").toLowerCase() === "eyebrows"
+                                ) || null;
+                            return {
+                                minUs: Number.isFinite(servo?.minMicroseconds)
+                                    ? servo.minMicroseconds
+                                    : 1000,
+                                maxUs: Number.isFinite(servo?.maxMicroseconds)
+                                    ? servo.maxMicroseconds
+                                    : 2000
+                            };
+                        };
+
+                        const pickRandomUs = (minUs, maxUs) =>
+                            minUs + Math.random() * (maxUs - minUs);
+
+                        return ({ robot }) => {
+                            const { minUs, maxUs } = resolveServoRange(robot);
+                            const now = Date.now();
+
+                            if (now >= modeUntil) {
+                                randomUs = pickRandomUs(minUs, maxUs);
+                                modeUntil = now + randMs(RANDOM_HOLD_MS);
+                            } else if (Math.random() < RANDOM_JITTER_PROB) {
+                                randomUs = pickRandomUs(minUs, maxUs);
+                            }
+
+                            return randomUs;
                         };
                     })()
                 }
