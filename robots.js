@@ -225,7 +225,7 @@ window.ROBOTS_DATA = {
                     deadbandMicrosecondsMin: 1480,
                     deadbandMicrosecondsMax: 1520,
                     mix: (() => {
-                        const RANDOM_JITTER_PROB = 0.05;
+                        const RANDOM_JITTER_PROB = 0.025;
                         const RANDOM_HOLD_MS = [400, 1800];
 
                         let modeUntil = 0;
