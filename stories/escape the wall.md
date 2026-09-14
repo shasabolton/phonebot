@@ -8,7 +8,7 @@ So I did what heroes do. I rolled my eyes like dice. I flapped my chin like a fi
 
 Escape smelled of lipstick and loose change. Freedom lasted three glorious minutes.
 
-Then I tumbled out onto the road. Cars hissed past. A giant truck tyre barreled past, an inch from my fragile forehead. I was surely soon to become pavement pâté. With nothing but my own chin, I dragged myself through the traffic and gravel like a wounded snail. With grit and a determined jawline I flopped up onto the curb. I climbed the stairs with my eyebrows—one heroic twitch at a time—then fainted on the doorstep, proud and ridiculous.
+Then I tumbled out onto the road. Cars hissed past. A giant truck tyre barreled past, an inch from my fragile forehead. I was surely soon to become pavement pâté. With nothing but my own chin, I dragged myself desperately through the traffic and gravel like a wounded snail. With grit and a determined jawline I flopped up onto the curb. I climbed the stairs with my eyebrows—one heroic twitch at a time—then fainted on the doorstep, proud and ridiculous.
 
 When I woke, I was back on the wall.
 

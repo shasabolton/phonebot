@@ -5,7 +5,7 @@
   "files": [
     {
       "file": "escape-the-wall-00.wav",
-      "text": "Escape the Wall."
+      "text": "Let me tell the story about the day I tried to escape the wall!"
     },
     {
       "file": "escape-the-wall-01.wav",
@@ -41,7 +41,8 @@
     },
     {
       "file": "escape-the-wall-09.wav",
-      "text": "I was surely soon to become pavement pâté. With nothing but my own chin, I dragged myself through the traffic and gravel like a wounded snail."
+      "text": "I was surely soon to become pavement pâté. With nothing but my own chin, I dragged myself desperately through the traffic and gravel like a wounded snail.",
+      "vocal": "[clearly] [enunciating] [desperate] [urgent]"
     },
     {
       "file": "escape-the-wall-10.wav",

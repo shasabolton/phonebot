@@ -26,12 +26,16 @@ const MAX_CHARS = 200;
 
 /**
  * Narrative chunks for Austin — kept under Orpheus max length.
- * @type {{ file: string, text: string }[]}
+ * Optional `gainDb` boosts PCM after TTS. Optional `vocal` is Orpheus
+ * direction tags prepended for delivery only (not spoken / not in story copy).
+ * Optional `tts` is the full API input when tags need to sit mid-sentence.
+ * @type {{ file: string, text: string, vocal?: string, tts?: string, gainDb?: number }[]}
  */
 export const CLIPS = [
     {
         file: "escape-the-wall-00.wav",
-        text: "Escape the Wall."
+        text: "Let me tell the story about the day I tried to escape the wall!",
+        gainDb: 9
     },
     {
         file: "escape-the-wall-01.wav",
@@ -72,8 +76,11 @@ export const CLIPS = [
     },
     {
         file: "escape-the-wall-09.wav",
+        vocal: "[clearly] [enunciating] [desperate] [urgent]",
         text:
-            "I was surely soon to become pavement pâté. With nothing but my own chin, I dragged myself through the traffic and gravel like a wounded snail."
+            "I was surely soon to become pavement pâté. With nothing but my own chin, I dragged myself desperately through the traffic and gravel like a wounded snail.",
+        tts:
+            "[clearly] [enunciating] [desperate] [urgent] I was surely soon to become pavement pâté. With nothing but my own chin, I dragged myself desperately through the traffic and gravel like a wounded snail."
     },
     {
         file: "escape-the-wall-10.wav",
@@ -115,10 +122,60 @@ function sleep(ms) {
 
 function assertClipLengths() {
     for (const clip of CLIPS) {
-        if (clip.text.length > MAX_CHARS) {
-            throw new Error(`${clip.file} is ${clip.text.length} chars (max ${MAX_CHARS})`);
+        const input = clipTtsInput(clip);
+        if (input.length > MAX_CHARS) {
+            throw new Error(`${clip.file} TTS input is ${input.length} chars (max ${MAX_CHARS})`);
         }
     }
+}
+
+/** Spoken text plus optional Orpheus vocal-direction tags. */
+function clipTtsInput(clip) {
+    if (clip.tts) return String(clip.tts).trim();
+    const vocal = String(clip.vocal || "").trim();
+    const text = String(clip.text || "").trim();
+    return vocal ? `${vocal} ${text}` : text;
+}
+
+/** Amplify PCM16 LE WAV in place (simple gain; clips on overflow). */
+function applyWavGainDb(wavBuf, gainDb) {
+    const db = Number(gainDb);
+    if (!Number.isFinite(db) || db === 0) return wavBuf;
+    if (wavBuf.byteLength < 44) return wavBuf;
+    if (wavBuf.toString("ascii", 0, 4) !== "RIFF" || wavBuf.toString("ascii", 8, 12) !== "WAVE") {
+        return wavBuf;
+    }
+
+    let offset = 12;
+    let dataOffset = -1;
+    let dataSize = 0;
+    let audioFormat = 1;
+    let bitsPerSample = 16;
+    while (offset + 8 <= wavBuf.byteLength) {
+        const id = wavBuf.toString("ascii", offset, offset + 4);
+        const size = wavBuf.readUInt32LE(offset + 4);
+        const chunkStart = offset + 8;
+        if (id === "fmt " && size >= 16) {
+            audioFormat = wavBuf.readUInt16LE(chunkStart);
+            bitsPerSample = wavBuf.readUInt16LE(chunkStart + 14);
+        } else if (id === "data") {
+            dataOffset = chunkStart;
+            dataSize = size;
+            break;
+        }
+        offset = chunkStart + size + (size % 2);
+    }
+    if (dataOffset < 0 || audioFormat !== 1 || bitsPerSample !== 16) return wavBuf;
+
+    const out = Buffer.from(wavBuf);
+    const mult = Math.pow(10, db / 20);
+    const end = Math.min(dataOffset + dataSize, out.byteLength - (out.byteLength - dataOffset) % 2);
+    for (let i = dataOffset; i + 1 < end; i += 2) {
+        let sample = out.readInt16LE(i) * mult;
+        sample = Math.max(-32768, Math.min(32767, Math.round(sample)));
+        out.writeInt16LE(sample, i);
+    }
+    return out;
 }
 
 async function synthesize(apiKey, text, attempt = 1) {
@@ -183,7 +240,8 @@ function writeManifest() {
         source: path.relative(path.join(__dirname, ".."), STORY_PATH).replace(/\\/g, "/"),
         files: CLIPS.filter((c) => storyFiles.includes(c.file)).map((c) => ({
             file: c.file,
-            text: c.text
+            text: c.text,
+            ...(c.vocal ? { vocal: c.vocal } : {})
         }))
     };
     fs.writeFileSync(
@@ -232,8 +290,12 @@ async function main() {
             console.log(`[${i}] Skipping ${clip.file} (already exists)`);
             continue;
         }
-        process.stdout.write(`[${i}] Generating ${clip.file} (${clip.text.length} chars)… `);
-        const wav = await synthesize(apiKey, clip.text);
+        process.stdout.write(`[${i}] Generating ${clip.file} (${clipTtsInput(clip).length} chars)… `);
+        let wav = await synthesize(apiKey, clipTtsInput(clip));
+        if (Number.isFinite(clip.gainDb) && clip.gainDb !== 0) {
+            wav = applyWavGainDb(wav, clip.gainDb);
+            process.stdout.write(`+${clip.gainDb}dB `);
+        }
         fs.writeFileSync(outPath, wav);
         console.log(`${wav.byteLength} bytes`);
         if (i < clips.length - 1) await sleep(args.delayMs);
