@@ -79,7 +79,7 @@ class AgentInterface {
         this._countdownOverlayEl = null;
         this._countdownNumberEl = null;
         this._countdownLabelEl = null;
-        /** Hold-to-speak overlay on the camera frame (conversation + Parrot). */
+        /** Hold-to-talk overlay on the camera frame (conversation + Parrot). */
         this._pttOverlayEl = null;
         this._pttBtnEl = null;
         this._pttLabelEl = null;
@@ -92,6 +92,8 @@ class AgentInterface {
         this._pttMaxTimer = null;
         this._pttWaitResolve = null;
         this._pttWaitGeneration = 0;
+        /** Cancels in-flight mode auto-start when the mode changes again. */
+        this._modeStartGeneration = 0;
         this._loadSavedKeyPreference();
         this._voiceOn = this._resolveVoiceDefault(null);
     }
@@ -99,7 +101,7 @@ class AgentInterface {
   static PTT_MIN_HOLD_MS = 250;
     static PTT_MAX_RECORD_MS = 20000;
 
-    /** True when a hold-to-speak game is active (Philosophy, 20 Questions, Fortune Teller). */
+    /** True when a hold-to-talk game is active (Philosophy, 20 Questions, Fortune Teller). */
     _isConversationMode() {
         const mode = String(this.robot?.mode || "").trim().toLowerCase();
         return (
@@ -113,10 +115,12 @@ class AgentInterface {
         return String(this.robot?.mode || "").trim().toLowerCase() === "fortuneteller";
     }
 
-    /** True on player turns 8, 16, 24… before this utterance is stored. */
+    /** True on player turns 8, 16, 24… before this utterance is stored (ignores mode kickoff). */
     _isFortuneTellerFinaleDue() {
         if (!this._isFortuneTellerMode()) return false;
-        const userCount = (this.messageHistory || []).filter((m) => m && m.role === "user").length;
+        const userCount = (this.messageHistory || []).filter(
+            (m) => m && m.role === "user" && !m.isKickoff
+        ).length;
         return (userCount + 1) % AgentInterface.FORTUNE_TELLER_FINALE_EVERY === 0;
     }
 
@@ -157,12 +161,18 @@ class AgentInterface {
 
     /**
      * Called when the robot mode select changes (or after GUI build).
-     * Starts timed listen in conversation mode; cancels prior countdown/TTS.
+     * Prompt-template games auto-send so the robot talks first; Parrot only arms hold-to-talk.
      * @param {string} [_modeId]
      */
     onRobotModeChanged(_modeId) {
         this._stopSpeaking();
+        this._modeStartGeneration += 1;
+        const generation = this._modeStartGeneration;
         if (this._isSimonSaysPoseMatchMode()) return;
+        if (this._modeHasPromptTemplate()) {
+            void this._kickOffPromptTemplateGame({ generation, clearHistory: true });
+            return;
+        }
         if (this._agentEnabled && this._usesPttInput()) {
             this._armConversationPtt();
         } else {
@@ -170,9 +180,65 @@ class AgentInterface {
         }
     }
 
-    /** Conversation games and Parrot use the hold-to-speak button. */
+    /** Active mode declares an LLM start prompt (not Parrot / menu). */
+    _modeHasPromptTemplate() {
+        return !!String(this.robot?._getActiveModeConfig?.()?.promptTemplate || "").trim();
+    }
+
+    /** Conversation games and Parrot use the hold-to-talk button. */
     _usesPttInput() {
         return this._isConversationMode() || this._isParrotMode();
+    }
+
+    /**
+     * Load the mode prompt and send it so the robot opens the game.
+     * @param {{ generation?: number, clearHistory?: boolean }} [options]
+     */
+    async _kickOffPromptTemplateGame(options = {}) {
+        const generation =
+            Number.isFinite(options.generation) && options.generation > 0
+                ? options.generation
+                : ++this._modeStartGeneration;
+        if (!this._agentEnabled || !this._modeHasPromptTemplate()) {
+            if (this._usesPttInput() && this._agentEnabled) this._armConversationPtt();
+            else this._clearPttOverlay();
+            return;
+        }
+        if (options.clearHistory) {
+            this.messageHistory = [];
+            this._renderHistory();
+        }
+        const modeTpl = String(this.robot?._getActiveModeConfig?.()?.promptTemplate || "").trim();
+        if (modeTpl) {
+            await this.applyPromptTemplate(modeTpl);
+        }
+        if (generation !== this._modeStartGeneration || !this._agentEnabled) return;
+
+        // Let a previous mode's in-flight send finish (it discards itself via modeGeneration).
+        const waitStarted = Date.now();
+        while (this._sendInProgress && Date.now() - waitStarted < 60000) {
+            if (generation !== this._modeStartGeneration) return;
+            await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+        if (generation !== this._modeStartGeneration || !this._agentEnabled) return;
+
+        const text = String(this._promptInput?.value || "").trim();
+        if (!text) {
+            if (this._usesPttInput()) this._armConversationPtt();
+            else this._clearPttOverlay();
+            return;
+        }
+        if (this._isConversationMode()) {
+            this._ensurePttOverlay();
+            this._setPttState("thinking");
+        } else {
+            this._clearPttOverlay();
+        }
+        await this._onSend({ isKickoff: true, modeGeneration: generation });
+        if (generation !== this._modeStartGeneration) return;
+        if (this._isConversationMode() && this._agentEnabled && !this._hasConversationHistory()) {
+            this._armConversationPtt();
+        }
     }
 
     /** Local MoveNet + agent-TTS Simon Says (no chat LLM). */
@@ -180,13 +246,13 @@ class AgentInterface {
         return String(this.robot?.mode || "").trim().toLowerCase() === "simonsaysposematch";
     }
 
-    /** Local hold-to-speak echo (no LLM / TTS). */
+    /** Local hold-to-talk echo (no LLM / TTS). */
     _isParrotMode() {
         return String(this.robot?.mode || "").trim().toLowerCase() === "parrot";
     }
 
     /**
-     * Hold-to-speak mic capture for local games (e.g. Parrot).
+     * Hold-to-talk mic capture for local games (e.g. Parrot).
      * Cancels when `isActive()` is false or speaking is stopped.
      * @param {{ isActive?: () => boolean }} [options]
      * @returns {Promise<Blob|null>}
@@ -316,6 +382,10 @@ class AgentInterface {
         }
         if (!this._agentEnabled) {
             this._stopSpeaking();
+            this._modeStartGeneration += 1;
+            this._clearPttOverlay();
+        } else if (this._modeHasPromptTemplate() && !this._hasConversationHistory()) {
+            void this._kickOffPromptTemplateGame({ clearHistory: false });
         } else if (this._usesPttInput()) {
             this._armConversationPtt();
         } else {
@@ -972,7 +1042,7 @@ class AgentInterface {
     }
 
     /**
-     * Build (or reuse) the hold-to-speak button on the camera frame.
+     * Build (or reuse) the hold-to-talk button on the camera frame.
      * @returns {HTMLElement|null}
      */
     _ensurePttOverlay() {
@@ -991,12 +1061,12 @@ class AgentInterface {
 
         const label = document.createElement("p");
         label.className = "sensor-camera-ptt-label";
-        label.textContent = "Hold to speak";
+        label.textContent = "Hold button while you talk";
 
         const btn = document.createElement("button");
         btn.type = "button";
         btn.className = "sensor-camera-ptt-btn";
-        btn.setAttribute("aria-label", "Hold to speak");
+        btn.setAttribute("aria-label", "Hold button while you talk");
         btn.appendChild(this._createPttMicIcon());
 
         const endHold = (ev) => {
@@ -1043,7 +1113,7 @@ class AgentInterface {
         if (!overlay) return;
 
         const labels = {
-            idle: "Hold to speak",
+            idle: "Hold button while you talk",
             listening: "Listening",
             processing: "Processing…",
             thinking: "Thinking",
@@ -1248,7 +1318,7 @@ class AgentInterface {
     }
 
     /**
-     * Parrot mode: wait for hold-to-speak, return clip on release.
+     * Parrot mode: wait for hold-to-talk, return clip on release.
      * @param {number} generation
      * @param {{ isActive?: () => boolean }} [options]
      * @returns {Promise<Blob|null>}
@@ -1277,7 +1347,7 @@ class AgentInterface {
     }
 
     /**
-     * Process a hold-to-speak clip in conversation mode.
+     * Process a hold-to-talk clip in conversation mode.
      * @param {Blob|null} blob
      */
     async _handleConversationPttBlob(blob) {
@@ -1465,7 +1535,7 @@ class AgentInterface {
     }
 
     /**
-     * After TTS finishes: conversation mode shows hold-to-speak; Simon Says queues pose capture.
+     * After TTS finishes: conversation mode shows hold-to-talk; Simon Says queues pose capture.
      * @param {string} spoken
      */
     async _afterAgentSpoke(spoken) {
@@ -1481,7 +1551,7 @@ class AgentInterface {
         this._queueSimonSaysPoseCapture(this._speakGeneration);
     }
 
-    /** Show hold-to-speak when a conversation turn completes without TTS. */
+    /** Show hold-to-talk when a conversation turn completes without TTS. */
     _maybeQueueConversationListenAfterTurn() {
         if (!this._agentEnabled || !this._isConversationMode()) return;
         this._armConversationPtt();
@@ -1799,7 +1869,7 @@ class AgentInterface {
         );
     }
 
-    /** Loads the introduction template for the first voice turn (no startup send). */
+    /** Loads the mode / introduction template used for the opening kickoff send. */
     async _fetchIntroductionPromptContent() {
         const spec = this._getIntroductionTemplateSpec();
         const path = spec && String(spec.path || "").trim();
@@ -1936,37 +2006,11 @@ class AgentInterface {
         return `${head}\n\n${body}`;
     }
 
-    /** True once any user/assistant turn is in history (first hold-to-speak send completed). */
+    /** True once any user/assistant turn is in history (kickoff or player turn completed). */
     _hasConversationHistory() {
         return (this.messageHistory || []).some(
             (m) => m && (m.role === "user" || m.role === "assistant")
         );
-    }
-
-    /**
-     * Hold-to-speak modes must not call the LLM until the person records and sends speech.
-     * Blocks Send / robot notices that would otherwise fire the start prompt alone.
-     * @param {string} userText
-     * @param {{ fromSpeech?: boolean }} [options]
-     * @returns {Promise<boolean>} true if the send may proceed
-     */
-    async _allowConversationOutbound(userText, options = {}) {
-        if (!this._isConversationMode()) return true;
-        if (this._hasConversationHistory()) return true;
-        if (options.fromSpeech) return true;
-
-        const textNorm = this._normalizePromptText(userText);
-        const introNorm = this._normalizePromptText(await this._fetchIntroductionPromptContent());
-        const isIntroOnly = !textNorm || (!!introNorm && textNorm === introNorm);
-        if (isIntroOnly) {
-            if (this._statusEl) {
-                this._statusEl.textContent =
-                    "Hold the button and speak first — your words are sent with the start prompt.";
-                this._statusEl.className = "warn";
-            }
-            return false;
-        }
-        return true;
     }
 
     /**
@@ -2440,10 +2484,7 @@ class AgentInterface {
             }
             return false;
         }
-        // Gemini audio turn is driven by a hold-to-speak mic clip.
-        if (!(await this._allowConversationOutbound("(speech)", { fromSpeech: true }))) {
-            return false;
-        }
+        // Gemini audio turn is driven by a hold-to-talk mic clip.
         if (this._sendInProgress) {
             if (this._statusEl) {
                 this._statusEl.textContent = "Already sending — wait for the current request to finish.";
@@ -2572,9 +2613,6 @@ class AgentInterface {
                 this._statusEl.textContent = "Agent is off. Turn the agent on to send voice prompts.";
                 this._statusEl.className = "warn";
             }
-            return false;
-        }
-        if (!(await this._allowConversationOutbound(text, { fromSpeech: true }))) {
             return false;
         }
         if (this._sendInProgress) {
@@ -2847,7 +2885,7 @@ class AgentInterface {
         return true;
     }
 
-    async _onSend() {
+    async _onSend(options = {}) {
         if (!this._sendBtn || !this._promptInput) return;
         if (!this._agentEnabled) {
             if (this._statusEl) {
@@ -2868,13 +2906,10 @@ class AgentInterface {
             this._stopSpeaking();
         }
         const text = String(this._promptInput.value || "").trim();
-        if (!(await this._allowConversationOutbound(text, { fromSpeech: false }))) {
-            // _stopSpeaking may have cancelled an in-progress recording — show hold-to-speak again.
-            if (this._agentEnabled && this._isConversationMode()) {
-                this._armConversationPtt();
-            }
-            return;
-        }
+        const isKickoff = !!options.isKickoff;
+        const modeGeneration = options.modeGeneration;
+        const modeStillCurrent = () =>
+            modeGeneration == null || modeGeneration === this._modeStartGeneration;
         this._apiKey = this._keyInput?.value?.trim() || "";
         const agent = this.getSelectedAgent();
         if (this._rememberInput) this._rememberKey = !!this._rememberInput.checked;
@@ -2882,8 +2917,9 @@ class AgentInterface {
 
         this._sendInProgress = true;
         this._syncSendButtonState();
+        if (this._isConversationMode()) this._setPttState("thinking");
         if (this._statusEl) {
-            this._statusEl.textContent = "Sending…";
+            this._statusEl.textContent = isKickoff ? "Starting…" : "Sending…";
             this._statusEl.className = "muted";
         }
         let spokenForFollowUp = "";
@@ -2896,20 +2932,30 @@ class AgentInterface {
                 }
                 return;
             }
+            if (!modeStillCurrent()) return;
             const stateBlock = this._buildCurrentStateForIntroductionPrompt();
             const userText = this._withFortuneTellerFinaleIfDue(text);
             const fullUserContent = `Current state (json):\n${stateBlock || "[]"}\n\nUser:\n${userText}`;
             const prior = this._buildPriorConversationMessages();
             const outboundUser = await this._mergeIntroductionIntoFirstUserMessage(fullUserContent, prior.length);
+            if (!modeStillCurrent()) return;
             this.messageHistory.push({
                 role: "user",
                 text: prior.length ? userText : outboundUser,
                 fullPrompt: outboundUser,
+                isKickoff: isKickoff || undefined,
                 at: new Date().toISOString()
             });
             this._renderHistory();
             const conversationMessages = [...prior, { role: "user", content: outboundUser }];
             const reply = await this.sendPrompt("", { messages: conversationMessages });
+            if (!modeStillCurrent()) {
+                if (this.messageHistory.length && this.messageHistory[this.messageHistory.length - 1]?.role === "user") {
+                    this.messageHistory.pop();
+                    this._renderHistory();
+                }
+                return;
+            }
             this.messageHistory.push({
                 role: "assistant",
                 text: reply.contentText || "",
@@ -2938,6 +2984,7 @@ class AgentInterface {
             this._sendInProgress = false;
             this._syncSendButtonState();
         }
+        if (!modeStillCurrent()) return;
         if (ok && spokenForFollowUp) {
             await this._afterAgentSpoke(spokenForFollowUp);
             if (this._statusEl && this._agentEnabled) {
@@ -2946,6 +2993,8 @@ class AgentInterface {
             }
         } else if (ok) {
             this._maybeQueueConversationListenAfterTurn();
+        } else if (this._agentEnabled && this._isConversationMode()) {
+            this._armConversationPtt();
         }
     }
 
@@ -2981,9 +3030,6 @@ class AgentInterface {
         const transcript = String(text || "").trim();
         if (!transcript) return false;
         if (!this._agentEnabled) return false;
-        if (!(await this._allowConversationOutbound(transcript, { fromSpeech: false }))) {
-            return false;
-        }
         if (this._sendInProgress) {
             console.warn("AgentInterface: send already in progress; skipped submitPromptWithRobotState.");
             if (this._statusEl) {

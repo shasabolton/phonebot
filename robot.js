@@ -686,6 +686,16 @@ class Robot {
             }
             this._localGame = new GameClass(this);
             this._localGame.start();
+            return;
+        }
+        if (gameId === "escapeTheWall") {
+            const GameClass = window.EscapeTheWallStory;
+            if (typeof GameClass !== "function") {
+                console.error("EscapeTheWallStory is unavailable. Check games/escapeTheWall/escapeTheWall.js loading.");
+                return;
+            }
+            this._localGame = new GameClass(this);
+            this._localGame.start();
         }
     }
 

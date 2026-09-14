@@ -100,23 +100,18 @@ window.ROBOTS_DATA = {
                         skipWhen: "radioReady"
                     },
                     {
-                        text: "Set your phone to max brightness",
-                        button: "Done",
-                        skipWhen: "radioReady"
-                    },
-                    {
-                        text: "Turn up the volume",
+                        text: "Turn up your phone volume",
                         button: "Done"
                     },
                     {
-                        text: "Put your phone behind the robot's forehead",
+                        text: "Put your phone behind the robots forehead if possible",
                         button: "Done"
                     }
                 ]
             },
             bodyPlan: "A face with one servo for mouth, one for eye yaw, and one for eyebrows",
             controlPlan:
-                "Eyes track BlazeFace/MoveNet nose x ~70% of the time; otherwise random glances with held positions. Eyebrows use the same random hold/jitter mix (no nose tracking). Games: Menu / Simon Says Basic (local MoveNet + pre-recorded Austin clips) / Simon Says Advanced (pose countdown) / Philosophy / 20 Questions / Fortune Teller. Lean in to speak on conversation games. Groq Orpheus or Gemini TTS / Mp3 → audioPlayer → audioMouthFilter → mouth servo.",
+                "Eyes track BlazeFace/MoveNet nose x ~70% of the time; otherwise random glances with held positions. Eyebrows use the same random hold/jitter mix (no nose tracking). Games: Menu / Fortune Teller / 20 Questions / Philosophy / Simon Says (Camera) / Parrot / Story: Escape the Wall. Lean in to speak on conversation games. Groq Orpheus or Gemini TTS / Mp3 → audioPlayer → audioMouthFilter → mouth servo.",
             actuators: [
                 {
                     type: "servo",
@@ -292,25 +287,9 @@ window.ROBOTS_DATA = {
                     free: true,
                     computervisionModel: "blazeface"
                 },
-                simonSaysPoseMatch: {
-                    label: "Simon Says Basic",
-                    game: "simonSaysPoseMatch",
-                    endCondition: "gameFinished",
-                    computervisionModel: "movenet"
-                },
-                simonSaysAi: {
-                    label: "Simon Says Advanced",
-                    promptTemplate: "promptTemplates/simonSaysPrompt.txt",
-                    priceCents: 200,
-                    currency: "aud",
-                    endCondition: "gameFinished",
-                    aiBudgetCents: 50,
-                    continuePriceCents: 200,
-                    computervisionModel: "blazeface"
-                },
-                philosophy: {
-                    label: "Philosophy",
-                    promptTemplate: "promptTemplates/philosophyPrompt.txt",
+                fortuneTeller: {
+                    label: "Fortune Teller",
+                    promptTemplate: "promptTemplates/fortuneTellerPrompt.txt",
                     priceCents: 200,
                     currency: "aud",
                     endCondition: "manualOrTimeout",
@@ -328,9 +307,9 @@ window.ROBOTS_DATA = {
                     continuePriceCents: 200,
                     computervisionModel: "blazeface"
                 },
-                fortuneTeller: {
-                    label: "Fortune Teller",
-                    promptTemplate: "promptTemplates/fortuneTellerPrompt.txt",
+                philosophy: {
+                    label: "Philosophy",
+                    promptTemplate: "promptTemplates/philosophyPrompt.txt",
                     priceCents: 200,
                     currency: "aud",
                     endCondition: "manualOrTimeout",
@@ -338,9 +317,27 @@ window.ROBOTS_DATA = {
                     continuePriceCents: 200,
                     computervisionModel: "blazeface"
                 },
+                simonSaysAi: {
+                    label: "Simon Says (Camera)",
+                    promptTemplate: "promptTemplates/simonSaysPrompt.txt",
+                    priceCents: 200,
+                    currency: "aud",
+                    endCondition: "gameFinished",
+                    aiBudgetCents: 50,
+                    continuePriceCents: 200,
+                    computervisionModel: "blazeface"
+                },
                 parrot: {
                     label: "Parrot",
                     game: "parrot",
+                    priceCents: 0,
+                    currency: "aud",
+                    free: true,
+                    computervisionModel: "blazeface"
+                },
+                escapeTheWall: {
+                    label: "Story: Escape the Wall",
+                    game: "escapeTheWall",
                     priceCents: 0,
                     currency: "aud",
                     free: true,
@@ -357,10 +354,10 @@ window.ROBOTS_DATA = {
                 cameraCaptureMaxEdge: 960,
                 cameraCaptureJpegQuality: 0.85,
                 promptTemplates: [
-                    { name: "Simon Says Advanced", path: "promptTemplates/simonSaysPrompt.txt" },
-                    { name: "Philosophy", path: "promptTemplates/philosophyPrompt.txt" },
+                    { name: "Fortune Teller", path: "promptTemplates/fortuneTellerPrompt.txt" },
                     { name: "20 Questions", path: "promptTemplates/20QuestionsPrompt.txt" },
-                    { name: "Fortune Teller", path: "promptTemplates/fortuneTellerPrompt.txt" }
+                    { name: "Philosophy", path: "promptTemplates/philosophyPrompt.txt" },
+                    { name: "Simon Says (Camera)", path: "promptTemplates/simonSaysPrompt.txt" }
                 ],
                 agents: [
                     {

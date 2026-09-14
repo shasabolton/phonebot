@@ -2,6 +2,7 @@
 .env
 .env.*
 !.env.example
+scripts/.local_groq_key
 .dev.vars
 **/.dev.vars
 
