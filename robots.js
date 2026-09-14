@@ -287,6 +287,14 @@ window.ROBOTS_DATA = {
                     free: true,
                     computervisionModel: "blazeface"
                 },
+                escapeTheWall: {
+                    label: "Story: Escape the Wall",
+                    game: "escapeTheWall",
+                    priceCents: 0,
+                    currency: "aud",
+                    free: true,
+                    computervisionModel: "blazeface"
+                },
                 fortuneTeller: {
                     label: "Fortune Teller",
                     promptTemplate: "promptTemplates/fortuneTellerPrompt.txt",
@@ -330,14 +338,6 @@ window.ROBOTS_DATA = {
                 parrot: {
                     label: "Parrot",
                     game: "parrot",
-                    priceCents: 0,
-                    currency: "aud",
-                    free: true,
-                    computervisionModel: "blazeface"
-                },
-                escapeTheWall: {
-                    label: "Story: Escape the Wall",
-                    game: "escapeTheWall",
                     priceCents: 0,
                     currency: "aud",
                     free: true,
