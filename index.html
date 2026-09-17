@@ -1003,7 +1003,6 @@
     "audioPlayer.js",
     "audioMouthFilter.js",
     "groqTts.js",
-    "geminiAudioTurn.js",
     "stateMachine.js",
     "strategies.js",
     "objectFilter.js",
@@ -1013,6 +1012,7 @@
     "games/parrot/parrot.js",
     "games/escapeTheWall/escapeTheWall.js",
     "playBilling.js",
+    "groqModelSelect.js",
     "agentInterface.js",
     "robots.js",
     "robot.js",
@@ -1022,6 +1022,10 @@
   function loadScript(src) {
     return new Promise(function (resolve, reject) {
       var s = document.createElement("script");
+      // ESM exports + window.GroqModelSelect assignment
+      if (src === "groqModelSelect.js") {
+        s.type = "module";
+      }
       s.src = src;
       s.onload = function () {
         resolve();

@@ -586,6 +586,10 @@ class Robot {
         this._modeReady = false;
         const allowed = await this._ensureCurrentModeSession();
         if (!allowed || generation !== this._modeActivationGeneration) return false;
+        if (this.agentInterface && typeof this.agentInterface.ensureSessionGroqModels === "function") {
+            await this.agentInterface.ensureSessionGroqModels();
+        }
+        if (generation !== this._modeActivationGeneration) return false;
         this._modeReady = true;
         this._applyModeBehavior();
         return true;

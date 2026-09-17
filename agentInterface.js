@@ -1,7 +1,7 @@
 /**
- * Manages LLM chat agents (configurable base URL, path, model, API key).
- * Independent from Groq vision model. Groq/OpenAI-compatible chat stays on
- * /chat/completions; Gemini agents use native generativelanguage REST.
+ * Manages Groq LLM chat agents (base URL, path, model, API key).
+ * Models for chat / vision / STT / TTS are selected once per mode session
+ * via groqModelSelect.js (BYOK list or hosted Worker session).
  */
 class AgentInterface {
     static STORAGE_KEY_PREFIX = "phonebot.agent.";
@@ -69,6 +69,9 @@ class AgentInterface {
         this._conversationListenRunning = false;
         this._billingPaused = false;
         this._aiBudgetEl = null;
+        /** Resolved once per mode/session: { chat, vision, stt, tts }. */
+        this._sessionModels = null;
+        this._sessionModelsPromise = null;
         this._aiBudgetListener = () => this._syncAiBudgetUi();
         window.addEventListener("phonebot:ai-budget", this._aiBudgetListener);
         this._agentPowerBtn = null;
@@ -167,6 +170,8 @@ class AgentInterface {
     onRobotModeChanged(_modeId) {
         this._stopSpeaking();
         this._modeStartGeneration += 1;
+        this._sessionModels = null;
+        this._sessionModelsPromise = null;
         const generation = this._modeStartGeneration;
         if (this._isSimonSaysPoseMatchMode()) return;
         if (this._modeHasPromptTemplate()) {
@@ -178,6 +183,97 @@ class AgentInterface {
         } else {
             this._clearPttOverlay();
         }
+    }
+
+    /**
+     * Resolve Groq chat/vision/STT/TTS once for this mode session (hosted or BYOK).
+     * @returns {Promise<{ chat: string|null, vision: string|null, stt: string|null, tts: string|null }|null>}
+     */
+    async ensureSessionGroqModels() {
+        if (this._sessionModels) return this._sessionModels;
+        if (this._sessionModelsPromise) return this._sessionModelsPromise;
+
+        this._sessionModelsPromise = (async () => {
+            const hosted = window.playBilling?.getActiveSession?.()?.groqModels;
+            if (hosted?.chat || hosted?.stt || hosted?.tts) {
+                this._sessionModels = {
+                    chat: hosted.chat || null,
+                    vision: hosted.vision || hosted.chat || null,
+                    stt: hosted.stt || null,
+                    tts: hosted.tts || null
+                };
+                this._applySessionModelsToRuntime(this._sessionModels);
+                return this._sessionModels;
+            }
+
+            const apiKey = this._clientApiKey();
+            if (!apiKey || typeof window.GroqModelSelect?.fetchAndSelectGroqModels !== "function") {
+                return null;
+            }
+            try {
+                const selected = await window.GroqModelSelect.fetchAndSelectGroqModels(apiKey);
+                this._sessionModels = {
+                    chat: selected.chat || null,
+                    vision: selected.vision || null,
+                    stt: selected.stt || null,
+                    tts: selected.tts || null
+                };
+                this._applySessionModelsToRuntime(this._sessionModels);
+                if (this._statusEl && this._sessionModels.chat) {
+                    const bits = [
+                        this._sessionModels.chat && `chat ${this._sessionModels.chat}`,
+                        this._sessionModels.vision && `vision ${this._sessionModels.vision}`,
+                        this._sessionModels.stt && `stt ${this._sessionModels.stt}`,
+                        this._sessionModels.tts && `tts ${this._sessionModels.tts}`
+                    ].filter(Boolean);
+                    this._statusEl.textContent = `Groq models: ${bits.join(" · ")}`;
+                }
+                return this._sessionModels;
+            } catch (err) {
+                if (this._statusEl) {
+                    this._statusEl.textContent = `Groq model select failed: ${err?.message || err}`;
+                }
+                return null;
+            }
+        })();
+
+        try {
+            return await this._sessionModelsPromise;
+        } finally {
+            this._sessionModelsPromise = null;
+        }
+    }
+
+    _applySessionModelsToRuntime(models) {
+        if (!models) return;
+        for (const agent of this.agents) {
+            if (!agent || typeof agent !== "object") continue;
+            if (String(agent.provider || "").trim().toLowerCase() === "gemini") continue;
+            if (models.chat) agent.model = models.chat;
+            if (models.stt) agent.transcriptionModel = models.stt;
+            if (models.tts) agent.speechModel = models.tts;
+        }
+        if (models.stt) this.config.transcriptionModel = models.stt;
+        if (models.tts) this.config.speechModel = models.tts;
+
+        const vision =
+            typeof this.robot?.getProcessingByType === "function"
+                ? this.robot.getProcessingByType("groqvision")
+                : null;
+        if (vision && models.vision) {
+            vision.model = models.vision;
+            if (vision._modelInput) vision._modelInput.value = models.vision;
+            try {
+                localStorage.setItem("phonebot.groq.model", models.vision);
+            } catch (_) {}
+        }
+    }
+
+    _sessionChatModel(wantVision) {
+        const m = this._sessionModels;
+        if (!m) return null;
+        if (wantVision && m.vision) return m.vision;
+        return m.chat || null;
     }
 
     /** Active mode declares an LLM start prompt (not Parrot / menu). */
@@ -208,6 +304,8 @@ class AgentInterface {
             this.messageHistory = [];
             this._renderHistory();
         }
+        await this.ensureSessionGroqModels();
+        if (generation !== this._modeStartGeneration || !this._agentEnabled) return;
         const modeTpl = String(this.robot?._getActiveModeConfig?.()?.promptTemplate || "").trim();
         if (modeTpl) {
             await this.applyPromptTemplate(modeTpl);
@@ -485,6 +583,7 @@ class AgentInterface {
     }
 
     _resolveTranscriptionModel(agent) {
+        if (this._sessionModels?.stt) return this._sessionModels.stt;
         const fromAgent = agent && String(agent.transcriptionModel || "").trim();
         if (fromAgent) return fromAgent;
         const fromCfg = String(this.config.transcriptionModel || "").trim();
@@ -508,6 +607,7 @@ class AgentInterface {
      */
     async transcribeSpeechBlob(blob, options = {}) {
         await this._ensureArcadeAiBudget();
+        await this.ensureSessionGroqModels();
         if (!blob || blob.size < 32) {
             throw new Error("No audio captured for transcription.");
         }
@@ -588,6 +688,11 @@ class AgentInterface {
     _resolveModel(agent) {
         const override = this._modelOverrideInput?.value?.trim();
         if (override) return override;
+        const wantVision = !!(
+            this._sendCameraImageInput?.checked ?? this._sendCameraImage
+        );
+        const fromSession = this._sessionChatModel(wantVision);
+        if (fromSession) return fromSession;
         return String(agent?.model || "").trim();
     }
 
@@ -612,6 +717,7 @@ class AgentInterface {
     }
 
     _resolveSpeechModel(agent) {
+        if (this._sessionModels?.tts) return this._sessionModels.tts;
         const fromAgent = agent && String(agent.speechModel || "").trim();
         if (fromAgent) return fromAgent;
         const fromCfg = String(this.config.speechModel || "").trim();
@@ -630,6 +736,7 @@ class AgentInterface {
      */
     async synthesizeSpeechBlob(text, options = {}) {
         await this._ensureArcadeAiBudget();
+        await this.ensureSessionGroqModels();
         const agent = this.getSelectedAgent();
         if (!agent) throw new Error("No agent selected.");
         if (this._isGeminiProvider(agent)) {
@@ -2021,6 +2128,7 @@ class AgentInterface {
      */
     async sendPrompt(userText, options = {}) {
         await this._ensureArcadeAiBudget();
+        await this.ensureSessionGroqModels();
         const agent = this.getSelectedAgent();
         const prompt = String(userText || "").trim();
         if (!agent) {
@@ -2030,10 +2138,6 @@ class AgentInterface {
         const url = gemini ? "" : this._resolveChatUrl(agent);
         if (!gemini && !url) {
             throw new Error("Agent has no chatUrl and no baseUrl+chatPath.");
-        }
-        const model = this._resolveModel(agent);
-        if (!model) {
-            throw new Error("Set a model on the agent or use the model override field.");
         }
         const hostedArcadeChat =
             !gemini &&
@@ -2091,6 +2195,11 @@ class AgentInterface {
         }
         if (sendCameraImage) {
             this._attachCurrentCameraToLastUserMessage(conversationMessages);
+        }
+
+        const model = this._resolveModel(agent);
+        if (!model) {
+            throw new Error("Set a model on the agent or use the model override field.");
         }
 
         if (gemini) {
@@ -2705,10 +2814,9 @@ class AgentInterface {
         if (!this._agentEnabled || !this._useHostedAi()) return false;
         if (this._sendInProgress) return false;
 
+        await this.ensureSessionGroqModels();
         const agent = this.getSelectedAgent();
         if (!agent || this._isGeminiProvider(agent)) return false;
-        const model = this._resolveModel(agent);
-        if (!model) throw new Error("Set a model on the agent or use the model override field.");
 
         this._sendInProgress = true;
         this._syncSendButtonState();
@@ -2738,6 +2846,9 @@ class AgentInterface {
             if (this._sendCameraImage) {
                 this._attachCurrentCameraToLastUserMessage(conversationMessages);
             }
+
+            const model = this._resolveModel(agent);
+            if (!model) throw new Error("Set a model on the agent or use the model override field.");
 
             const temperature = Number.isFinite(agent.temperature)
                 ? agent.temperature
@@ -3216,7 +3327,7 @@ class AgentInterface {
         keyLabel.textContent = "API key (this provider)";
         const keyInput = document.createElement("input");
         keyInput.type = "password";
-        keyInput.placeholder = "sk-… / gsk_… / AIza… (blank = hosted arcade key)";
+        keyInput.placeholder = "gsk_… (blank = hosted arcade key)";
         // Password managers ignore autocomplete="off"; "new-password" stops them refilling a cleared key.
         keyInput.autocomplete = "new-password";
         keyInput.name = `phonebot-agent-key-${Math.random().toString(36).slice(2)}`;
@@ -3224,7 +3335,11 @@ class AgentInterface {
             this._apiKey = String(keyInput.value || "").trim();
             const agent = this.getSelectedAgent();
             if (agent) this._persistKeyForAgent(agent.name, this._apiKey);
+            // Re-resolve when switching BYOK key ↔ hosted for this mode session.
+            this._sessionModels = null;
+            this._sessionModelsPromise = null;
             this._syncAiBudgetUi();
+            if (this._apiKey) void this.ensureSessionGroqModels();
         });
 
         const clearKeyBtn = document.createElement("button");
@@ -3236,8 +3351,11 @@ class AgentInterface {
             this._apiKey = "";
             const agent = this.getSelectedAgent();
             if (agent) this._persistKeyForAgent(agent.name, "");
+            this._sessionModels = null;
+            this._sessionModelsPromise = null;
             this._syncVoiceUiForSelectedAgent();
             this._syncAiBudgetUi();
+            void this.ensureSessionGroqModels();
             if (this._statusEl) {
                 this._statusEl.className = "muted";
                 this._statusEl.textContent = "API key cleared.";

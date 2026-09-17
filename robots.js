@@ -351,6 +351,7 @@ window.ROBOTS_DATA = {
                 shortTermMemory: "",
                 defaultBaseUrl: "https://api.groq.com/openai/v1",
                 transcriptionModel: "whisper-large-v3",
+                speechModel: "canopylabs/orpheus-v1-english",
                 cameraCaptureMaxEdge: 960,
                 cameraCaptureJpegQuality: 0.85,
                 promptTemplates: [
@@ -361,32 +362,15 @@ window.ROBOTS_DATA = {
                 ],
                 agents: [
                     {
-                        name: "Groq — Qwen 3.6 27B",
+                        name: "Groq",
                         baseUrl: "https://api.groq.com/openai/v1",
                         chatPath: "/chat/completions",
-                        model: "qwen/qwen3.6-27b",
+                        model: "openai/gpt-oss-20b",
                         transcriptionModel: "whisper-large-v3",
+                        speechModel: "canopylabs/orpheus-v1-english",
                         temperature: 0.3,
                         maxTokens: 96,
                         reasoningEffort: "none"
-                    },
-                    {
-                        name: "Gemini — audio turn (AI Studio)",
-                        provider: "gemini",
-                        voiceMode: "geminiAudioTurn",
-                        baseUrl: "https://generativelanguage.googleapis.com/v1beta",
-                        model: "gemini-3.6-flash",
-                        speechModel: "gemini-3.1-flash-tts-preview",
-                        temperature: 0.3,
-                        maxTokens: 256
-                    },
-                    {
-                        name: "OpenAI-compatible (example)",
-                        baseUrl: "https://api.openai.com/v1",
-                        chatPath: "/chat/completions",
-                        model: "gpt-4o-mini",
-                        transcriptionModel: "whisper-1",
-                        temperature: 0.7
                     }
                 ]
             }
@@ -440,7 +424,7 @@ window.ROBOTS_DATA = {
             ],
             sensors: ["camera", "microphone", "gyro"],
             processing: [
-                { type: "groqvision", frequencyHz: 0.2, model: "qwen/qwen3.6-27b" },
+                { type: "groqvision", frequencyHz: 0.2, model: "qwen/qwen3.8-27b" },
                 {
                     type: "computervision",
                     on: true,
@@ -558,6 +542,7 @@ window.ROBOTS_DATA = {
                 shortTermMemory: "",
                 defaultBaseUrl: "https://api.groq.com/openai/v1",
                 transcriptionModel: "whisper-large-v3",
+                speechModel: "canopylabs/orpheus-v1-english",
                 cameraCaptureMaxEdge: 960,
                 cameraCaptureJpegQuality: 0.85,
                 promptTemplates: [
@@ -565,34 +550,16 @@ window.ROBOTS_DATA = {
                 ],
                 agents: [
                     {
-                        name: "Groq — Qwen 3.6 27B",
+                        name: "Groq",
                         baseUrl: "https://api.groq.com/openai/v1",
                         chatPath: "/chat/completions",
-                        model: "qwen/qwen3.6-27b",
+                        model: "openai/gpt-oss-20b",
                         transcriptionModel: "whisper-large-v3",
+                        speechModel: "canopylabs/orpheus-v1-english",
                         temperature: 0.2,
                         maxTokens: 768,
                         reasoningEffort: "none",
                         responseFormat: { type: "json_object" }
-                    },
-                    {
-                        name: "Gemini — audio turn (AI Studio)",
-                        provider: "gemini",
-                        voiceMode: "geminiAudioTurn",
-                        baseUrl: "https://generativelanguage.googleapis.com/v1beta",
-                        model: "gemini-3.6-flash",
-                        speechModel: "gemini-3.1-flash-tts-preview",
-                        temperature: 0.2,
-                        maxTokens: 768,
-                        responseFormat: { type: "json_object" }
-                    },
-                    {
-                        name: "OpenAI-compatible (example)",
-                        baseUrl: "https://api.openai.com/v1",
-                        chatPath: "/chat/completions",
-                        model: "gpt-4o-mini",
-                        transcriptionModel: "whisper-1",
-                        temperature: 0.7
                     }
                 ]
             },

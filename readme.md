@@ -200,9 +200,9 @@ million tokens, for example:
 
 ```json
 {
-  "qwen/qwen3.6-27b": {
-    "inputCentsPerMillion": 0,
-    "outputCentsPerMillion": 0
+  "openai/gpt-oss-20b": {
+    "inputCentsPerMillion": 11.25,
+    "outputCentsPerMillion": 45
   }
 }
 ```

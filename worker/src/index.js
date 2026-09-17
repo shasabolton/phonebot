@@ -1,3 +1,5 @@
+import { fetchAndSelectGroqModels } from "../../groqModelSelect.js";
+
 const MODE_CATALOG = Object.freeze({
     simonSaysPoseMatch: {
         label: "Simon Says Basic",
@@ -252,16 +254,103 @@ async function getSession(env, id) {
 async function startSession(env, id) {
     await expireSessionIfNeeded(env, id);
     const now = Date.now();
+    const existing = await selectSession(env, id);
+    if (!existing) throw httpError(404, "Play session not found.");
+
+    let resolvedJson = existing.resolved_models_json || null;
+    if (!resolvedJson && env.GROQ_API_KEY) {
+        try {
+            const selected = await fetchAndSelectGroqModels(env.GROQ_API_KEY, {
+                audPerUsd: Number(env.GROQ_AUD_PER_USD) || 1.5
+            });
+            resolvedJson = JSON.stringify({
+                chat: selected.chat,
+                vision: selected.vision,
+                stt: selected.stt,
+                tts: selected.tts,
+                rates: selected.rates,
+                selectedAt: now
+            });
+        } catch (err) {
+            console.error(JSON.stringify({ event: "groq_model_select_failed", message: err?.message }));
+            resolvedJson = JSON.stringify(fallbackResolvedModels(env));
+        }
+    } else if (!resolvedJson) {
+        resolvedJson = JSON.stringify(fallbackResolvedModels(env));
+    }
+
     await env.DB.prepare(
-        `UPDATE play_sessions SET status = 'active', started_at = COALESCE(started_at, ?), expires_at = ?
+        `UPDATE play_sessions
+         SET status = 'active',
+             started_at = COALESCE(started_at, ?),
+             expires_at = ?,
+             resolved_models_json = COALESCE(resolved_models_json, ?)
          WHERE id = ? AND status = 'paid'`
     )
-        .bind(now, now + ACTIVE_TTL_MS, id)
+        .bind(now, now + ACTIVE_TTL_MS, resolvedJson, id)
         .run();
     const session = await selectSession(env, id);
     if (!session) throw httpError(404, "Play session not found.");
     if (session.status !== "active") throw httpError(409, `Session is ${session.status}.`);
     return json(publicSession(session));
+}
+
+function fallbackResolvedModels(env) {
+    const chat = csvList(env.GROQ_ALLOWED_MODELS, "openai/gpt-oss-20b")[0] || "openai/gpt-oss-20b";
+    const stt = csvList(env.GROQ_ALLOWED_TRANSCRIBE_MODELS, "whisper-large-v3")[0] || "whisper-large-v3";
+    const tts =
+        csvList(env.GROQ_ALLOWED_SPEECH_MODELS, "canopylabs/orpheus-v1-english")[0] ||
+        "canopylabs/orpheus-v1-english";
+    let rates = {};
+    try {
+        rates = JSON.parse(env.GROQ_RATES_JSON || "{}");
+    } catch (_) {}
+    return {
+        chat,
+        vision: chat,
+        stt,
+        tts,
+        rates,
+        selectedAt: Date.now(),
+        fallback: true
+    };
+}
+
+function parseResolvedModels(session) {
+    if (!session?.resolved_models_json) return null;
+    try {
+        const parsed = JSON.parse(session.resolved_models_json);
+        if (!parsed || typeof parsed !== "object") return null;
+        return parsed;
+    } catch (_) {
+        return null;
+    }
+}
+
+function sessionAllowsChatModel(session, model, env) {
+    const resolved = parseResolvedModels(session);
+    const id = String(model || "").trim();
+    if (!id) return false;
+    if (resolved) {
+        return id === resolved.chat || id === resolved.vision;
+    }
+    return csvList(env.GROQ_ALLOWED_MODELS, "openai/gpt-oss-20b").includes(id);
+}
+
+function sessionAllowsSttModel(session, model, env) {
+    const resolved = parseResolvedModels(session);
+    const id = String(model || "").trim();
+    if (!id) return false;
+    if (resolved?.stt) return id === resolved.stt;
+    return csvList(env.GROQ_ALLOWED_TRANSCRIBE_MODELS, "whisper-large-v3").includes(id);
+}
+
+function sessionAllowsTtsModel(session, model, env) {
+    const resolved = parseResolvedModels(session);
+    const id = String(model || "").trim();
+    if (!id) return false;
+    if (resolved?.tts) return id === resolved.tts;
+    return csvList(env.GROQ_ALLOWED_SPEECH_MODELS, "canopylabs/orpheus-v1-english").includes(id);
 }
 
 async function completeSession(request, env, id) {
@@ -284,8 +373,9 @@ async function proxyGroqChat(request, env) {
     const { id, session } = gate;
 
     const body = await readJson(request);
-    const allowedModels = csvList(env.GROQ_ALLOWED_MODELS, "qwen/qwen3.6-27b");
-    if (!allowedModels.includes(body.model)) throw httpError(400, "Model is not allowed for hosted arcade use.");
+    if (!sessionAllowsChatModel(session, body.model, env)) {
+        throw httpError(400, "Model is not allowed for hosted arcade use.");
+    }
     body.max_tokens = Math.min(1024, Math.max(1, Number(body.max_tokens) || 256));
     body.stream = false;
 
@@ -305,7 +395,7 @@ async function proxyGroqChat(request, env) {
         });
     }
     const payload = JSON.parse(raw);
-    const charge = calculateChatCharge(payload.usage, body.model, env);
+    const charge = calculateChatCharge(payload.usage, body.model, env, session);
     await debitAiBudget(env, id, charge);
     return new Response(raw, {
         status: 200,
@@ -319,13 +409,14 @@ async function proxyGroqChat(request, env) {
 async function proxyGroqTranscribe(request, env) {
     const gate = await requireActiveAiSession(request, env);
     if (gate instanceof Response) return gate;
-    const { id } = gate;
+    const { id, session } = gate;
 
     const form = await request.formData();
     const file = form.get("file");
     const model = String(form.get("model") || "whisper-large-v3").trim();
-    const allowed = csvList(env.GROQ_ALLOWED_TRANSCRIBE_MODELS, "whisper-large-v3");
-    if (!allowed.includes(model)) throw httpError(400, "Transcription model is not allowed.");
+    if (!sessionAllowsSttModel(session, model, env)) {
+        throw httpError(400, "Transcription model is not allowed.");
+    }
     if (!(file instanceof Blob) || file.size < 32) throw httpError(400, "Audio file is required.");
     if (file.size > 25_000_000) throw httpError(413, "Audio file too large.");
 
@@ -361,15 +452,13 @@ async function proxyGroqTranscribe(request, env) {
 async function proxyGroqSpeech(request, env) {
     const gate = await requireActiveAiSession(request, env);
     if (gate instanceof Response) return gate;
-    const { id } = gate;
+    const { id, session } = gate;
 
     const body = await readJson(request);
     const model = String(body.model || "").trim();
-    const allowed = csvList(
-        env.GROQ_ALLOWED_SPEECH_MODELS,
-        "canopylabs/orpheus-v1-english"
-    );
-    if (!allowed.includes(model)) throw httpError(400, "Speech model is not allowed.");
+    if (!sessionAllowsTtsModel(session, model, env)) {
+        throw httpError(400, "Speech model is not allowed.");
+    }
     const input = String(body.input || "").trim().slice(0, 200);
     if (!input) throw httpError(400, "Nothing to speak.");
 
@@ -409,7 +498,7 @@ async function proxyGroqVoiceTurn(request, env) {
     const startedAt = Date.now();
     const gate = await requireActiveAiSession(request, env);
     if (gate instanceof Response) return gate;
-    const { id } = gate;
+    const { id, session } = gate;
 
     const form = await request.formData();
     const file = form.get("file");
@@ -417,8 +506,7 @@ async function proxyGroqVoiceTurn(request, env) {
     if (file.size > 25_000_000) throw httpError(413, "Audio file too large.");
 
     const transcribeModel = String(form.get("transcribeModel") || "whisper-large-v3").trim();
-    const allowedTranscribe = csvList(env.GROQ_ALLOWED_TRANSCRIBE_MODELS, "whisper-large-v3");
-    if (!allowedTranscribe.includes(transcribeModel)) {
+    if (!sessionAllowsSttModel(session, transcribeModel, env)) {
         throw httpError(400, "Transcription model is not allowed.");
     }
 
@@ -431,8 +519,7 @@ async function proxyGroqVoiceTurn(request, env) {
     if (!chatBody || !Array.isArray(chatBody.messages)) {
         throw httpError(400, "chatBody.messages is required.");
     }
-    const allowedChat = csvList(env.GROQ_ALLOWED_MODELS, "qwen/qwen3.6-27b");
-    if (!allowedChat.includes(chatBody.model)) {
+    if (!sessionAllowsChatModel(session, chatBody.model, env)) {
         throw httpError(400, "Model is not allowed for hosted arcade use.");
     }
     chatBody.max_tokens = Math.min(1024, Math.max(1, Number(chatBody.max_tokens) || 256));
@@ -508,11 +595,9 @@ async function proxyGroqVoiceTurn(request, env) {
     const synthesizeSpeech = String(form.get("synthesizeSpeech") || "true") !== "false";
     if (synthesizeSpeech && spokenText) {
         const speechModel = String(form.get("speechModel") || "").trim();
-        const allowedSpeech = csvList(
-            env.GROQ_ALLOWED_SPEECH_MODELS,
-            "canopylabs/orpheus-v1-english"
-        );
-        if (!allowedSpeech.includes(speechModel)) throw httpError(400, "Speech model is not allowed.");
+        if (!sessionAllowsTtsModel(session, speechModel, env)) {
+            throw httpError(400, "Speech model is not allowed.");
+        }
         const voice = String(form.get("voice") || "autumn").trim() || "autumn";
         const speechParts = splitGroqSpeechInput(spokenText);
         const speechStartedAt = Date.now();
@@ -551,7 +636,7 @@ async function proxyGroqVoiceTurn(request, env) {
     }
 
     const transcribeCharge = Math.max(1, Number(env.GROQ_TRANSCRIBE_CENTS) || 1);
-    const chatCharge = calculateChatCharge(chatPayload.usage, chatBody.model, env);
+    const chatCharge = calculateChatCharge(chatPayload.usage, chatBody.model, env, session);
     const totalCharge = transcribeCharge + chatCharge + speechCharge;
     await debitAiBudget(env, id, totalCharge);
 
@@ -712,11 +797,15 @@ function csvList(value, fallback) {
         .filter(Boolean);
 }
 
-function calculateChatCharge(usage, model, env) {
+function calculateChatCharge(usage, model, env, session = null) {
     let rates = {};
     try {
         rates = JSON.parse(env.GROQ_RATES_JSON || "{}");
     } catch (_) {}
+    const resolved = parseResolvedModels(session);
+    if (resolved?.rates && typeof resolved.rates === "object") {
+        rates = { ...rates, ...resolved.rates };
+    }
     const rate = rates[model] || {};
     const input = Math.max(0, Number(usage?.prompt_tokens) || 0);
     const output = Math.max(0, Number(usage?.completion_tokens) || 0);
@@ -751,6 +840,7 @@ async function selectSession(env, id) {
 }
 
 function publicSession(row) {
+    const resolved = parseResolvedModels(row);
     return {
         id: row.id,
         status: row.status,
@@ -764,7 +854,15 @@ function publicSession(row) {
         aiSpentCents: row.ai_spent_cents,
         expiresAt: row.expires_at,
         createdAt: row.created_at,
-        startedAt: row.started_at || undefined
+        startedAt: row.started_at || undefined,
+        groqModels: resolved
+            ? {
+                  chat: resolved.chat || null,
+                  vision: resolved.vision || null,
+                  stt: resolved.stt || null,
+                  tts: resolved.tts || null
+              }
+            : undefined
     };
 }
 

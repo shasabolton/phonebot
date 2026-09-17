@@ -12,12 +12,13 @@
 	},
 	"vars": {
 		"ALLOWED_ORIGINS": "https://shasabolton.github.io,http://localhost:8000",
-		"GROQ_ALLOWED_MODELS": "qwen/qwen3.6-27b",
-		"GROQ_ALLOWED_TRANSCRIBE_MODELS": "whisper-large-v3",
-		"GROQ_ALLOWED_SPEECH_MODELS": "canopylabs/orpheus-v1-english",
+		"GROQ_ALLOWED_MODELS": "openai/gpt-oss-20b,openai/gpt-oss-120b,qwen/qwen3.8-27b",
+		"GROQ_ALLOWED_TRANSCRIBE_MODELS": "whisper-large-v3,whisper-large-v3-turbo",
+		"GROQ_ALLOWED_SPEECH_MODELS": "canopylabs/orpheus-v1-english,canopylabs/orpheus-arabic-saudi",
 		"GROQ_TRANSCRIBE_CENTS": "1",
 		"GROQ_SPEECH_CENTS": "1",
-		"GROQ_RATES_JSON": "{}"
+		"GROQ_RATES_JSON": "{}",
+		"GROQ_AUD_PER_USD": "1.5"
 	},
 	"d1_databases": [
 		{

@@ -5,6 +5,7 @@
 scripts/.local_groq_key
 .dev.vars
 **/.dev.vars
+groq-models.json
 
 # Cloudflare / Wrangler local state
 .wrangler/

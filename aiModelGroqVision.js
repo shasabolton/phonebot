@@ -16,7 +16,7 @@ class GroqVisionAiModel {
             GroqVisionAiModel.MIN_FREQUENCY_HZ,
             Math.min(GroqVisionAiModel.MAX_FREQUENCY_HZ, this.frequencyHz)
         );
-        this.model = String(config.model || "qwen/qwen3.6-27b");
+        this.model = String(config.model || "qwen/qwen3.8-27b");
         this.apiKey = "";
         this.rememberKey = false;
         this.captureMaxEdge = Number.isFinite(config.captureMaxEdge) ? Math.round(config.captureMaxEdge) : 960;
