@@ -2303,8 +2303,9 @@ class AgentInterface {
                 typeof window.GroqChatRecover?.trySalvageGroqChatError === "function"
                     ? window.GroqChatRecover.trySalvageGroqChatError(res.status, rawText, model)
                     : null;
-            if (salvaged?.contentText) {
-                const contentText = this._stripThinkingBlocks(String(salvaged.contentText).trim());
+            const salvagedText = String(salvaged?.contentText || "").trim();
+            if (salvagedText) {
+                const contentText = this._stripThinkingBlocks(salvagedText) || salvagedText;
                 return {
                     rawText,
                     json: salvaged.payload,
@@ -2835,6 +2836,8 @@ class AgentInterface {
             }
         } else if (ok) {
             this._maybeQueueConversationListenAfterTurn();
+        } else if (this._agentEnabled && this._isConversationMode()) {
+            this._armConversationPtt();
         }
         return ok;
     }
@@ -2980,12 +2983,16 @@ class AgentInterface {
                 this._statusEl.textContent = err?.message || "Hosted voice turn failed";
                 this._statusEl.className = "error";
             }
+            ok = false;
         } finally {
             this._sendInProgress = false;
             this._syncSendButtonState();
         }
 
-        if (!ok) return false;
+        if (!ok) {
+            if (this._agentEnabled && this._isConversationMode()) this._armConversationPtt();
+            return false;
+        }
         const spokenText = String(result?.spokenText || result?.contentText || "").trim();
         if (this._voiceOn && spokenText) {
             const generation = this._speakGeneration;

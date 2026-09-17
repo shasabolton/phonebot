@@ -610,7 +610,8 @@ async function proxyGroqVoiceTurn(request, env) {
         chatPayload?.choices?.[0]?.text ??
         chatPayload?.message?.content ??
         "";
-    const contentText = stripThinkingBlocks(rawContent) || JSON.stringify(chatPayload);
+    const stripped = stripThinkingBlocks(rawContent);
+    const contentText = stripped || String(rawContent || "").trim() || JSON.stringify(chatPayload);
     const spokenText = extractSpokenText(contentText);
     const chatMs = Date.now() - chatStartedAt;
 
