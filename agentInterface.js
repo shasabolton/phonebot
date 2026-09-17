@@ -696,6 +696,19 @@ class AgentInterface {
         return String(agent?.model || "").trim();
     }
 
+    /**
+     * Cross-model reasoning_effort (low|medium|high). Prefer "low" for Talking Head.
+     */
+    _resolveReasoningEffort(agent, _modelId) {
+        const raw = agent?.reasoningEffort ?? agent?.reasoning_effort ?? "low";
+        if (typeof window.GroqModelSelect?.normalizeReasoningEffort === "function") {
+            return window.GroqModelSelect.normalizeReasoningEffort(raw);
+        }
+        const v = String(raw || "").trim().toLowerCase();
+        if (v === "medium" || v === "high") return v;
+        return "low";
+    }
+
     _resolveVoiceDefault(agent) {
         if (agent && Object.prototype.hasOwnProperty.call(agent, "voiceOn")) {
             return !!agent.voiceOn;
@@ -2227,7 +2240,7 @@ class AgentInterface {
         if (responseFormat) {
             body.response_format = responseFormat;
         }
-        const reasoningEffort = String(agent.reasoningEffort || agent.reasoning_effort || "").trim();
+        const reasoningEffort = this._resolveReasoningEffort(agent, model);
         if (reasoningEffort) {
             body.reasoning_effort = reasoningEffort;
         }
@@ -2868,9 +2881,7 @@ class AgentInterface {
                 max_tokens: Number.isFinite(agent.maxTokens) ? Math.round(agent.maxTokens) : 1024
             };
             if (responseFormat) chatBody.response_format = responseFormat;
-            const reasoningEffort = String(
-                agent.reasoningEffort || agent.reasoning_effort || ""
-            ).trim();
+            const reasoningEffort = this._resolveReasoningEffort(agent, model);
             if (reasoningEffort) chatBody.reasoning_effort = reasoningEffort;
             if (agent.extraBody && typeof agent.extraBody === "object") {
                 Object.assign(chatBody, agent.extraBody);

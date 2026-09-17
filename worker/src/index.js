@@ -1,4 +1,4 @@
-import { fetchAndSelectGroqModels } from "../../groqModelSelect.js";
+import { fetchAndSelectGroqModels, applyCrossModelChatDefaults } from "../../groqModelSelect.js";
 
 const MODE_CATALOG = Object.freeze({
     simonSaysPoseMatch: {
@@ -378,6 +378,7 @@ async function proxyGroqChat(request, env) {
     }
     body.max_tokens = Math.min(1024, Math.max(1, Number(body.max_tokens) || 256));
     body.stream = false;
+    applyCrossModelChatDefaults(body);
 
     const upstream = await fetch("https://api.groq.com/openai/v1/chat/completions", {
         method: "POST",
@@ -524,6 +525,7 @@ async function proxyGroqVoiceTurn(request, env) {
     }
     chatBody.max_tokens = Math.min(1024, Math.max(1, Number(chatBody.max_tokens) || 256));
     chatBody.stream = false;
+    applyCrossModelChatDefaults(chatBody);
 
     const transcribeForm = new FormData();
     transcribeForm.append("file", file, String(form.get("filename") || "speech.webm"));

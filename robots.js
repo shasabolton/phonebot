@@ -370,7 +370,7 @@ window.ROBOTS_DATA = {
                         speechModel: "canopylabs/orpheus-v1-english",
                         temperature: 0.3,
                         maxTokens: 96,
-                        reasoningEffort: "none"
+                        reasoningEffort: "low"
                     }
                 ]
             }
@@ -558,7 +558,7 @@ window.ROBOTS_DATA = {
                         speechModel: "canopylabs/orpheus-v1-english",
                         temperature: 0.2,
                         maxTokens: 768,
-                        reasoningEffort: "none",
+                        reasoningEffort: "low",
                         responseFormat: { type: "json_object" }
                     }
                 ]

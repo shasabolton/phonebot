@@ -538,7 +538,7 @@ class GroqVisionAiModel {
                 model: this.model,
                 temperature: 0.2,
                 max_tokens: 700,
-                reasoning_effort: "none",
+                reasoning_effort: "low",
                 response_format: { type: "json_object" },
                 messages: [
                     {

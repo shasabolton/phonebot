@@ -166,6 +166,31 @@ function ratesFromModel(model, audPerUsd = 1.5) {
 }
 
 /**
+ * Cross-model reasoning_effort for GPT-OSS and Qwen 3.8+.
+ * Both accept low|medium|high. GPT-OSS rejects none/default.
+ * @param {string} [value]
+ * @returns {"low"|"medium"|"high"}
+ */
+function normalizeReasoningEffort(value) {
+    const raw = String(value || "").trim().toLowerCase();
+    if (raw === "medium" || raw === "high") return raw;
+    return "low";
+}
+
+/**
+ * Ensure a chat-completions body uses a cross-model-safe reasoning_effort.
+ * @param {object} body
+ * @returns {object}
+ */
+function applyCrossModelChatDefaults(body) {
+    if (!body || typeof body !== "object") return body;
+    const effort = body.reasoning_effort ?? body.reasoningEffort;
+    body.reasoning_effort = normalizeReasoningEffort(effort);
+    delete body.reasoningEffort;
+    return body;
+}
+
+/**
  * @param {object[]|{ data: object[] }} models
  * @param {{ audPerUsd?: number }} [options]
  * @returns {{
@@ -242,7 +267,9 @@ const api = {
     filterStt,
     filterTts,
     chatPriceScore,
-    ratesFromModel
+    ratesFromModel,
+    normalizeReasoningEffort,
+    applyCrossModelChatDefaults
 };
 
 if (typeof window !== "undefined") {
@@ -258,6 +285,8 @@ export {
     filterStt,
     filterTts,
     chatPriceScore,
-    ratesFromModel
+    ratesFromModel,
+    normalizeReasoningEffort,
+    applyCrossModelChatDefaults
 };
 export default api;
