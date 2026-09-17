@@ -1022,11 +1022,25 @@
 
   function loadScript(src) {
     return new Promise(function (resolve, reject) {
-      var s = document.createElement("script");
-      // ESM exports + window.GroqModelSelect assignment
-      if (src === "groqModelSelect.js" || src === "groqChatRecover.js") {
-        s.type = "module";
+      // ESM: use dynamic import so exports are assigned to window reliably
+      // (type=module script tags can onload before side effects are visible).
+      if (src.indexOf("groqModelSelect.js") === 0 || src.indexOf("groqChatRecover.js") === 0) {
+        var url = new URL(src, window.location.href).href;
+        import(url)
+          .then(function (mod) {
+            var api = mod && (mod.default || mod);
+            if (src.indexOf("groqChatRecover.js") === 0) {
+              window.GroqChatRecover = api;
+            }
+            if (src.indexOf("groqModelSelect.js") === 0) {
+              window.GroqModelSelect = api;
+            }
+            resolve();
+          })
+          .catch(reject);
+        return;
       }
+      var s = document.createElement("script");
       s.src = src;
       s.onload = function () {
         resolve();

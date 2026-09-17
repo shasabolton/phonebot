@@ -2299,10 +2299,7 @@ class AgentInterface {
 
         const rawText = await res.text();
         if (!res.ok) {
-            const salvaged =
-                typeof window.GroqChatRecover?.trySalvageGroqChatError === "function"
-                    ? window.GroqChatRecover.trySalvageGroqChatError(res.status, rawText, model)
-                    : null;
+            const salvaged = this._trySalvageGroqChatError(res.status, rawText, model);
             const salvagedText = String(salvaged?.contentText || "").trim();
             if (salvagedText) {
                 const contentText = this._stripThinkingBlocks(salvagedText) || salvagedText;
@@ -2378,6 +2375,75 @@ class AgentInterface {
         return String(text || "")
             .replace(/<think\b[^>]*>[\s\S]*?<\/think>/gi, "")
             .replace(/^\s+|\s+$/g, "");
+    }
+
+    /**
+     * Local fallback when window.GroqChatRecover is missing or stale.
+     * Handles gpt-oss Harmony leaks with unquoted `"arguments": prose…}`.
+     * @param {number} status
+     * @param {string} rawText
+     * @param {string} [model]
+     * @returns {{ contentText: string, payload: object }|null}
+     */
+    _trySalvageGroqChatErrorLocal(status, rawText, model = "") {
+        if (status < 400) return null;
+        const raw = String(rawText || "");
+        if (!/tool_use_failed|tool choice is none|failed_generation/i.test(raw)) return null;
+
+        let failed = "";
+        try {
+            const obj = JSON.parse(raw);
+            const err = obj?.error && typeof obj.error === "object" ? obj.error : obj;
+            failed = err?.failed_generation;
+        } catch (_) {
+            failed = "";
+        }
+
+        const blob = typeof failed === "string" ? failed : failed != null ? JSON.stringify(failed) : raw;
+        let text = "";
+
+        const quoted = blob.match(/"arguments"\s*:\s*"((?:\\.|[^"\\])*)"/);
+        if (quoted) {
+            try {
+                text = JSON.parse(`"${quoted[1]}"`);
+            } catch (_) {
+                text = quoted[1];
+            }
+        }
+        if (!text) {
+            // Bare prose (invalid JSON): "arguments": Ah, the mystery…}
+            const bare = blob.match(/"arguments"\s*:\s*(?!"|\{)([\s\S]*?)\s*\}\s*$/);
+            if (bare) text = bare[1].replace(/\}\s*$/, "").trim();
+        }
+        if (!text && typeof failed === "string" && !failed.trim().startsWith("{")) {
+            text = failed.trim();
+        }
+        text = String(text || "").trim();
+        if (!text) return null;
+
+        return {
+            contentText: text,
+            payload: {
+                id: "phonebot-salvaged",
+                object: "chat.completion",
+                model: model || "unknown",
+                choices: [{ index: 0, message: { role: "assistant", content: text }, finish_reason: "stop" }],
+                usage: {
+                    prompt_tokens: 0,
+                    completion_tokens: Math.max(1, Math.ceil(text.length / 4)),
+                    total_tokens: Math.max(1, Math.ceil(text.length / 4))
+                },
+                phonebot_salvaged_from: "tool_use_failed"
+            }
+        };
+    }
+
+    _trySalvageGroqChatError(status, rawText, model = "") {
+        if (typeof window.GroqChatRecover?.trySalvageGroqChatError === "function") {
+            const fromMod = window.GroqChatRecover.trySalvageGroqChatError(status, rawText, model);
+            if (fromMod?.contentText) return fromMod;
+        }
+        return this._trySalvageGroqChatErrorLocal(status, rawText, model);
     }
 
     _tryParseJson(text) {
