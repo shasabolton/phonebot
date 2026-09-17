@@ -5,6 +5,7 @@ import {
     applyOrpheusVocalDirections,
     orpheusSpeechBodyBudget
 } from "../../groqModelSelect.js";
+import { trySalvageGroqChatError } from "../../groqChatRecover.js";
 
 const MODE_CATALOG = Object.freeze({
     simonSaysPoseMatch: {
@@ -396,6 +397,19 @@ async function proxyGroqChat(request, env) {
     });
     const raw = await upstream.text();
     if (!upstream.ok) {
+        const salvaged = trySalvageGroqChatError(upstream.status, raw, body.model);
+        if (salvaged) {
+            const charge = calculateChatCharge(salvaged.payload.usage, body.model, env, session);
+            await debitAiBudget(env, id, charge);
+            return new Response(JSON.stringify(salvaged.payload), {
+                status: 200,
+                headers: {
+                    "Content-Type": "application/json",
+                    "X-Phonebot-AI-Charge-Cents": String(charge),
+                    "X-Phonebot-Salvaged": "tool_use_failed"
+                }
+            });
+        }
         return new Response(raw, {
             status: upstream.status,
             headers: { "Content-Type": upstream.headers.get("Content-Type") || "application/json" }
@@ -574,17 +588,22 @@ async function proxyGroqVoiceTurn(request, env) {
         body: JSON.stringify(chatBody)
     });
     const chatRaw = await chatResponse.text();
-    if (!chatResponse.ok) {
-        return new Response(chatRaw, {
-            status: chatResponse.status,
-            headers: { "Content-Type": chatResponse.headers.get("Content-Type") || "application/json" }
-        });
-    }
     let chatPayload;
-    try {
-        chatPayload = JSON.parse(chatRaw);
-    } catch (_) {
-        throw httpError(502, "Groq chat response was invalid.");
+    if (!chatResponse.ok) {
+        const salvaged = trySalvageGroqChatError(chatResponse.status, chatRaw, chatBody.model);
+        if (!salvaged) {
+            return new Response(chatRaw, {
+                status: chatResponse.status,
+                headers: { "Content-Type": chatResponse.headers.get("Content-Type") || "application/json" }
+            });
+        }
+        chatPayload = salvaged.payload;
+    } else {
+        try {
+            chatPayload = JSON.parse(chatRaw);
+        } catch (_) {
+            throw httpError(502, "Groq chat response was invalid.");
+        }
     }
     const rawContent =
         chatPayload?.choices?.[0]?.message?.content ??

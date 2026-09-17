@@ -2299,6 +2299,19 @@ class AgentInterface {
 
         const rawText = await res.text();
         if (!res.ok) {
+            const salvaged =
+                typeof window.GroqChatRecover?.trySalvageGroqChatError === "function"
+                    ? window.GroqChatRecover.trySalvageGroqChatError(res.status, rawText, model)
+                    : null;
+            if (salvaged?.contentText) {
+                const contentText = this._stripThinkingBlocks(String(salvaged.contentText).trim());
+                return {
+                    rawText,
+                    json: salvaged.payload,
+                    contentText,
+                    salvagedFrom: "tool_use_failed"
+                };
+            }
             throw new Error(`HTTP ${res.status}: ${rawText.slice(0, 500)}`);
         }
 

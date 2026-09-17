@@ -1013,6 +1013,7 @@
     "games/escapeTheWall/escapeTheWall.js",
     "playBilling.js",
     "groqModelSelect.js",
+    "groqChatRecover.js",
     "agentInterface.js",
     "robots.js",
     "robot.js",
@@ -1023,7 +1024,7 @@
     return new Promise(function (resolve, reject) {
       var s = document.createElement("script");
       // ESM exports + window.GroqModelSelect assignment
-      if (src === "groqModelSelect.js") {
+      if (src === "groqModelSelect.js" || src === "groqChatRecover.js") {
         s.type = "module";
       }
       s.src = src;
