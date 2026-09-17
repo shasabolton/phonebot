@@ -1,4 +1,4 @@
 {
   "fwVersion": "1.2.4",
-  "appBuildVersion": "199: salvage tool args + unstick PTT"
+  "appBuildVersion": "200: salvage unquoted tool arguments"
 }

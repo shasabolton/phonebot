@@ -62,12 +62,14 @@ function longestStringValue(obj, depth = 0) {
 
 /**
  * When JSON.parse fails on failed_generation, pull the arguments string with a regex.
+ * Groq/gpt-oss often emits invalid JSON: `"arguments": Ah, the reply…}` (no quotes around prose).
  * @param {string} raw
  * @returns {string|null}
  */
 function extractArgumentsViaRegex(raw) {
     const s = String(raw || "");
     if (!s) return null;
+
     // "arguments": "....."  (JSON string)
     const stringArg = s.match(/"arguments"\s*:\s*"((?:\\.|[^"\\])*)"/);
     if (stringArg) {
@@ -77,24 +79,34 @@ function extractArgumentsViaRegex(raw) {
             return stringArg[1].replace(/\\n/g, "\n").replace(/\\"/g, '"').replace(/\\\\/g, "\\");
         }
     }
+
     // "arguments": { ... } — take longest quoted string inside the object blob
-    const objArg = s.match(/"arguments"\s*:\s*(\{[\s\S]*\})\s*\}?\s*$/);
-    if (objArg) {
-        const inner = objArg[1];
-        const quotes = [...inner.matchAll(/"((?:\\.|[^"\\]){8,})"/g)].map((m) => {
+    const objStart = s.match(/"arguments"\s*:\s*\{/);
+    if (objStart) {
+        const fromBrace = s.slice(objStart.index + objStart[0].length - 1);
+        const quotes = [...fromBrace.matchAll(/"((?:\\.|[^"\\]){8,})"/g)].map((m) => {
             try {
                 return JSON.parse(`"${m[1]}"`);
             } catch (_) {
                 return m[1];
             }
         });
-        // Prefer values that are not key names / short tokens
         const speechy = quotes.filter((q) => /\s/.test(q) || q.length >= 24);
         if (speechy.length) {
             return speechy.sort((a, b) => b.length - a.length)[0];
         }
         if (quotes.length) return quotes.sort((a, b) => b.length - a.length)[0];
     }
+
+    // "arguments": bare prose…}  (invalid JSON — common Harmony leak)
+    const bare = s.match(/"arguments"\s*:\s*(?!"|\{)([\s\S]*?)\s*\}\s*$/);
+    if (bare) {
+        let text = bare[1].trim();
+        // Strip a trailing `}` if the outer object closed mid-match oddly
+        text = text.replace(/\}\s*$/, "").trim();
+        if (text.length >= 2) return text;
+    }
+
     return null;
 }
 
