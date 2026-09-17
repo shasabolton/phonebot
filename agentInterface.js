@@ -42,7 +42,7 @@ class AgentInterface {
         this._voiceOn = false;
         this._ttsVoice = typeof window.GroqTts?.loadSavedVoice === "function"
             ? window.GroqTts.loadSavedVoice()
-            : "autumn";
+            : window.GroqTts?.resolveVoice?.() || "austin";
         this._speakGeneration = 0;
         this._containerEl = null;
         this._agentSelect = null;
@@ -769,9 +769,11 @@ class AgentInterface {
                 voice
             });
         }
-        const voice = window.GroqTts?.isKnownVoice?.(options.voice)
-            ? options.voice
-            : window.GroqTts?.DEFAULT_VOICE || "autumn";
+        const voice = window.GroqTts?.resolveVoice
+            ? window.GroqTts.resolveVoice(options.voice)
+            : window.GroqTts?.isKnownVoice?.(options.voice)
+              ? options.voice
+              : window.GroqTts?.DEFAULT_VOICE || "austin";
         const input =
             typeof window.GroqTts?.clampInput === "function"
                 ? window.GroqTts.clampInput(text)
@@ -870,7 +872,7 @@ class AgentInterface {
         } else if (typeof window.GroqTts?.saveVoice === "function") {
             this._ttsVoice = window.GroqTts.saveVoice(id);
         } else {
-            this._ttsVoice = id || "autumn";
+            this._ttsVoice = id || window.GroqTts?.resolveVoice?.() || "austin";
         }
         if (this._voiceSelect) this._voiceSelect.value = this._ttsVoice;
     }
@@ -883,14 +885,19 @@ class AgentInterface {
                 : [{ id: "Kore", label: "Kore — firm" }]
             : Array.isArray(window.GroqTts?.VOICES) && window.GroqTts.VOICES.length
               ? window.GroqTts.VOICES
-              : [{ id: "autumn", label: "Autumn — ♀" }];
+              : [{ id: "austin", label: "Austin — ♂" }];
         this._ttsVoice = gemini
             ? typeof window.GeminiAudioTurn?.loadSavedVoice === "function"
                 ? window.GeminiAudioTurn.loadSavedVoice()
                 : "Kore"
-            : typeof window.GroqTts?.loadSavedVoice === "function"
-              ? window.GroqTts.loadSavedVoice()
-              : "autumn";
+            : typeof window.GroqTts?.resolveVoice === "function"
+              ? window.GroqTts.resolveVoice(
+                    typeof window.GroqTts?.loadSavedVoice === "function"
+                        ? window.GroqTts.loadSavedVoice()
+                        : "austin",
+                    voiceList
+                )
+              : "austin";
         if (this._voiceSelectLabel) {
             this._voiceSelectLabel.textContent = gemini
                 ? "Voice (Gemini TTS)"
@@ -908,7 +915,7 @@ class AgentInterface {
                 this._voiceSelect.appendChild(opt);
             }
             if (![...this._voiceSelect.options].some((o) => o.value === this._ttsVoice)) {
-                this._ttsVoice = voiceList[0].id;
+                this._ttsVoice = window.GroqTts?.resolveVoice?.(null, voiceList) || voiceList[0].id;
             }
             this._voiceSelect.value = this._ttsVoice;
         }

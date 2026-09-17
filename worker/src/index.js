@@ -1,4 +1,10 @@
-import { fetchAndSelectGroqModels, applyCrossModelChatDefaults } from "../../groqModelSelect.js";
+import {
+    fetchAndSelectGroqModels,
+    applyCrossModelChatDefaults,
+    resolveOrpheusVoice,
+    applyOrpheusVocalDirections,
+    orpheusSpeechBodyBudget
+} from "../../groqModelSelect.js";
 
 const MODE_CATALOG = Object.freeze({
     simonSaysPoseMatch: {
@@ -460,7 +466,7 @@ async function proxyGroqSpeech(request, env) {
     if (!sessionAllowsTtsModel(session, model, env)) {
         throw httpError(400, "Speech model is not allowed.");
     }
-    const input = String(body.input || "").trim().slice(0, 200);
+    const input = applyOrpheusVocalDirections(body.input, GROQ_SPEECH_MAX_CHARS);
     if (!input) throw httpError(400, "Nothing to speak.");
 
     const upstream = await fetch("https://api.groq.com/openai/v1/audio/speech", {
@@ -471,7 +477,7 @@ async function proxyGroqSpeech(request, env) {
         },
         body: JSON.stringify({
             model,
-            voice: String(body.voice || "autumn").trim() || "autumn",
+            voice: resolveOrpheusVoice(body.voice),
             input,
             response_format: "wav"
         })
@@ -600,7 +606,7 @@ async function proxyGroqVoiceTurn(request, env) {
         if (!sessionAllowsTtsModel(session, speechModel, env)) {
             throw httpError(400, "Speech model is not allowed.");
         }
-        const voice = String(form.get("voice") || "autumn").trim() || "autumn";
+        const voice = resolveOrpheusVoice(form.get("voice"));
         const speechParts = splitGroqSpeechInput(spokenText);
         const speechStartedAt = Date.now();
         for (const part of speechParts) {
@@ -613,7 +619,7 @@ async function proxyGroqVoiceTurn(request, env) {
                 body: JSON.stringify({
                     model: speechModel,
                     voice,
-                    input: part,
+                    input: applyOrpheusVocalDirections(part, GROQ_SPEECH_MAX_CHARS),
                     response_format: "wav"
                 })
             });
@@ -708,8 +714,11 @@ function extractSpokenText(contentText) {
 
 const GROQ_SPEECH_MAX_CHARS = 200;
 
-function splitGroqSpeechInput(text, max = GROQ_SPEECH_MAX_CHARS) {
-    const s = String(text || "").trim();
+function splitGroqSpeechInput(text, max = orpheusSpeechBodyBudget(GROQ_SPEECH_MAX_CHARS)) {
+    const s = String(text || "")
+        .trim()
+        .replace(/^(\[(?:clearly|confident(?:ly)?)\]\s*)+/i, "")
+        .trim();
     if (!s) return [];
     if (s.length <= max) return [s];
 

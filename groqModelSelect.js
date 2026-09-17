@@ -178,6 +178,63 @@ function normalizeReasoningEffort(value) {
 }
 
 /**
+ * Orpheus English voices (client catalog + Worker fallback).
+ * Prefer Austin; if missing, first entry.
+ */
+const ORPHEUS_PREFERRED_VOICE = "austin";
+const ORPHEUS_VOICE_IDS = Object.freeze([
+    "austin",
+    "autumn",
+    "diana",
+    "hannah",
+    "daniel",
+    "troy"
+]);
+
+/**
+ * @param {string} [requested]
+ * @param {string[]} [voiceIds]
+ * @returns {string}
+ */
+function resolveOrpheusVoice(requested, voiceIds = ORPHEUS_VOICE_IDS) {
+    const ids = (Array.isArray(voiceIds) ? voiceIds : ORPHEUS_VOICE_IDS)
+        .map((id) => String(id || "").trim())
+        .filter(Boolean);
+    const want = String(requested || "").trim();
+    if (want && ids.includes(want)) return want;
+    if (ids.includes(ORPHEUS_PREFERRED_VOICE)) return ORPHEUS_PREFERRED_VOICE;
+    return ids[0] || ORPHEUS_PREFERRED_VOICE;
+}
+
+/** Prefixed to every Orpheus TTS input so delivery stays audible over motors. */
+const ORPHEUS_VOCAL_PREFIX = "[clearly][confident] ";
+
+/**
+ * Prepend Orpheus vocal-direction tags and clamp to the model input limit.
+ * Strips a leading clearly/confident(ly) tag run first so client+worker never stack.
+ * @param {string} text
+ * @param {number} [maxChars=200]
+ * @returns {string}
+ */
+function applyOrpheusVocalDirections(text, maxChars = 200) {
+    const prefix = ORPHEUS_VOCAL_PREFIX;
+    const limit = Math.max(1, Number(maxChars) || 200);
+    let s = String(text || "").trim();
+    if (!s) return "";
+    s = s.replace(/^(\[(?:clearly|confident(?:ly)?)\]\s*)+/i, "").trim();
+    if (!s) return "";
+    const maxBody = Math.max(1, limit - prefix.length);
+    const body = s.length <= maxBody ? s : `${s.slice(0, maxBody - 1)}…`;
+    return `${prefix}${body}`;
+}
+
+/** Max spoken-body length once the vocal-direction prefix is reserved. */
+function orpheusSpeechBodyBudget(maxChars = 200) {
+    const limit = Math.max(1, Number(maxChars) || 200);
+    return Math.max(1, limit - ORPHEUS_VOCAL_PREFIX.length);
+}
+
+/**
  * Ensure a chat-completions body uses a cross-model-safe reasoning_effort.
  * @param {object} body
  * @returns {object}
@@ -269,7 +326,13 @@ const api = {
     chatPriceScore,
     ratesFromModel,
     normalizeReasoningEffort,
-    applyCrossModelChatDefaults
+    applyCrossModelChatDefaults,
+    ORPHEUS_PREFERRED_VOICE,
+    ORPHEUS_VOICE_IDS,
+    ORPHEUS_VOCAL_PREFIX,
+    resolveOrpheusVoice,
+    applyOrpheusVocalDirections,
+    orpheusSpeechBodyBudget
 };
 
 if (typeof window !== "undefined") {
@@ -287,6 +350,12 @@ export {
     chatPriceScore,
     ratesFromModel,
     normalizeReasoningEffort,
-    applyCrossModelChatDefaults
+    applyCrossModelChatDefaults,
+    ORPHEUS_PREFERRED_VOICE,
+    ORPHEUS_VOICE_IDS,
+    ORPHEUS_VOCAL_PREFIX,
+    resolveOrpheusVoice,
+    applyOrpheusVocalDirections,
+    orpheusSpeechBodyBudget
 };
 export default api;

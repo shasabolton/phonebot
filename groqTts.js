@@ -5,29 +5,61 @@
 class GroqTts {
     static MODEL_ENGLISH = "canopylabs/orpheus-v1-english";
     static STORAGE_VOICE = "phonebot.agent.groqTtsVoice";
-    static DEFAULT_VOICE = "autumn";
+    /** Preferred default; falls back to first catalog entry if missing. */
+    static PREFERRED_VOICE = "austin";
+    static DEFAULT_VOICE = "austin";
     /** Orpheus on Groq rejects inputs longer than this. */
     static MAX_INPUT_CHARS = 200;
 
     static VOICES = [
+        { id: "austin", label: "Austin — ♂" },
         { id: "autumn", label: "Autumn — ♀" },
         { id: "diana", label: "Diana — ♀" },
         { id: "hannah", label: "Hannah — ♀" },
-        { id: "austin", label: "Austin — ♂" },
         { id: "daniel", label: "Daniel — ♂" },
         { id: "troy", label: "Troy — ♂" }
     ];
 
+    /** First voice id in the catalog (fallback when preferred is gone). */
+    static firstVoiceId(voices = GroqTts.VOICES) {
+        const list = Array.isArray(voices) ? voices : [];
+        if (!list.length) return GroqTts.PREFERRED_VOICE;
+        const first = list[0];
+        return typeof first === "string" ? first : String(first?.id || GroqTts.PREFERRED_VOICE);
+    }
+
+    /**
+     * Prefer Austin when present; otherwise first catalog voice.
+     * @param {string} [requested]
+     * @param {{ id: string }[]|string[]} [voices]
+     */
+    static resolveVoice(requested, voices = GroqTts.VOICES) {
+        if (typeof window.GroqModelSelect?.resolveOrpheusVoice === "function") {
+            const ids = (Array.isArray(voices) ? voices : GroqTts.VOICES)
+                .map((v) => (typeof v === "string" ? v : String(v?.id || "").trim()))
+                .filter(Boolean);
+            return window.GroqModelSelect.resolveOrpheusVoice(requested, ids);
+        }
+        const list = Array.isArray(voices) ? voices : GroqTts.VOICES;
+        const ids = list
+            .map((v) => (typeof v === "string" ? v : String(v?.id || "").trim()))
+            .filter(Boolean);
+        const want = String(requested || "").trim();
+        if (want && ids.includes(want)) return want;
+        if (ids.includes(GroqTts.PREFERRED_VOICE)) return GroqTts.PREFERRED_VOICE;
+        return ids[0] || GroqTts.PREFERRED_VOICE;
+    }
+
     static loadSavedVoice() {
         try {
             const v = localStorage.getItem(GroqTts.STORAGE_VOICE);
-            if (v && GroqTts.isKnownVoice(v)) return v;
+            if (v) return GroqTts.resolveVoice(v);
         } catch (_) {}
-        return GroqTts.DEFAULT_VOICE;
+        return GroqTts.resolveVoice(GroqTts.PREFERRED_VOICE);
     }
 
     static saveVoice(voiceId) {
-        const id = GroqTts.isKnownVoice(voiceId) ? voiceId : GroqTts.DEFAULT_VOICE;
+        const id = GroqTts.resolveVoice(voiceId);
         try {
             localStorage.setItem(GroqTts.STORAGE_VOICE, id);
         } catch (_) {}
@@ -38,26 +70,50 @@ class GroqTts {
         return GroqTts.VOICES.some((v) => v.id === voiceId);
     }
 
-    /** Clamp text to Groq Orpheus max length (single-chunk fallback). */
-    static clampInput(text) {
-        const s = String(text || "").trim();
-        if (s.length <= GroqTts.MAX_INPUT_CHARS) return s;
-        return `${s.slice(0, GroqTts.MAX_INPUT_CHARS - 1)}…`;
+    /** Spoken-body budget after reserving Orpheus vocal-direction tags. */
+    static speechBodyBudget() {
+        if (typeof window !== "undefined" && window.GroqModelSelect?.orpheusSpeechBodyBudget) {
+            return window.GroqModelSelect.orpheusSpeechBodyBudget(GroqTts.MAX_INPUT_CHARS);
+        }
+        const prefix = "[clearly][confident] ";
+        return Math.max(1, GroqTts.MAX_INPUT_CHARS - prefix.length);
     }
 
     /**
-     * Split long text into Orpheus-sized chunks, preferring sentence then word boundaries.
+     * Clamp text to Groq Orpheus max length and prepend [clearly][confident].
+     * @param {string} text
+     * @returns {string}
+     */
+    static clampInput(text) {
+        if (typeof window !== "undefined" && window.GroqModelSelect?.applyOrpheusVocalDirections) {
+            return window.GroqModelSelect.applyOrpheusVocalDirections(text, GroqTts.MAX_INPUT_CHARS);
+        }
+        const prefix = "[clearly][confident] ";
+        let s = String(text || "").trim();
+        if (!s) return "";
+        s = s.replace(/^(\[(?:clearly|confident(?:ly)?)\]\s*)+/i, "").trim();
+        if (!s) return "";
+        const maxBody = Math.max(1, GroqTts.MAX_INPUT_CHARS - prefix.length);
+        const body = s.length <= maxBody ? s : `${s.slice(0, maxBody - 1)}…`;
+        return `${prefix}${body}`;
+    }
+
+    /**
+     * Split long text into Orpheus-sized chunks (body only; tags applied in clampInput).
      * @param {string} text
      * @returns {string[]}
      */
     static splitInput(text) {
-        const s = String(text || "").trim();
+        const s = String(text || "")
+            .trim()
+            .replace(/^(\[(?:clearly|confident(?:ly)?)\]\s*)+/i, "")
+            .trim();
         if (!s) return [];
-        if (s.length <= GroqTts.MAX_INPUT_CHARS) return [s];
+        const max = GroqTts.speechBodyBudget();
+        if (s.length <= max) return [s];
 
         const chunks = [];
         let rest = s;
-        const max = GroqTts.MAX_INPUT_CHARS;
         const minBreak = Math.floor(max * 0.45);
 
         while (rest.length > 0) {
