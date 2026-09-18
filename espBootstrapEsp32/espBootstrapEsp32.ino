@@ -8,11 +8,12 @@
 #include <BLEServer.h>
 #include <BLEUtils.h>
 #include <BLE2902.h>
+#include <esp_wifi.h>
 #include "phonebotProcess.h"
 
 // ===== CONFIG =====
 /** Bump this when releasing firmware; keep version.json in the repo in sync (manual for now). */
-#define FW_VERSION "1.2.6"
+#define FW_VERSION "1.2.7"
 
 /**
  * BUILD (ESP32 Dev Module, 4MB flash): sketch + BLE exceeds the default 1.2MB app slot.
@@ -389,7 +390,33 @@ void pauseBleForWifi() {
 
 void resumeBleAfterWifi() {
   if (!bleActive || bleClientConnected) return;
+  if (WiFi.softAPgetStationNum() > 0) return;
   BLEDevice::startAdvertising();
+}
+
+/**
+ * Modem sleep / PS on SoftAP glitches LEDC servo PWM (~1 Hz twitch).
+ * Keep the radio awake whenever WiFi is up so AP and STA hold pulses cleanly.
+ */
+void applyWifiRadioForServos() {
+  WiFi.setSleep(false);
+  esp_wifi_set_ps(WIFI_PS_NONE);
+}
+
+/** SoftAP + BLE advertising together also starves PWM; pause adv while a phone is on the AP. */
+void tickApBleCoex() {
+  if (!bleActive || bleClientConnected) return;
+  const int apClients = WiFi.softAPgetStationNum();
+  static int lastApClients = -1;
+  if (apClients == lastApClients) return;
+  lastApClients = apClients;
+  if (apClients > 0) {
+    BLEDevice::stopAdvertising();
+    Serial.println("AP client(s) — BLE advertising paused");
+  } else {
+    BLEDevice::startAdvertising();
+    Serial.println("No AP clients — BLE advertising resumed");
+  }
 }
 
 void beginWifiConnect() {
@@ -413,6 +440,7 @@ void tickWifiConnect() {
     resumeBleAfterWifi();
     Serial.println("Connected!");
     Serial.println(WiFi.localIP());
+    applyWifiRadioForServos();
     applyStaServices();
     setControlSource(CONTROL_WIFI);
     return;
@@ -492,6 +520,7 @@ void startAP() {
   // AP+STA allows WiFi scanning while still hosting setup AP.
   WiFi.mode(WIFI_AP_STA);
   WiFi.softAP(robotApSsid.c_str(), AP_PASS);
+  applyWifiRadioForServos();
 
   Serial.println("AP Mode Started");
   Serial.print("AP SSID: ");
@@ -520,6 +549,7 @@ bool connectToWiFi() {
   if (WiFi.status() == WL_CONNECTED) {
     Serial.println("\nConnected!");
     Serial.println(WiFi.localIP());
+    applyWifiRadioForServos();
     applyStaServices();
     resumeBleAfterWifi();
     return true;
@@ -683,6 +713,7 @@ void setup() {
 
   setControlSource(CONTROL_WIFI);
   startBLE();
+  applyWifiRadioForServos();
 
   // Routes
   server.on("/config", HTTP_OPTIONS, handleOptions);
@@ -712,4 +743,5 @@ void setup() {
 void loop() {
   server.handleClient();
   tickWifiConnect();
+  tickApBleCoex();
 }

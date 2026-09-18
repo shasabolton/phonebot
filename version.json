@@ -1,7 +1,8 @@
-{
-
-  "fwVersion": "1.2.6",
-
-  "appBuildVersion": "208: remove screen-light / light-sensor mode"
-
-}
+{
+
+  "fwVersion": "1.2.7",
+
+  "appBuildVersion": "209: in AP mode no BLE advertise"
+
+}
+
