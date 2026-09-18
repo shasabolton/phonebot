@@ -76,7 +76,7 @@ class WifiTransmitter {
     this.container = container;
     /** @type {object|null} */
     this.deviceFilter = options.deviceFilter || null;
-    /** Base URL of robot when reachable on LAN/WiFi (station), e.g. http://192.168.1.5 */
+    /** Base URL of robot when reachable (station LAN or SoftAP), e.g. http://192.168.1.5 or http://192.168.4.1 */
     this.robotStaBaseUrl = null;
     this.ready = false;
     this._readyChangeHandler = null;
@@ -124,7 +124,7 @@ class WifiTransmitter {
 
   async postControl(path, message) {
     if (!this.robotStaBaseUrl) {
-      return { ok: false, status: 0, body: "Robot not connected on station WiFi." };
+      return { ok: false, status: 0, body: "Robot not connected on WiFi." };
     }
     try {
       const res = await fetch(this.robotStaBaseUrl + path, {
@@ -177,11 +177,11 @@ class WifiTransmitter {
 </div>
 
 <div id="wifiSetup" class="box" style="display:none;">
-  <h3>Connect Robot to Your WiFi</h3>
+  <h3>Optional: Connect Robot to Your WiFi</h3>
 
   <p>
-    Connected to this robot's access point.<br><br>
-    Give it your WiFi credentials so it can join your network.
+    Robot control already works on this access point.<br><br>
+    Optionally give it your WiFi credentials so it can join your network (useful if your phone loses cellular on this AP).
   </p>
 
   <select id="networkList">
@@ -637,7 +637,7 @@ class WifiTransmitter {
     const st = this.el("firmwareStatus");
     if (!btn || !st) return;
     if (!this.robotStaBaseUrl) {
-      st.innerHTML = "<span class='error'>Robot not connected on WiFi (station).</span>";
+      st.innerHTML = "<span class='error'>Robot not connected on WiFi.</span>";
       return;
     }
     if (this._uploadFirmwareBusy) return;
@@ -714,9 +714,19 @@ class WifiTransmitter {
     if (switchBtn) switchBtn.style.display = "none";
 
     if (apOk) {
+      // SoftAP is a full control link (same HTTP /action + /pin-setup as station).
+      this.robotStaBaseUrl = ESP_AP_IP;
+      this.setReady(true);
+      this.setFirmwarePanelVisible(true);
+      const switchBtnAp = this.el("wifiDisconnectBtn");
+      if (switchBtnAp) switchBtnAp.style.display = "block";
       wifiSetup.style.display = "block";
       const identity = await this.fetchRobotIdentityFromAp();
       if (this.deviceFilter && identity && !this._identityMatchesFilter(identity)) {
+        this.robotStaBaseUrl = null;
+        this.setReady(false);
+        this.setFirmwarePanelVisible(false);
+        if (switchBtnAp) switchBtnAp.style.display = "none";
         status.innerHTML =
           "<span class='error'>Wrong robot access point.</span> This link expects <b>" +
           this.deviceFilter.apSsid +
@@ -724,8 +734,10 @@ class WifiTransmitter {
         wifiSetup.style.display = "none";
         return;
       }
-      status.innerHTML = "<span class='warn'>Connected to robot access point.</span>";
+      status.innerHTML =
+        "<span class='ok'>Connected to robot access point — control is active.</span>";
       this.scanNetworks();
+      await this.checkFirmwareVersion(ESP_AP_IP);
       return;
     }
 
