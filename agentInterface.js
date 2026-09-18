@@ -685,15 +685,26 @@ class AgentInterface {
         return text;
     }
 
-    _resolveModel(agent) {
+    _resolveModel(agent, options = {}) {
         const override = this._modelOverrideInput?.value?.trim();
         if (override) return override;
-        const wantVision = !!(
-            this._sendCameraImageInput?.checked ?? this._sendCameraImage
-        );
+        const wantVision =
+            options.wantVision != null
+                ? !!options.wantVision
+                : !!(this._sendCameraImageInput?.checked ?? this._sendCameraImage);
         const fromSession = this._sessionChatModel(wantVision);
         if (fromSession) return fromSession;
         return String(agent?.model || "").trim();
+    }
+
+    /** True if any message already carries a multimodal image part. */
+    _messagesIncludeVisionImage(messages) {
+        if (!Array.isArray(messages)) return false;
+        return messages.some(
+            (m) =>
+                Array.isArray(m?.content) &&
+                m.content.some((p) => p && (p.type === "image_url" || p.type === "image"))
+        );
     }
 
     /**
@@ -2217,9 +2228,20 @@ class AgentInterface {
             this._attachCurrentCameraToLastUserMessage(conversationMessages);
         }
 
-        const model = this._resolveModel(agent);
+        const model = this._resolveModel(agent, {
+            wantVision: sendCameraImage || this._messagesIncludeVisionImage(conversationMessages)
+        });
         if (!model) {
             throw new Error("Set a model on the agent or use the model override field.");
+        }
+        if (
+            this._messagesIncludeVisionImage(conversationMessages) &&
+            this._sessionModels &&
+            !this._sessionModels.vision
+        ) {
+            throw new Error(
+                "Camera image attached but no Groq vision model is available. Uncheck Send camera image or wait for model select."
+            );
         }
 
         if (gemini) {
@@ -2949,7 +2971,10 @@ class AgentInterface {
                 this._attachCurrentCameraToLastUserMessage(conversationMessages);
             }
 
-            const model = this._resolveModel(agent);
+            const model = this._resolveModel(agent, {
+                wantVision:
+                    !!this._sendCameraImage || this._messagesIncludeVisionImage(conversationMessages)
+            });
             if (!model) throw new Error("Set a model on the agent or use the model override field.");
 
             const temperature = Number.isFinite(agent.temperature)
