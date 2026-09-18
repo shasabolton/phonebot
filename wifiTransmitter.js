@@ -54,14 +54,91 @@ function escapeHtml(s) {
     .replace(/"/g, "&quot;");
 }
 
+/**
+ * Classify a robot control URL for Local Network Access (Firefox/Chrome).
+ * HTTPS pages need targetAddressSpace so mixed-content to SoftAP HTTP is allowed
+ * after the user grants local-network permission.
+ * @returns {"local"|"loopback"|null}
+ */
+function robotAddressSpace(url) {
+  try {
+    const base =
+      typeof location !== "undefined" && location.href ? location.href : undefined;
+    const host = new URL(url, base).hostname.toLowerCase();
+    if (host === "localhost" || host === "127.0.0.1" || host === "[::1]" || host === "::1") {
+      return "loopback";
+    }
+    if (host.endsWith(".local")) return "local";
+    const m = /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(host);
+    if (!m) return null;
+    const a = Number(m[1]);
+    const b = Number(m[2]);
+    if (a === 10) return "local";
+    if (a === 172 && b >= 16 && b <= 31) return "local";
+    if (a === 192 && b === 168) return "local";
+    if (a === 169 && b === 254) return "local";
+  } catch (_) {}
+  return null;
+}
+
+/** Remember which targetAddressSpace value worked (local | private | none). */
+let _robotLnaMode = null;
+
+/**
+ * fetch() to the robot SoftAP/LAN, with Local Network Access annotations so
+ * Firefox (and Chromium) can reach http://192.168.x.x from an HTTPS PWA.
+ * On first click the browser should prompt; choose Allow.
+ */
+async function robotFetch(url, options = {}) {
+  const space = robotAddressSpace(url);
+  const baseOpts = { cache: "no-store", ...options };
+  const attempts = [];
+  if (space) {
+    if (_robotLnaMode === "local" || _robotLnaMode == null) {
+      attempts.push({ ...baseOpts, targetAddressSpace: space });
+    }
+    // Older Chromium builds used "private" before the rename to "local".
+    if ((_robotLnaMode === "private" || _robotLnaMode == null) && space === "local") {
+      attempts.push({ ...baseOpts, targetAddressSpace: "private" });
+    }
+  }
+  attempts.push(baseOpts);
+
+  let lastErr = null;
+  for (const opts of attempts) {
+    try {
+      const res = await fetch(url, opts);
+      if (opts.targetAddressSpace === "private") _robotLnaMode = "private";
+      else if (opts.targetAddressSpace === "local" || opts.targetAddressSpace === "loopback") {
+        _robotLnaMode = "local";
+      } else if (_robotLnaMode == null) {
+        _robotLnaMode = "none";
+      }
+      return res;
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw lastErr || new Error("network error");
+}
+
+function localNetworkAccessHintHtml() {
+  const https =
+    typeof location !== "undefined" && location.protocol === "https:";
+  if (!https) return "";
+  return (
+    "<br><br><span class='warn'>If Firefox (or Chrome) asks to allow <b>local network access</b>, choose Allow — " +
+    "HTTPS pages cannot reach the robot WiFi (http://192.168.4.1) until you do.</span>"
+  );
+}
+
 async function ping(url, timeoutMs = 1500) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch(url + "/ping", {
+    const res = await robotFetch(url + "/ping", {
       method: "GET",
-      signal: controller.signal,
-      cache: "no-store"
+      signal: controller.signal
     });
     if (res.ok) return true;
   } catch (e) {}
@@ -153,7 +230,7 @@ class WifiTransmitter {
       return { ok: false, status: 0, body: "Robot not connected on WiFi." };
     }
     try {
-      const res = await fetch(this.robotStaBaseUrl + path, {
+      const res = await robotFetch(this.robotStaBaseUrl + path, {
         method: "POST",
         headers: { "Content-Type": "text/plain" },
         body: message || ""
@@ -379,7 +456,7 @@ class WifiTransmitter {
 
   async fetchRobotIdentityFromAp() {
     try {
-      const res = await fetch(ESP_AP_IP + "/status", { method: "GET" });
+      const res = await robotFetch(ESP_AP_IP + "/status", { method: "GET" });
       if (!res.ok) return null;
       const data = await res.json();
       this._lastApIdentity = data;
@@ -474,7 +551,7 @@ class WifiTransmitter {
     networkList.innerHTML = "<option value=''>Loading networks...</option>";
 
     try {
-      const res = await fetch(ESP_AP_IP + "/scan", { method: "GET" });
+      const res = await robotFetch(ESP_AP_IP + "/scan", { method: "GET" });
       if (!res.ok) {
         throw new Error("Scan request failed");
       }
@@ -547,7 +624,7 @@ class WifiTransmitter {
     const ac = new AbortController();
     const to = setTimeout(() => ac.abort(), 4000);
     try {
-      const r = await fetch(baseUrl + "/version", {
+      const r = await robotFetch(baseUrl + "/version", {
         method: "GET",
         signal: ac.signal
       });
@@ -702,7 +779,7 @@ class WifiTransmitter {
     try {
       const form = new FormData();
       form.append("update", blob, "firmware.bin");
-      const res = await fetch(this.robotStaBaseUrl + "/update", {
+      const res = await robotFetch(this.robotStaBaseUrl + "/update", {
         method: "POST",
         body: form
       });
@@ -836,7 +913,9 @@ class WifiTransmitter {
     status.innerHTML =
       "<span class='error'>Robot not found.</span><br><br>" +
       "Connect your computer to this robot's WiFi access point, then click below.<br><br>" +
-      this.apSsidHintHtml() + "<br><br>" +
+      this.apSsidHintHtml() +
+      localNetworkAccessHintHtml() +
+      "<br><br>" +
       "<button type=\"button\" data-action=\"detect-mode\">Click here when you are connected</button>";
   }
 
@@ -867,7 +946,7 @@ class WifiTransmitter {
 
     const mergeStatusFromAp = async (ipHint) => {
       try {
-        const stRes = await fetch(ESP_AP_IP + "/status", { method: "GET" });
+        const stRes = await robotFetch(ESP_AP_IP + "/status", { method: "GET" });
         if (stRes.ok) {
           const st = await stRes.json();
           this.mergeRobot({
@@ -886,7 +965,7 @@ class WifiTransmitter {
       for (let attempt = 0; attempt < 25; attempt++) {
         await new Promise((resolve) => setTimeout(resolve, 1000));
         try {
-          const stRes = await fetch(ESP_AP_IP + "/status", { method: "GET" });
+          const stRes = await robotFetch(ESP_AP_IP + "/status", { method: "GET" });
           if (!stRes.ok) continue;
           const st = await stRes.json();
           if (st.connected) {
@@ -901,7 +980,7 @@ class WifiTransmitter {
     };
 
     try {
-      const res = await fetch(ESP_AP_IP + "/config", {
+      const res = await robotFetch(ESP_AP_IP + "/config", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

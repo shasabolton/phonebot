@@ -307,7 +307,7 @@ class App {
 
         const httpsHint =
             typeof location !== "undefined" && location.protocol === "https:"
-                ? " If this page is HTTPS, the browser may block http://192.168.4.1 — use Chrome Bluetooth on Android, or open the app over HTTP on your LAN."
+                ? " If Firefox asks for local network access, choose Allow. HTTPS pages cannot reach http://192.168.4.1 until that is allowed (or use Chrome Bluetooth / open the app over HTTP on your LAN)."
                 : "";
         if (this.robot && typeof this.robot.setStartFlowFeedback === "function") {
             this.robot.setStartFlowFeedback(
