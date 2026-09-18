@@ -81,6 +81,9 @@ class WifiTransmitter {
     this.robotStaBaseUrl = null;
     this.ready = false;
     this._readyChangeHandler = null;
+    /** Hz for /action while the app transmit loop is on (1–20). */
+    this.actionFrequencyHz = 10;
+    this._actionFreqChangeHandler = null;
     this._uploadFirmwareBusy = false;
     /** @type {Promise<void> | null} */
     this._detectPromise = null;
@@ -103,6 +106,10 @@ class WifiTransmitter {
     if (this._readyChangeHandler) this._readyChangeHandler(this.ready);
   }
 
+  setActionFrequencyChangeHandler(handler) {
+    this._actionFreqChangeHandler = handler;
+  }
+
   setReady(ready) {
     const changed = this.ready !== ready;
     this.ready = ready;
@@ -111,6 +118,24 @@ class WifiTransmitter {
 
   isReady() {
     return this.ready && !!this.robotStaBaseUrl;
+  }
+
+  getActionIntervalMs() {
+    const hz = Math.max(1, Math.min(20, Number(this.actionFrequencyHz) || 10));
+    return Math.max(50, Math.round(1000 / hz));
+  }
+
+  setActionFrequencyHz(hz, { notify = true } = {}) {
+    const next = Math.max(1, Math.min(20, Math.round(Number(hz) || 10)));
+    const changed = next !== this.actionFrequencyHz;
+    this.actionFrequencyHz = next;
+    const slider = this.el("actionFreqHz");
+    const label = this.el("actionFreqHzValue");
+    if (slider && Number(slider.value) !== next) slider.value = String(next);
+    if (label) label.textContent = String(next);
+    if (changed && notify && this._actionFreqChangeHandler) {
+      this._actionFreqChangeHandler(next);
+    }
   }
 
   /** Resolves when the current (or last) connection probe finishes. */
@@ -165,6 +190,14 @@ class WifiTransmitter {
 <div id="status" class="box">Checking robot connection...</div>
 <button type="button" id="wifiDisconnectBtn" style="display:none;">Disconnect / Switch Device</button>
 
+<div id="actionRatePanel" class="box">
+  <label for="actionFreqHz"><b>Action send rate</b> <span id="actionFreqHzValue">10</span> Hz</label>
+  <input type="range" id="actionFreqHz" min="1" max="20" step="1" value="10" style="width:100%;margin-top:8px;">
+  <p class="muted" style="margin-top:6px;margin-bottom:0;">
+    How often <code>/action</code> is posted while the transmit loop is on. SoftAP often needs a lower rate (~5 Hz).
+  </p>
+</div>
+
 <div id="firmwarePanel" class="box">
   <h3>Firmware</h3>
   <div id="firmwareVersionInfo" class="muted" style="margin-bottom:10px;"></div>
@@ -214,6 +247,12 @@ class WifiTransmitter {
     if (scan) scan.addEventListener("click", () => this.scanNetworks());
     const send = this.el("wifiSendCredsBtn");
     if (send) send.addEventListener("click", () => this.sendCreds());
+    const freq = this.el("actionFreqHz");
+    if (freq) {
+      const onFreq = () => this.setActionFrequencyHz(freq.value);
+      freq.addEventListener("input", onFreq);
+      freq.addEventListener("change", onFreq);
+    }
   }
 
   setDeviceFilter(filter) {

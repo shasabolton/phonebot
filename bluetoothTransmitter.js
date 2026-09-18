@@ -20,6 +20,9 @@ class BluetoothTransmitter {
     this.deviceFilter = options.deviceFilter || null;
     this.ready = false;
     this._readyChangeHandler = null;
+    /** Hz for action writes while the app transmit loop is on (1–20). */
+    this.actionFrequencyHz = 10;
+    this._actionFreqChangeHandler = null;
     /** @type {BluetoothDevice|null} */
     this._device = null;
     /** @type {BluetoothRemoteGATTServer|null} */
@@ -56,6 +59,10 @@ class BluetoothTransmitter {
     if (this._readyChangeHandler) this._readyChangeHandler(this.ready);
   }
 
+  setActionFrequencyChangeHandler(handler) {
+    this._actionFreqChangeHandler = handler;
+  }
+
   setReady(ready) {
     const changed = this.ready !== ready;
     this.ready = ready;
@@ -64,6 +71,24 @@ class BluetoothTransmitter {
 
   isReady() {
     return this.ready && !!this._actionChar;
+  }
+
+  getActionIntervalMs() {
+    const hz = Math.max(1, Math.min(20, Number(this.actionFrequencyHz) || 10));
+    return Math.max(50, Math.round(1000 / hz));
+  }
+
+  setActionFrequencyHz(hz, { notify = true } = {}) {
+    const next = Math.max(1, Math.min(20, Math.round(Number(hz) || 10)));
+    const changed = next !== this.actionFrequencyHz;
+    this.actionFrequencyHz = next;
+    const slider = this.el("actionFreqHz");
+    const label = this.el("actionFreqHzValue");
+    if (slider && Number(slider.value) !== next) slider.value = String(next);
+    if (label) label.textContent = String(next);
+    if (changed && notify && this._actionFreqChangeHandler) {
+      this._actionFreqChangeHandler(next);
+    }
   }
 
   destroy() {
@@ -100,6 +125,13 @@ class BluetoothTransmitter {
 <div id="bleStatus" class="box">Checking Bluetooth support…</div>
 <button type="button" id="bleConnectBtn" data-action="ble-connect">Connect to robot</button>
 <button type="button" id="bleDisconnectBtn" style="display:none;">Disconnect</button>
+<div id="actionRatePanel" class="box">
+  <label for="actionFreqHz"><b>Action send rate</b> <span id="actionFreqHzValue">10</span> Hz</label>
+  <input type="range" id="actionFreqHz" min="1" max="20" step="1" value="10" style="width:100%;margin-top:8px;">
+  <p class="muted" style="margin-top:6px;margin-bottom:0;">
+    How often action GATT writes run while the transmit loop is on.
+  </p>
+</div>
 <p id="bleDeviceHint" class="muted"></p>
 <div id="bleDeviceInfo" class="muted" style="margin-top:8px;word-break:break-all;"></div>
 `;
@@ -110,6 +142,12 @@ class BluetoothTransmitter {
   _bindControls() {
     const disc = this.el("bleDisconnectBtn");
     if (disc) disc.addEventListener("click", () => void this.disconnect());
+    const freq = this.el("actionFreqHz");
+    if (freq) {
+      const onFreq = () => this.setActionFrequencyHz(freq.value);
+      freq.addEventListener("input", onFreq);
+      freq.addEventListener("change", onFreq);
+    }
   }
 
   _refreshAvailability() {

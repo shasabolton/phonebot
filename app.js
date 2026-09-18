@@ -335,17 +335,42 @@ class App {
         return this.transmitterInstance.transmitPinSetup(this.robot.buildPinSetupMessage());
     }
 
+    _actionIntervalMs() {
+        const tx = this.transmitterInstance;
+        if (tx && typeof tx.getActionIntervalMs === 'function') {
+            return tx.getActionIntervalMs();
+        }
+        return 100;
+    }
+
     startLoop() {
         if (this.loopIntervalId) return;
         this.loopIntervalId = setInterval(() => {
             this.transmitActionsMessage();
-        }, 100);
+        }, this._actionIntervalMs());
     }
 
     stopLoop() {
         if (this.loopIntervalId) {
             clearInterval(this.loopIntervalId);
             this.loopIntervalId = null;
+        }
+    }
+
+    /** Apply a new action Hz from the transmitter slider without stopping run state. */
+    restartActionLoopIfRunning() {
+        if (!this.isRunLoopActive()) return;
+        this.stopLoop();
+        this.startLoop();
+    }
+
+    _wireTransmitterHandlers(tx) {
+        if (!tx) return;
+        if (typeof tx.setReadyChangeHandler === 'function') {
+            tx.setReadyChangeHandler(() => this.updateStartButtonState());
+        }
+        if (typeof tx.setActionFrequencyChangeHandler === 'function') {
+            tx.setActionFrequencyChangeHandler(() => this.restartActionLoopIfRunning());
         }
     }
 
@@ -477,13 +502,13 @@ class App {
                 this.transmitterGuiMount,
                 this._getTransmitterOptions()
             );
-            this.transmitterInstance.setReadyChangeHandler(() => this.updateStartButtonState());
+            this._wireTransmitterHandlers(this.transmitterInstance);
         } else if (v === "bluetooth") {
             this.transmitterInstance = new BluetoothTransmitter(
                 this.transmitterGuiMount,
                 this._getTransmitterOptions()
             );
-            this.transmitterInstance.setReadyChangeHandler(() => this.updateStartButtonState());
+            this._wireTransmitterHandlers(this.transmitterInstance);
         }
         this.updateStartButtonState();
     }
