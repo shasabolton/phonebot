@@ -54,13 +54,14 @@ function escapeHtml(s) {
     .replace(/"/g, "&quot;");
 }
 
-async function ping(url) {
+async function ping(url, timeoutMs = 1500) {
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 1500);
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const res = await fetch(url + "/ping", {
       method: "GET",
-      signal: controller.signal
+      signal: controller.signal,
+      cache: "no-store"
     });
     if (res.ok) return true;
   } catch (e) {}
@@ -522,14 +523,19 @@ class WifiTransmitter {
 
     let latestFw = null;
     if (window.location.protocol === "http:" || window.location.protocol === "https:") {
+      const acPage = new AbortController();
+      const toPage = setTimeout(() => acPage.abort(), 2500);
       try {
         const u = new URL("version.json", window.location.href).href;
-        const r = await fetch(u, { method: "GET", cache: "no-store" });
+        const r = await fetch(u, { method: "GET", cache: "no-store", signal: acPage.signal });
         if (r.ok) {
           const j = await r.json();
           latestFw = j.fwVersion != null ? String(j.fwVersion) : null;
         }
       } catch (e) {}
+      finally {
+        clearTimeout(toPage);
+      }
     }
 
     if (!robotFw) {
@@ -675,7 +681,17 @@ class WifiTransmitter {
   }
 
   async detectMode() {
-    const run = this._detectModeBody();
+    const prev = this._detectPromise;
+    const run = (async () => {
+      if (prev) {
+        try {
+          await prev;
+        } catch (_) {
+          /* ignore prior probe errors */
+        }
+      }
+      await this._detectModeBody();
+    })();
     this._detectPromise = run;
     try {
       await run;
@@ -736,8 +752,9 @@ class WifiTransmitter {
       }
       status.innerHTML =
         "<span class='ok'>Connected to robot access point — control is active.</span>";
-      this.scanNetworks();
-      await this.checkFirmwareVersion(ESP_AP_IP);
+      // Do not await: page-origin fetches (version.json) hang or stall with no internet on SoftAP.
+      void this.scanNetworks();
+      void this.checkFirmwareVersion(ESP_AP_IP);
       return;
     }
 

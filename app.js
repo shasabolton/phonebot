@@ -299,9 +299,28 @@ class App {
         this.selectTransmitter("wifi");
         const tx = this.transmitterInstance;
         if (!tx || typeof tx.detectMode !== "function") return false;
-        await tx.detectMode();
-        this.updateStartButtonState();
-        return this.isWifiConnected();
+
+        // WiFi association can lag after returning from Settings; retry briefly.
+        for (let attempt = 0; attempt < 4; attempt++) {
+            if (attempt > 0) {
+                await new Promise((r) => setTimeout(r, 700));
+            }
+            await tx.detectMode();
+            this.updateStartButtonState();
+            if (this.isWifiConnected()) return true;
+        }
+
+        const httpsHint =
+            typeof location !== "undefined" && location.protocol === "https:"
+                ? " If this page is HTTPS, the browser may block http://192.168.4.1 — use Chrome Bluetooth on Android, or open the app over HTTP on your LAN."
+                : "";
+        if (this.robot && typeof this.robot.setStartFlowFeedback === "function") {
+            this.robot.setStartFlowFeedback(
+                "Still can't reach the robot. Stay connected to the Robot-… WiFi, wait a moment, then tap I'm connected again." +
+                    httpsHint
+            );
+        }
+        return false;
     }
 
     /** When a robot is chosen and station WiFi/Bluetooth is not ready, default transmitter to screen light. */

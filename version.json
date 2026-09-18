@@ -2,7 +2,7 @@
 
   "fwVersion": "1.2.5",
 
-  "appBuildVersion": "206: AP start flow without Web Bluetooth"
+  "appBuildVersion": "207: AP connect probe no longer hangs offline"
 
 }
 

@@ -1154,13 +1154,21 @@ class Robot {
 
     async _skipStartFlowStep() {
         const flow = this.getStartFlowConfig();
-        if (!flow || this._startFlowBusy) return;
+        if (!flow) return;
+        // Allow Cancel even while a probe is in progress (e.g. hung network check).
+        this._startFlowBusy = false;
         this._moveToNextApplicableStartFlowStep(this._startFlowStep + 1);
         if (this._startFlowStep >= flow.steps.length) {
             await this._finishStartFlow();
             return;
         }
         this._renderStartFlowStep();
+    }
+
+    setStartFlowFeedback(message) {
+        const text = String(message || "").trim();
+        if (!text || !this._startFlowTextEl) return;
+        this._startFlowTextEl.textContent = text;
     }
 
     async _advanceStartFlow() {
@@ -1190,6 +1198,8 @@ class Robot {
             } finally {
                 this._startFlowBusy = false;
             }
+            // User may have Cancel'd while the action was in flight.
+            if (!this._startFlowOverlay) return;
             if (!ok) {
                 if (this._startFlowBtn) {
                     this._startFlowBtn.disabled = false;
