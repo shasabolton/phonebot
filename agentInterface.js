@@ -1730,10 +1730,10 @@ class AgentInterface {
         this._syncSendButtonState();
         try {
             if (this._statusEl) {
-                this._statusEl.textContent = "Get ready — pose photo in 20…";
+                this._statusEl.textContent = "Get ready — pose photo in 5…";
                 this._statusEl.className = "muted";
             }
-            const countdownOk = await this._runCameraCountdown(20, generation);
+            const countdownOk = await this._runCameraCountdown(5, generation);
             if (!countdownOk || generation !== this._speakGeneration || !this._agentEnabled) return;
 
             this._refreshCurrentCameraImageUrl();
@@ -1782,8 +1782,9 @@ class AgentInterface {
         if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
             return content;
         }
+        // Never speak a chat.completion API envelope.
         if (Array.isArray(payload.choices) || payload.object === "chat.completion") {
-            return content;
+            return "";
         }
         if (typeof payload.message === "string" && payload.message.trim()) {
             return payload.message.trim();
@@ -1799,6 +1800,33 @@ class AgentInterface {
             return "";
         }
         return content;
+    }
+
+    _resolveMaxTokens(agent, messages) {
+        const base = Number.isFinite(agent?.maxTokens) ? Math.round(agent.maxTokens) : 1024;
+        if (typeof window.GroqChatRecover?.ensureVisionMaxTokens === "function") {
+            return window.GroqChatRecover.ensureVisionMaxTokens(base, messages);
+        }
+        const hasVision =
+            Array.isArray(messages) &&
+            messages.some(
+                (m) =>
+                    Array.isArray(m?.content) &&
+                    m.content.some((p) => p && (p.type === "image_url" || p.type === "image"))
+            );
+        return hasVision ? Math.max(base, 512) : base;
+    }
+
+    _assistantContentFromChatJson(json) {
+        if (typeof window.GroqChatRecover?.extractAssistantContentText === "function") {
+            return window.GroqChatRecover.extractAssistantContentText(json);
+        }
+        const msg = json?.choices?.[0]?.message;
+        const raw =
+            (typeof msg?.content === "string" && msg.content) ||
+            json?.choices?.[0]?.text ||
+            "";
+        return this._stripThinkingBlocks(String(raw || "").trim());
     }
 
     _buildBodyPlanFromRobotConfig() {
@@ -2264,7 +2292,7 @@ class AgentInterface {
             model,
             messages: conversationMessages,
             temperature,
-            max_tokens: Number.isFinite(agent.maxTokens) ? Math.round(agent.maxTokens) : 1024
+            max_tokens: this._resolveMaxTokens(agent, conversationMessages)
         };
         if (responseFormat) {
             body.response_format = responseFormat;
@@ -2341,16 +2369,17 @@ class AgentInterface {
         } catch (_) {
             throw new Error("Response was not JSON.");
         }
-        const content =
-            json?.choices?.[0]?.message?.content ??
-            json?.choices?.[0]?.text ??
-            json?.message?.content ??
-            "";
-        const contentText = this._stripThinkingBlocks(String(content || "").trim());
+        const contentText = this._assistantContentFromChatJson(json);
+        if (!contentText) {
+            const finish = json?.choices?.[0]?.finish_reason || "unknown";
+            throw new Error(
+                `Model returned empty content (finish_reason=${finish}). Increase max tokens for vision/reasoning turns.`
+            );
+        }
         return {
             rawText,
             json,
-            contentText: contentText || JSON.stringify(json, null, 2)
+            contentText
         };
     }
 
@@ -2992,7 +3021,7 @@ class AgentInterface {
                 model,
                 messages: conversationMessages,
                 temperature,
-                max_tokens: Number.isFinite(agent.maxTokens) ? Math.round(agent.maxTokens) : 1024
+                max_tokens: this._resolveMaxTokens(agent, conversationMessages)
             };
             if (responseFormat) chatBody.response_format = responseFormat;
             const reasoningEffort = this._resolveReasoningEffort(agent, model);

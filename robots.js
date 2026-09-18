@@ -369,7 +369,7 @@ window.ROBOTS_DATA = {
                         transcriptionModel: "whisper-large-v3",
                         speechModel: "canopylabs/orpheus-v1-english",
                         temperature: 0.3,
-                        maxTokens: 96,
+                        maxTokens: 256,
                         reasoningEffort: "low"
                     }
                 ]

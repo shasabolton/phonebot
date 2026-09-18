@@ -5,7 +5,7 @@ import {
     applyOrpheusVocalDirections,
     orpheusSpeechBodyBudget
 } from "../../groqModelSelect.js";
-import { trySalvageGroqChatError } from "../../groqChatRecover.js";
+import { trySalvageGroqChatError, ensureVisionMaxTokens, extractAssistantContentText } from "../../groqChatRecover.js";
 
 const MODE_CATALOG = Object.freeze({
     simonSaysPoseMatch: {
@@ -383,7 +383,10 @@ async function proxyGroqChat(request, env) {
     if (!sessionAllowsChatModel(session, body.model, env)) {
         throw httpError(400, "Model is not allowed for hosted arcade use.");
     }
-    body.max_tokens = Math.min(1024, Math.max(1, Number(body.max_tokens) || 256));
+    body.max_tokens = Math.min(
+        1024,
+        ensureVisionMaxTokens(Number(body.max_tokens) || 256, body.messages)
+    );
     body.stream = false;
     applyCrossModelChatDefaults(body);
 
@@ -543,7 +546,10 @@ async function proxyGroqVoiceTurn(request, env) {
     if (!sessionAllowsChatModel(session, chatBody.model, env)) {
         throw httpError(400, "Model is not allowed for hosted arcade use.");
     }
-    chatBody.max_tokens = Math.min(1024, Math.max(1, Number(chatBody.max_tokens) || 256));
+    chatBody.max_tokens = Math.min(
+        1024,
+        ensureVisionMaxTokens(Number(chatBody.max_tokens) || 256, chatBody.messages)
+    );
     chatBody.stream = false;
     applyCrossModelChatDefaults(chatBody);
 
@@ -605,14 +611,16 @@ async function proxyGroqVoiceTurn(request, env) {
             throw httpError(502, "Groq chat response was invalid.");
         }
     }
-    const rawContent =
-        chatPayload?.choices?.[0]?.message?.content ??
-        chatPayload?.choices?.[0]?.text ??
-        chatPayload?.message?.content ??
-        "";
-    const stripped = stripThinkingBlocks(rawContent);
-    const contentText = stripped || String(rawContent || "").trim() || JSON.stringify(chatPayload);
+    const rawContent = extractAssistantContentText(chatPayload);
+    const contentText = rawContent;
     const spokenText = extractSpokenText(contentText);
+    if (!contentText) {
+        const finish = chatPayload?.choices?.[0]?.finish_reason || "unknown";
+        throw httpError(
+            422,
+            `Model returned empty content (finish_reason=${finish}). Increase max tokens for vision/reasoning turns.`
+        );
+    }
     const chatMs = Date.now() - chatStartedAt;
 
     let audioBase64 = "";
@@ -725,6 +733,7 @@ function extractSpokenText(contentText) {
         }
     }
     if (!payload || typeof payload !== "object" || Array.isArray(payload)) return content;
+    if (Array.isArray(payload.choices) || payload.object === "chat.completion") return "";
     if (typeof payload.message === "string" && payload.message.trim()) return payload.message.trim();
     if (typeof payload.reply === "string" && payload.reply.trim()) return payload.reply.trim();
     if (typeof payload.text === "string" && payload.text.trim()) return payload.text.trim();

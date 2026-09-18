@@ -301,11 +301,58 @@ function trySalvageGroqChatError(status, rawText, model = "") {
     };
 }
 
+const MIN_VISION_MAX_TOKENS = 512;
+
+function messagesIncludeVisionImage(messages) {
+    if (!Array.isArray(messages)) return false;
+    return messages.some(
+        (m) =>
+            Array.isArray(m?.content) &&
+            m.content.some((p) => p && (p.type === "image_url" || p.type === "image"))
+    );
+}
+
+/**
+ * Raise max_tokens when the request carries an image (reasoning + reply need headroom).
+ * @param {number} maxTokens
+ * @param {unknown} messages
+ * @param {number} [minVision]
+ * @returns {number}
+ */
+function ensureVisionMaxTokens(maxTokens, messages, minVision = MIN_VISION_MAX_TOKENS) {
+    const n = Math.max(1, Math.round(Number(maxTokens) || 256));
+    const floor = Math.max(1, Math.round(Number(minVision) || MIN_VISION_MAX_TOKENS));
+    if (!messagesIncludeVisionImage(messages)) return n;
+    return Math.max(n, floor);
+}
+
+/**
+ * Assistant speakable text from a chat.completion payload. Never returns the raw envelope.
+ * @param {object} payload
+ * @returns {string}
+ */
+function extractAssistantContentText(payload) {
+    if (!payload || typeof payload !== "object") return "";
+    const msg = payload?.choices?.[0]?.message;
+    const raw =
+        (typeof msg?.content === "string" && msg.content) ||
+        payload?.choices?.[0]?.text ||
+        (typeof payload?.message?.content === "string" && payload.message.content) ||
+        "";
+    return String(raw || "")
+        .replace(/<think\b[^>]*>[\s\S]*?<\/think>/gi, "")
+        .trim();
+}
+
 const api = {
     salvageGroqToolUseFailedText,
     extractTextFromFailedGeneration,
     syntheticChatCompletion,
-    trySalvageGroqChatError
+    trySalvageGroqChatError,
+    messagesIncludeVisionImage,
+    ensureVisionMaxTokens,
+    extractAssistantContentText,
+    MIN_VISION_MAX_TOKENS
 };
 
 if (typeof window !== "undefined") {
@@ -316,6 +363,10 @@ export {
     salvageGroqToolUseFailedText,
     extractTextFromFailedGeneration,
     syntheticChatCompletion,
-    trySalvageGroqChatError
+    trySalvageGroqChatError,
+    messagesIncludeVisionImage,
+    ensureVisionMaxTokens,
+    extractAssistantContentText,
+    MIN_VISION_MAX_TOKENS
 };
 export default api;
