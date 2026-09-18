@@ -63,7 +63,7 @@ class App {
         };
     }
 
-    /** Physical robot id from ?device= (robot-XXXXXX), or null for all devices. */
+    /** Physical robot id from ?device= (robot-… hex MAC), or null for all devices. */
     getDeviceFilter() {
         return this.deviceFilter || null;
     }

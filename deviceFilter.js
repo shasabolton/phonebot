@@ -1,6 +1,6 @@
 /**
- * Normalize ?device= URL values to physical robot ids (robot-XXXXXX / Robot-XXXXXX).
- * Shared by WiFi and Bluetooth transmitters.
+ * Normalize ?device= URL values to physical robot ids.
+ * ESP32: full MAC (12 hex). ESP8266 / older firmware: 6 hex.
  */
 const PhonebotDeviceFilter = {
   /** @param {string|null|undefined} raw */
@@ -8,11 +8,11 @@ const PhonebotDeviceFilter = {
     const s = String(raw || "").trim();
     if (!s) return null;
     const m =
-      s.match(/^(?:robot-?|Robot-?)([0-9a-fA-F]{6})$/i) ||
-      s.match(/^([0-9a-fA-F]{6})$/);
+      s.match(/^(?:robot-?|Robot-?)([0-9a-fA-F]{6}|[0-9a-fA-F]{12})$/i) ||
+      s.match(/^([0-9a-fA-F]{6}|[0-9a-fA-F]{12})$/);
     if (!m) return null;
     const chipId = m[1].toUpperCase();
-    if (!/^[0-9A-F]{6}$/.test(chipId)) return null;
+    if (!/^[0-9A-F]{6}$|^[0-9A-F]{12}$/.test(chipId)) return null;
     return {
       chipId,
       bleName: "robot-" + chipId.toLowerCase(),

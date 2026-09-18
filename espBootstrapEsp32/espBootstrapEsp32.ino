@@ -12,7 +12,7 @@
 
 // ===== CONFIG =====
 /** Bump this when releasing firmware; keep version.json in the repo in sync (manual for now). */
-#define FW_VERSION "1.2.4"
+#define FW_VERSION "1.2.5"
 
 /**
  * BUILD (ESP32 Dev Module, 4MB flash): sketch + BLE exceeds the default 1.2MB app slot.
@@ -31,7 +31,8 @@ const char* AP_PASS = "12345678";
 
 WebServer server(80);
 
-// Unique per device (from eFuse MAC lower 24 bits — same Robot-XXXXXX shape as ESP8266 bootstrap)
+// Unique per device: full 48-bit eFuse MAC as 12 hex digits (Robot-XXXXXXXXXXXX)
+String robotChipId;   // uppercase, no colons
 String robotApSsid;
 String robotHostname;
 
@@ -94,8 +95,15 @@ int lightUsMin = 1000;
 int lightMvMax = 182;
 int lightUsMax = 2000;
 
-uint32_t deviceId24() {
-  return (uint32_t)(ESP.getEfuseMac() & 0xFFFFFF);
+/** Fill 6-byte MAC in network/printed order from little-endian getEfuseMac(). */
+void readMacBytes(uint8_t out[6]) {
+  uint64_t mac = ESP.getEfuseMac();
+  out[0] = (uint8_t)(mac);
+  out[1] = (uint8_t)(mac >> 8);
+  out[2] = (uint8_t)(mac >> 16);
+  out[3] = (uint8_t)(mac >> 24);
+  out[4] = (uint8_t)(mac >> 32);
+  out[5] = (uint8_t)(mac >> 40);
 }
 
 int findServoIndexByPin(int pin) {
@@ -608,11 +616,23 @@ void tickWifiConnect() {
 // ===== FUNCTIONS =====
 
 void buildRobotIdentity() {
-  uint32_t cid = deviceId24();
-  char chipHexUpper[8];
-  char chipHexLower[8];
-  snprintf(chipHexUpper, sizeof(chipHexUpper), "%06X", cid);
-  snprintf(chipHexLower, sizeof(chipHexLower), "%06x", cid);
+  uint8_t mac[6];
+  readMacBytes(mac);
+  char chipHexUpper[13];
+  char chipHexLower[13];
+  snprintf(
+    chipHexUpper,
+    sizeof(chipHexUpper),
+    "%02X%02X%02X%02X%02X%02X",
+    mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
+  );
+  snprintf(
+    chipHexLower,
+    sizeof(chipHexLower),
+    "%02x%02x%02x%02x%02x%02x",
+    mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
+  );
+  robotChipId = String(chipHexUpper);
   robotApSsid = String("Robot-") + chipHexUpper;
   robotHostname = String("robot-") + chipHexLower;
 }
@@ -705,12 +725,9 @@ void handleStatus() {
   bool connected = WiFi.status() == WL_CONNECTED;
   String ip = connected ? WiFi.localIP().toString() : "";
 
-  char chipBuf[16];
-  snprintf(chipBuf, sizeof(chipBuf), "%06X", deviceId24());
-
   String mdnsFull = robotHostname + ".local";
   String json = "{";
-  json += "\"chipId\":\"" + String(chipBuf) + "\",";
+  json += "\"chipId\":\"" + jsonEscape(robotChipId) + "\",";
   json += "\"apSsid\":\"" + jsonEscape(robotApSsid) + "\",";
   json += "\"hostname\":\"" + jsonEscape(robotHostname) + "\",";
   json += "\"mdnsHost\":\"" + jsonEscape(mdnsFull) + "\",";

@@ -90,7 +90,7 @@ class BluetoothTransmitter {
       );
     }
     return (
-      "Look for a device named <b>robot-</b> followed by six hex digits (same id as the WiFi AP). " +
+      "Look for a device named <b>robot-</b> followed by hex digits (full MAC on ESP32; same id as the WiFi AP). " +
       "Keep the phone within a few metres of the ESP32. Bluetooth control works without WiFi."
     );
   }

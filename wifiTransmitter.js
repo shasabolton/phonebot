@@ -401,7 +401,7 @@ class WifiTransmitter {
     const robots = loadRobots();
     if (robots.length === 0) {
       return (
-        "Look for a WiFi network named <b>Robot-</b> followed by six hex digits " +
+        "Look for a WiFi network named <b>Robot-</b> followed by hex digits " +
         "(same id as this robot's hostname). Password: <b>" + ESP_AP_PASS + "</b>"
       );
     }
