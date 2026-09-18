@@ -1,4 +1,8 @@
-{
-  "fwVersion": "1.2.4",
-  "appBuildVersion": "203: vision max tokens + no JSON TTS"
-}
+{
+
+  "fwVersion": "1.2.4",
+
+  "appBuildVersion": "204: 500ms mic delay"
+
+}
+

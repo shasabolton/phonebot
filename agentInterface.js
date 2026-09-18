@@ -88,6 +88,8 @@ class AgentInterface {
         this._pttLabelEl = null;
         this._pttState = "hidden";
         this._pttRecording = false;
+        this._pttFinishing = false;
+        this._pttFinishToken = 0;
         this._pttRecordStream = null;
         this._pttMediaRecorder = null;
         this._pttRecordChunks = [];
@@ -102,6 +104,8 @@ class AgentInterface {
     }
 
   static PTT_MIN_HOLD_MS = 250;
+    /** Keep capturing after finger-up so the last words aren't cut off. */
+    static PTT_RELEASE_TAIL_MS = 500;
     static PTT_MAX_RECORD_MS = 20000;
 
     /** True when a hold-to-talk game is active (Philosophy, 20 Questions, Fortune Teller). */
@@ -1319,6 +1323,8 @@ class AgentInterface {
             clearTimeout(this._pttMaxTimer);
             this._pttMaxTimer = null;
         }
+        this._pttFinishToken += 1;
+        this._pttFinishing = false;
         if (this._pttMediaRecorder && this._pttMediaRecorder.state !== "inactive") {
             try {
                 this._pttMediaRecorder.stop();
@@ -1355,7 +1361,7 @@ class AgentInterface {
     }
 
     async _onPttPointerUp(_ev) {
-        if (!this._pttRecording) return;
+        if (!this._pttRecording || this._pttFinishing) return;
         const blob = await this._finishPttRecording();
         const waitResolve = this._pttWaitResolve;
         if (typeof waitResolve === "function") {
@@ -1409,50 +1415,78 @@ class AgentInterface {
     }
 
     async _finishPttRecording() {
-        if (!this._pttRecording) return null;
+        if (!this._pttRecording || this._pttFinishing) return null;
+        this._pttFinishing = true;
+        const finishToken = ++this._pttFinishToken;
         if (this._pttMaxTimer) {
             clearTimeout(this._pttMaxTimer);
             this._pttMaxTimer = null;
         }
 
+        // Measure hold at finger-up; trailing capture does not count toward the minimum.
         const holdMs = Date.now() - (this._pttRecordStartedAt || Date.now());
         const mediaRecorder = this._pttMediaRecorder;
         const chunks = this._pttRecordChunks;
         const stream = this._pttRecordStream;
         const mimeType = mediaRecorder?.mimeType || this._pickRecorderMimeType() || "audio/webm";
+        const startedAt = this._pttRecordStartedAt;
 
-        const blob = await new Promise((resolve) => {
-            const finish = () => {
-                const type = mediaRecorder?.mimeType || mimeType;
-                resolve(chunks.length ? new Blob(chunks, { type }) : null);
-            };
-            if (!mediaRecorder || mediaRecorder.state === "inactive") {
-                finish();
-                return;
+        try {
+            // Keep capturing briefly after release so speech isn't cut off early.
+            await new Promise((r) => setTimeout(r, AgentInterface.PTT_RELEASE_TAIL_MS));
+            if (
+                finishToken !== this._pttFinishToken ||
+                !this._pttRecording ||
+                this._pttMediaRecorder !== mediaRecorder ||
+                this._pttRecordStartedAt !== startedAt
+            ) {
+                return null;
             }
-            mediaRecorder.addEventListener("stop", finish, { once: true });
-            try {
-                mediaRecorder.stop();
-            } catch (_) {
-                finish();
-            }
-        });
 
-        if (stream) {
-            for (const track of stream.getTracks()) {
+            const blob = await new Promise((resolve) => {
+                const finish = () => {
+                    const type = mediaRecorder?.mimeType || mimeType;
+                    resolve(chunks.length ? new Blob(chunks, { type }) : null);
+                };
+                if (!mediaRecorder || mediaRecorder.state === "inactive") {
+                    finish();
+                    return;
+                }
+                mediaRecorder.addEventListener("stop", finish, { once: true });
                 try {
-                    track.stop();
-                } catch (_) {}
+                    mediaRecorder.stop();
+                } catch (_) {
+                    finish();
+                }
+            });
+
+            if (
+                finishToken !== this._pttFinishToken ||
+                this._pttMediaRecorder !== mediaRecorder
+            ) {
+                return null;
+            }
+
+            if (stream) {
+                for (const track of stream.getTracks()) {
+                    try {
+                        track.stop();
+                    } catch (_) {}
+                }
+            }
+            this._pttMediaRecorder = null;
+            this._pttRecordStream = null;
+            this._pttRecordChunks = [];
+            this._pttRecording = false;
+            this._pttRecordStartedAt = 0;
+
+            if (holdMs < AgentInterface.PTT_MIN_HOLD_MS) return null;
+            return blob;
+        } finally {
+            if (finishToken === this._pttFinishToken) {
+                this._pttFinishing = false;
             }
         }
-        this._pttMediaRecorder = null;
-        this._pttRecordStream = null;
-        this._pttRecordChunks = [];
-        this._pttRecording = false;
-        this._pttRecordStartedAt = 0;
-
-        if (holdMs < AgentInterface.PTT_MIN_HOLD_MS) return null;
-        return blob;
     }
 
     /**
