@@ -825,28 +825,25 @@ class WifiTransmitter {
   }
 
   async detectMode() {
-    // TEMP: verify we enter detectMode()
-    
+    // TEMP: paint debug — yield so the browser can paint before blocking confirm
     const gen = ++this._detectGen;
     const status = this.el("status");
     const wifiSetup = this.el("wifiSetup");
     // Update UI synchronously so Firefox taps never look "dead" while a probe runs.
     if (status) status.textContent = "Checking robot connection...";
+    if (wifiSetup) wifiSetup.style.display = "none";
+
+    // Two animation frames: style/layout, then paint.
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+
     if (
       !confirm(
-        "after status change — continue?\n\n" +
-          "status found: " +
-          !!status +
-          "\n" +
-          "status textContent: " +
-          (status ? JSON.stringify(status.textContent) : "(no element)") +
-          "\n" +
-          "wifiSetup found: " +
-          !!wifiSetup
+        "Paint should have happened.\n\n" +
+          "Look BEHIND this dialog — is status showing \"Checking robot connection...\"?\n\n" +
+          "OK = yes / keep going\nCancel = stop here"
       )
     )
       return;
-    if (wifiSetup) wifiSetup.style.display = "none";
 
     const run = (async () => {
       await this._detectModeBody(gen);
