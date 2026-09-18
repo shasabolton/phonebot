@@ -127,9 +127,24 @@ function localNetworkAccessHintHtml() {
     typeof location !== "undefined" && location.protocol === "https:";
   if (!https) return "";
   return (
-    "<br><br><span class='warn'>If Firefox (or Chrome) asks to allow <b>local network access</b>, choose Allow — " +
-    "HTTPS pages cannot reach the robot WiFi (http://192.168.4.1) until you do.</span>"
+    "<br><br><span class='warn'><b>HTTPS note:</b> Many Firefox builds block reaching " +
+    "<code>http://192.168.4.1</code> from this page (mixed content / local network). " +
+    "There may be no permission prompt. Use Chrome with Bluetooth, or open this app over " +
+    "<b>HTTP on your LAN</b>. You can still verify the robot AP in a new tab: " +
+    "<a href=\"" +
+    ESP_AP_IP +
+    "/ping\" target=\"_blank\" rel=\"noopener\">" +
+    ESP_AP_IP +
+    "/ping</a>.</span>"
   );
+}
+
+/** Resolve the Element for a click/tap (Firefox may target a text node inside the button). */
+function eventElement(e) {
+  const t = e && e.target;
+  if (!t) return null;
+  if (t instanceof Element) return t;
+  return t.parentElement || null;
 }
 
 async function ping(url, timeoutMs = 1500) {
@@ -164,11 +179,14 @@ class WifiTransmitter {
     this._uploadFirmwareBusy = false;
     /** @type {Promise<void> | null} */
     this._detectPromise = null;
+    /** Bumps on each detectMode so a hung probe cannot block later taps. */
+    this._detectGen = 0;
     this._onContainerClick = (e) => {
-      if (e.target.closest('[data-action="detect-mode"]')) {
-        e.preventDefault();
-        this.detectMode();
-      }
+      const el = eventElement(e);
+      if (!el || !el.closest('[data-action="detect-mode"]')) return;
+      e.preventDefault();
+      e.stopPropagation();
+      void this.detectMode();
     };
     this.buildDom();
     this.container.addEventListener("click", this._onContainerClick);
@@ -176,6 +194,16 @@ class WifiTransmitter {
     migrateLegacyStaIp();
     this.refreshRobotPicker();
     this.detectMode();
+  }
+
+  destroy() {
+    if (this.container && this._onContainerClick) {
+      this.container.removeEventListener("click", this._onContainerClick);
+    }
+    this._detectGen += 1;
+    this._detectPromise = null;
+    this.setReady(false);
+    this.robotStaBaseUrl = null;
   }
 
   setReadyChangeHandler(handler) {
@@ -797,16 +825,15 @@ class WifiTransmitter {
   }
 
   async detectMode() {
-    const prev = this._detectPromise;
+    const gen = ++this._detectGen;
+    const status = this.el("status");
+    const wifiSetup = this.el("wifiSetup");
+    // Update UI synchronously so Firefox taps never look "dead" while a probe runs.
+    if (status) status.textContent = "Checking robot connection...";
+    if (wifiSetup) wifiSetup.style.display = "none";
+
     const run = (async () => {
-      if (prev) {
-        try {
-          await prev;
-        } catch (_) {
-          /* ignore prior probe errors */
-        }
-      }
-      await this._detectModeBody();
+      await this._detectModeBody(gen);
     })();
     this._detectPromise = run;
     try {
@@ -816,17 +843,18 @@ class WifiTransmitter {
     }
   }
 
-  async _detectModeBody() {
+  async _detectModeBody(gen) {
     const status = this.el("status");
     const wifiSetup = this.el("wifiSetup");
     if (!status || !wifiSetup) return;
+    if (gen !== this._detectGen) return;
 
     migrateLegacyStaIp();
     this.refreshRobotPicker();
 
     const staTargets = this.buildStaTargets();
 
-    status.innerHTML = "Checking robot connection...";
+    status.textContent = "Checking robot connection...";
     wifiSetup.style.display = "none";
 
     const staPromises = staTargets.map((base) => ping(base));
@@ -834,6 +862,7 @@ class WifiTransmitter {
       Promise.all(staPromises),
       ping(ESP_AP_IP)
     ]);
+    if (gen !== this._detectGen) return;
     const staOk = staResults.some(Boolean);
 
     // Clear station state before branching. If the phone is on the robot SoftAP,
@@ -854,6 +883,7 @@ class WifiTransmitter {
       if (switchBtnAp) switchBtnAp.style.display = "block";
       wifiSetup.style.display = "block";
       const identity = await this.fetchRobotIdentityFromAp();
+      if (gen !== this._detectGen) return;
       if (this.deviceFilter && identity && !this._identityMatchesFilter(identity)) {
         this.robotStaBaseUrl = null;
         this.setReady(false);
@@ -912,7 +942,7 @@ class WifiTransmitter {
 
     status.innerHTML =
       "<span class='error'>Robot not found.</span><br><br>" +
-      "Connect your computer to this robot's WiFi access point, then click below.<br><br>" +
+      "Join the robot WiFi access point, then tap below again.<br><br>" +
       this.apSsidHintHtml() +
       localNetworkAccessHintHtml() +
       "<br><br>" +

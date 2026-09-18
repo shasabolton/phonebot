@@ -307,7 +307,7 @@ class App {
 
         const httpsHint =
             typeof location !== "undefined" && location.protocol === "https:"
-                ? " If Firefox asks for local network access, choose Allow. HTTPS pages cannot reach http://192.168.4.1 until that is allowed (or use Chrome Bluetooth / open the app over HTTP on your LAN)."
+                ? " If this page is HTTPS, Firefox often blocks http://192.168.4.1 with no permission prompt — use Chrome Bluetooth, or open the app over HTTP on your LAN. You can test the AP in a new tab: http://192.168.4.1/ping"
                 : "";
         if (this.robot && typeof this.robot.setStartFlowFeedback === "function") {
             this.robot.setStartFlowFeedback(
