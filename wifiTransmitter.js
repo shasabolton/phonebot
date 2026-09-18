@@ -219,6 +219,44 @@ function probesLookLikeSearch(probes) {
   );
 }
 
+function currentPageUrl() {
+  try {
+    return typeof location !== "undefined" ? String(location.href || "") : "";
+  } catch (_) {
+    return "";
+  }
+}
+
+/** Open the current page in Android Chrome (falls back to Play Store / same URL). */
+function chromeOpenCurrentPageHref() {
+  const href = currentPageUrl();
+  if (!href) return "https://play.google.com/store/apps/details?id=com.android.chrome";
+  try {
+    const u = new URL(href);
+    const hostAndPath = u.host + u.pathname + u.search + u.hash;
+    return (
+      "intent://" +
+      hostAndPath +
+      "#Intent;scheme=" +
+      encodeURIComponent(u.protocol.replace(":", "")) +
+      ";package=com.android.chrome;S.browser_fallback_url=" +
+      encodeURIComponent(href) +
+      ";end"
+    );
+  } catch (_) {
+    return href;
+  }
+}
+
+/** Open the current page in Bluefy (iOS). */
+function bluefyOpenCurrentPageHref() {
+  const href = currentPageUrl();
+  if (!href) {
+    return "https://apps.apple.com/app/bluefy-web-ble-browser/id1492822055";
+  }
+  return "bluefy://open?url=" + encodeURIComponent(href);
+}
+
 function robotNotFoundStatusHtml(probes, apSsidHintHtml) {
   const searched = probesLookLikeSearch(probes);
   const refused =
@@ -232,21 +270,27 @@ function robotNotFoundStatusHtml(probes, apSsidHintHtml) {
     if (platform === "android") {
       return (
         "<span class='error'>Browser refused to search for the robot.</span><br><br>" +
-        'Open the app in <a href="https://play.google.com/store/apps/details?id=com.android.chrome" target="_blank" rel="noopener">Chrome</a>.' +
+        'Open the app in <a href="' +
+        escapeHtml(chromeOpenCurrentPageHref()) +
+        '">Chrome</a>.' +
         retryBtn
       );
     }
     if (platform === "ios") {
       return (
         "<span class='error'>Browser refused to search for the robot.</span><br><br>" +
-        'Open the app in <a href="https://apps.apple.com/app/bluefy-web-ble-browser/id1492822055" target="_blank" rel="noopener">Bluefy browser</a>.' +
+        'Open the app in <a href="' +
+        escapeHtml(bluefyOpenCurrentPageHref()) +
+        '">Bluefy browser</a>.' +
         retryBtn
       );
     }
     return (
       "<span class='error'>Browser refused to search for the robot.</span><br><br>" +
       "This page is likely blocked from reaching local HTTP (mixed content / local network). " +
-      'Try <a href="https://www.google.com/chrome/" target="_blank" rel="noopener">Chrome</a>, or open the app over HTTP on your LAN.' +
+      'Try <a href="' +
+      escapeHtml(chromeOpenCurrentPageHref()) +
+      '">Chrome</a>, or open the app over HTTP on your LAN.' +
       retryBtn
     );
   }
