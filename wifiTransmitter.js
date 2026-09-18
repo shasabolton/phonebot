@@ -826,13 +826,13 @@ class WifiTransmitter {
 
   async detectMode() {
     // TEMP: verify we enter detectMode()
-    if (!confirm("inside detectMode() — continue?")) return;
-
+    
     const gen = ++this._detectGen;
     const status = this.el("status");
     const wifiSetup = this.el("wifiSetup");
     // Update UI synchronously so Firefox taps never look "dead" while a probe runs.
     if (status) status.textContent = "Checking robot connection...";
+    if (!confirm("inside detectMode() — continue?")) return;
     if (wifiSetup) wifiSetup.style.display = "none";
 
     const run = (async () => {
