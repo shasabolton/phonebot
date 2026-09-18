@@ -186,8 +186,6 @@ class WifiTransmitter {
       if (!el || !el.closest('[data-action="detect-mode"]')) return;
       e.preventDefault();
       e.stopPropagation();
-      // TEMP: verify click reaches handler (esp. Firefox)
-      if (!confirm("detect-mode click fired — continue?")) return;
       void this.detectMode();
     };
     this.buildDom();
@@ -827,6 +825,9 @@ class WifiTransmitter {
   }
 
   async detectMode() {
+    // TEMP: verify we enter detectMode()
+    if (!confirm("inside detectMode() — continue?")) return;
+
     const gen = ++this._detectGen;
     const status = this.el("status");
     const wifiSetup = this.el("wifiSetup");
