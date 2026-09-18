@@ -97,7 +97,16 @@ window.ROBOTS_DATA = {
                         cancelButton: "Cancel",
                         action: "bluetoothPair",
                         busyButton: "Pairing…",
-                        skipWhen: "radioReady"
+                        skipWhen: ["radioReady", "noWebBluetooth"]
+                    },
+                    {
+                        text:
+                            "Open your phone's WiFi settings and connect to the robot's network (name starts with Robot-, password 12345678). Return here when connected.",
+                        button: "I'm connected",
+                        cancelButton: "Cancel",
+                        action: "wifiApConnect",
+                        busyButton: "Checking…",
+                        skipWhen: ["radioReady", "hasWebBluetooth"]
                     },
                     {
                         text: "Turn up your phone volume",

@@ -2,7 +2,7 @@
 
   "fwVersion": "1.2.5",
 
-  "appBuildVersion": "205: WiFi control on robot AP"
+  "appBuildVersion": "206: AP start flow without Web Bluetooth"
 
 }
 

@@ -40,6 +40,10 @@ class Robot {
             typeof options.startFlowShouldSkipStep === "function"
                 ? options.startFlowShouldSkipStep
                 : null;
+        this._resolveStartFlowStepText =
+            typeof options.resolveStartFlowStepText === "function"
+                ? options.resolveStartFlowStepText
+                : null;
         this._startFlowOverlay = null;
         this._startFlowStep = 0;
         this._startFlowBusy = false;
@@ -1118,7 +1122,17 @@ class Robot {
             this._renderStartFlowStep();
             return;
         }
-        const text = String(step.text || step.message || "").trim() || "Continue";
+        let text = String(step.text || step.message || "").trim() || "Continue";
+        if (typeof this._resolveStartFlowStepText === "function") {
+            try {
+                const resolved = this._resolveStartFlowStepText(step);
+                if (resolved != null && String(resolved).trim()) {
+                    text = String(resolved).trim();
+                }
+            } catch (err) {
+                console.warn("resolveStartFlowStepText failed:", err);
+            }
+        }
         const label = String(step.button || step.buttonLabel || "Done").trim() || "Done";
         if (this._startFlowTextEl) this._startFlowTextEl.textContent = text;
         if (this._startFlowBtn) {

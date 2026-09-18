@@ -166,7 +166,8 @@ class App {
             },
             onRequestStart: () => this.requestStartFromFlow(),
             onStartFlowAction: (action, step) => this.handleStartFlowAction(action, step),
-            startFlowShouldSkipStep: (step) => this.startFlowShouldSkipStep(step)
+            startFlowShouldSkipStep: (step) => this.startFlowShouldSkipStep(step),
+            resolveStartFlowStepText: (step) => this.resolveStartFlowStepText(step)
         });
         const deferScreenLight = !!robotConfig?.startFlow?.deferScreenLight;
         if (!deferScreenLight) {
@@ -206,15 +207,54 @@ class App {
         return this.isWifiConnected() || this.isBluetoothConnected();
     }
 
+    hasWebBluetooth() {
+        return !!(
+            typeof navigator !== "undefined" &&
+            navigator.bluetooth &&
+            typeof window !== "undefined" &&
+            window.isSecureContext
+        );
+    }
+
     startFlowShouldSkipStep(step) {
-        const skipWhen = String(step?.skipWhen || "").trim();
-        if (skipWhen === "radioReady") {
-            return this.isRadioTransmitterReady();
-        }
-        if (skipWhen === "notRadioReady") {
-            return !this.isRadioTransmitterReady();
-        }
+        const raw = step?.skipWhen;
+        const names = Array.isArray(raw)
+            ? raw.map((s) => String(s || "").trim()).filter(Boolean)
+            : String(raw || "")
+                  .split(",")
+                  .map((s) => s.trim())
+                  .filter(Boolean);
+        if (!names.length) return false;
+        return names.some((name) => this._startFlowSkipCondition(name));
+    }
+
+    _startFlowSkipCondition(name) {
+        if (name === "radioReady") return this.isRadioTransmitterReady();
+        if (name === "notRadioReady") return !this.isRadioTransmitterReady();
+        if (name === "noWebBluetooth") return !this.hasWebBluetooth();
+        if (name === "hasWebBluetooth") return this.hasWebBluetooth();
         return false;
+    }
+
+    resolveStartFlowStepText(step) {
+        if (String(step?.action || "").trim() !== "wifiApConnect") return null;
+        const pass = "12345678";
+        const filter = this.getDeviceFilter();
+        if (filter?.apSsid) {
+            return (
+                "Open your phone's WiFi settings and connect to " +
+                filter.apSsid +
+                " (password " +
+                pass +
+                "). Return here when connected."
+            );
+        }
+        return (
+            "Open your phone's WiFi settings and connect to the robot's network " +
+            "(name starts with Robot-, password " +
+            pass +
+            "). Return here when connected."
+        );
     }
 
     selectTransmitter(kind) {
@@ -233,6 +273,9 @@ class App {
         if (action === "bluetoothPair") {
             return this.pairBluetoothFromStartFlow();
         }
+        if (action === "wifiApConnect") {
+            return this.connectWifiApFromStartFlow();
+        }
         return true;
     }
 
@@ -245,6 +288,20 @@ class App {
         await tx.connect();
         this.updateStartButtonState();
         return this.isBluetoothConnected();
+    }
+
+    /**
+     * SoftAP control: user must join Robot-… in system WiFi settings (no in-browser WiFi UI),
+     * then tap "I'm connected" so we probe http://192.168.4.1.
+     */
+    async connectWifiApFromStartFlow() {
+        if (this.isRadioTransmitterReady()) return true;
+        this.selectTransmitter("wifi");
+        const tx = this.transmitterInstance;
+        if (!tx || typeof tx.detectMode !== "function") return false;
+        await tx.detectMode();
+        this.updateStartButtonState();
+        return this.isWifiConnected();
     }
 
     /** When a robot is chosen and station WiFi/Bluetooth is not ready, default transmitter to screen light. */
