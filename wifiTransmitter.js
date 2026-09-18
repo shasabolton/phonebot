@@ -832,7 +832,20 @@ class WifiTransmitter {
     const wifiSetup = this.el("wifiSetup");
     // Update UI synchronously so Firefox taps never look "dead" while a probe runs.
     if (status) status.textContent = "Checking robot connection...";
-    if (!confirm("inside detectMode() — continue?")) return;
+    if (
+      !confirm(
+        "after status change — continue?\n\n" +
+          "status found: " +
+          !!status +
+          "\n" +
+          "status textContent: " +
+          (status ? JSON.stringify(status.textContent) : "(no element)") +
+          "\n" +
+          "wifiSetup found: " +
+          !!wifiSetup
+      )
+    )
+      return;
     if (wifiSetup) wifiSetup.style.display = "none";
 
     const run = (async () => {
