@@ -12,7 +12,7 @@
 
 // ===== CONFIG =====
 /** Bump this when releasing firmware; keep version.json in the repo in sync (manual for now). */
-#define FW_VERSION "1.2.5"
+#define FW_VERSION "1.2.6"
 
 /**
  * BUILD (ESP32 Dev Module, 4MB flash): sketch + BLE exceeds the default 1.2MB app slot.
@@ -48,18 +48,14 @@ bool servoAttached[MAX_SERVO_CHANNELS] = {false};
 int servoPins[MAX_SERVO_CHANNELS] = {-1, -1, -1, -1, -1, -1, -1, -1};
 
 /**
- * Control source: WiFi/Bluetooth action stream vs screen-light phototransistors.
- * Default is LIGHT when no WiFi (and no BT) link is up; WiFi /action or /pin-setup
- * switches to WIFI. POST /control-source with body "light" forces optical mode
- * even while station WiFi stays connected (phone sends patches, not /action).
+ * Control source: WiFi vs Bluetooth action stream.
+ * Default WIFI; BLE connect switches to BT. POST /control-source can force either.
  */
 enum ControlSource : uint8_t {
-  CONTROL_LIGHT = 0,
-  CONTROL_WIFI = 1,
-  CONTROL_BT = 2
+  CONTROL_WIFI = 0,
+  CONTROL_BT = 1
 };
-ControlSource controlSource = CONTROL_LIGHT;
-bool staWasConnected = false;
+ControlSource controlSource = CONTROL_WIFI;
 bool bleClientConnected = false;
 bool bleActive = false;
 bool wifiConnectPending = false;
@@ -67,33 +63,6 @@ uint32_t wifiConnectStartedMs = 0;
 const uint32_t WIFI_CONNECT_TIMEOUT_MS = 20000;
 BLEServer* bleServer = nullptr;
 BLECharacteristic* bleStatusChar = nullptr;
-uint32_t lastLightUpdateMs = 0;
-const uint32_t LIGHT_UPDATE_INTERVAL_MS = 20;
-
-/** Servo GPIO → ADC1 phototransistor GPIO (VP=36, VN=39). ADC1 avoids WiFi/ADC2 conflict. */
-struct LightChannel {
-  int servoPin;
-  int sensorPin;
-};
-const LightChannel LIGHT_CHANNELS[] = {
-  {23, 36}, // VP
-  {22, 39}, // VN
-  {21, 34},
-  {19, 35},
-  {18, 32},
-  {25, 33}
-};
-const int LIGHT_CHANNEL_COUNT = sizeof(LIGHT_CHANNELS) / sizeof(LIGHT_CHANNELS[0]);
-
-/**
- * Optical ADC → servo µs calibration (100 kΩ load, phone screen).
- * Defaults from bench: ~142 mV (floor) → 1000 µs, ~182 mV (full white) → 2000 µs.
- * Later: POST /light-calibrate with body "mVMin:usMin,mVMax:usMax" (e.g. "142:1000,182:2000").
- */
-int lightMvMin = 142;
-int lightUsMin = 1000;
-int lightMvMax = 182;
-int lightUsMax = 2000;
 
 /** Fill 6-byte MAC in network/printed order from little-endian getEfuseMac(). */
 void readMacBytes(uint8_t out[6]) {
@@ -133,7 +102,6 @@ bool parseIntField(const String& s, int& value) {
 
 const char* controlSourceName() {
   switch (controlSource) {
-    case CONTROL_LIGHT: return "light";
     case CONTROL_WIFI: return "wifi";
     case CONTROL_BT: return "bluetooth";
     default: return "unknown";
@@ -259,157 +227,12 @@ void updateBleStatusValue() {
   bleStatusChar->setValue(json.c_str());
 }
 
-int millivoltsToServoUs(int mv) {
-  int mv0 = lightMvMin;
-  int mv1 = lightMvMax;
-  int us0 = lightUsMin;
-  int us1 = lightUsMax;
-  if (mv1 <= mv0) {
-    // Degenerate cal — fall back to mid.
-    return (us0 + us1) / 2;
-  }
-  if (mv <= mv0) return us0;
-  if (mv >= mv1) return us1;
-  return us0 + (int)(((long)(mv - mv0) * (us1 - us0)) / (mv1 - mv0));
-}
-
-bool ensureServoAttached(int pin, int minUs = 1000, int maxUs = 2000) {
-  int idx = findServoIndexByPin(pin);
-  if (idx >= 0 && servoAttached[idx]) return true;
-  idx = findFreeServoIndex();
-  if (idx < 0) return false;
-  servos[idx].attach(pin, minUs, maxUs);
-  servoAttached[idx] = true;
-  servoPins[idx] = pin;
-  return true;
-}
-
-void ensureLightChannelServosAttached() {
-  for (int i = 0; i < LIGHT_CHANNEL_COUNT; i++) {
-    ensureServoAttached(LIGHT_CHANNELS[i].servoPin);
-  }
-}
-
 void setControlSource(ControlSource src) {
   if (controlSource == src) return;
   controlSource = src;
   Serial.print("Control source → ");
   Serial.println(controlSourceName());
-  if (controlSource == CONTROL_LIGHT) {
-    ensureLightChannelServosAttached();
-  }
   updateBleStatusValue();
-}
-
-void updateServosFromLight() {
-  for (int i = 0; i < LIGHT_CHANNEL_COUNT; i++) {
-    const int servoPin = LIGHT_CHANNELS[i].servoPin;
-    const int sensorPin = LIGHT_CHANNELS[i].sensorPin;
-    int idx = findServoIndexByPin(servoPin);
-    if (idx < 0 || !servoAttached[idx]) continue;
-    int mv = analogReadMilliVolts(sensorPin);
-    int us = millivoltsToServoUs(mv);
-    servos[idx].writeMicroseconds(us);
-  }
-}
-
-/** Sensor label for UI (VP/VN or GPIO number). */
-String lightSensorLabel(int sensorPin) {
-  if (sensorPin == 36) return String("VP");
-  if (sensorPin == 39) return String("VN");
-  return String(sensorPin);
-}
-
-void handleLightSensors() {
-  sendCORSHeaders();
-  String json = "{";
-  json += "\"ok\":true,";
-  json += "\"controlSource\":\"" + String(controlSourceName()) + "\",";
-  json += "\"fwVersion\":\"" + jsonEscape(String(FW_VERSION)) + "\",";
-  json += "\"cal\":{";
-  json += "\"mvMin\":" + String(lightMvMin) + ",";
-  json += "\"usMin\":" + String(lightUsMin) + ",";
-  json += "\"mvMax\":" + String(lightMvMax) + ",";
-  json += "\"usMax\":" + String(lightUsMax);
-  json += "},";
-  json += "\"channels\":[";
-  for (int i = 0; i < LIGHT_CHANNEL_COUNT; i++) {
-    if (i > 0) json += ",";
-    const int servoPin = LIGHT_CHANNELS[i].servoPin;
-    const int sensorPin = LIGHT_CHANNELS[i].sensorPin;
-    int raw = analogRead(sensorPin);
-    int mv = analogReadMilliVolts(sensorPin);
-    int us = millivoltsToServoUs(mv);
-    int idx = findServoIndexByPin(servoPin);
-    bool attached = idx >= 0 && servoAttached[idx];
-    json += "{";
-    json += "\"index\":" + String(i) + ",";
-    json += "\"servoPin\":" + String(servoPin) + ",";
-    json += "\"sensorPin\":" + String(sensorPin) + ",";
-    json += "\"sensor\":\"" + jsonEscape(lightSensorLabel(sensorPin)) + "\",";
-    json += "\"raw\":" + String(raw) + ",";
-    json += "\"mv\":" + String(mv) + ",";
-    json += "\"us\":" + String(us) + ",";
-    json += "\"attached\":" + String(attached ? "true" : "false");
-    json += "}";
-  }
-  json += "]}";
-  server.send(200, "application/json", json);
-}
-
-/**
- * POST body: "mVMin:usMin,mVMax:usMax" e.g. "142:1000,182:2000"
- * Updates runtime optical calibration (not persisted yet).
- */
-void handleLightCalibrate() {
-  sendCORSHeaders();
-  if (!server.hasArg("plain")) {
-    server.send(400, "text/plain", "Missing payload");
-    return;
-  }
-  String body = server.arg("plain");
-  body.trim();
-  int comma = body.indexOf(',');
-  if (comma < 0) {
-    server.send(400, "text/plain", "Expected mVMin:usMin,mVMax:usMax");
-    return;
-  }
-  String a = body.substring(0, comma);
-  String b = body.substring(comma + 1);
-  a.trim();
-  b.trim();
-  int c1 = a.indexOf(':');
-  int c2 = b.indexOf(':');
-  if (c1 < 0 || c2 < 0) {
-    server.send(400, "text/plain", "Expected mVMin:usMin,mVMax:usMax");
-    return;
-  }
-  int mvMin = -1, usMin = -1, mvMax = -1, usMax = -1;
-  if (!parseIntField(a.substring(0, c1), mvMin) ||
-      !parseIntField(a.substring(c1 + 1), usMin) ||
-      !parseIntField(b.substring(0, c2), mvMax) ||
-      !parseIntField(b.substring(c2 + 1), usMax)) {
-    server.send(400, "text/plain", "Bad numeric calibrate values");
-    return;
-  }
-  if (mvMax <= mvMin) {
-    server.send(400, "text/plain", "mVMax must be > mVMin");
-    return;
-  }
-  lightMvMin = mvMin;
-  lightUsMin = usMin;
-  lightMvMax = mvMax;
-  lightUsMax = usMax;
-  Serial.printf("Light cal → %d mV:%d us … %d mV:%d us\n",
-                lightMvMin, lightUsMin, lightMvMax, lightUsMax);
-  String json = "{";
-  json += "\"ok\":true,";
-  json += "\"mvMin\":" + String(lightMvMin) + ",";
-  json += "\"usMin\":" + String(lightUsMin) + ",";
-  json += "\"mvMax\":" + String(lightMvMax) + ",";
-  json += "\"usMax\":" + String(lightUsMax);
-  json += "}";
-  server.send(200, "application/json", json);
 }
 
 void sendCORSHeaders() {
@@ -432,12 +255,6 @@ void handleControlSource() {
   String body = server.arg("plain");
   body.trim();
   body.toLowerCase();
-  if (body == "light" || body == "screen" || body == "screen-light" || body == "screen light") {
-    setControlSource(CONTROL_LIGHT);
-    String json = "{\"ok\":true,\"controlSource\":\"light\"}";
-    server.send(200, "application/json", json);
-    return;
-  }
   if (body == "wifi" || body == "action") {
     setControlSource(CONTROL_WIFI);
     String json = "{\"ok\":true,\"controlSource\":\"wifi\"}";
@@ -450,7 +267,7 @@ void handleControlSource() {
     server.send(200, "application/json", json);
     return;
   }
-  server.send(400, "text/plain", "Expected body: light | wifi | bluetooth");
+  server.send(400, "text/plain", "Expected body: wifi | bluetooth");
 }
 
 void handlePinSetup() {
@@ -495,11 +312,7 @@ class PhonebotBLEServerCallbacks : public BLEServerCallbacks {
   void onDisconnect(BLEServer* pServer) {
     bleClientConnected = false;
     Serial.println("BLE client disconnected");
-    if (WiFi.status() == WL_CONNECTED) {
-      setControlSource(CONTROL_WIFI);
-    } else {
-      setControlSource(CONTROL_LIGHT);
-    }
+    setControlSource(CONTROL_WIFI);
     BLEDevice::startAdvertising();
   }
 };
@@ -602,7 +415,6 @@ void tickWifiConnect() {
     Serial.println(WiFi.localIP());
     applyStaServices();
     setControlSource(CONTROL_WIFI);
-    staWasConnected = true;
     return;
   }
 
@@ -856,33 +668,20 @@ void setup() {
 
   buildRobotIdentity();
 
-  // ADC1 full-scale ~3.3 V for phototransistor → µs mapping
-  analogSetAttenuation(ADC_11db);
-  ensureLightChannelServosAttached();
-
   bool hasCreds = loadCredentials();
   startAP();
 
   WiFi.setHostname(robotHostname.c_str());
 
-  bool staConnected = false;
   if (hasCreds) {
     if (connectToWiFi()) {
       Serial.println("Running in AP+STA mode (connected)");
-      staConnected = true;
     } else {
       Serial.println("Running in AP+STA mode (STA connect failed)");
     }
   }
 
-  // No WiFi and no BLE link → optical default. STA or BLE up → wait for commands.
-  staWasConnected = staConnected;
-  if (staConnected) {
-    setControlSource(CONTROL_WIFI);
-  } else {
-    setControlSource(CONTROL_LIGHT);
-  }
-
+  setControlSource(CONTROL_WIFI);
   startBLE();
 
   // Routes
@@ -895,19 +694,15 @@ void setup() {
   server.on("/pin-setup", HTTP_OPTIONS, handleOptions);
   server.on("/action", HTTP_OPTIONS, handleOptions);
   server.on("/control-source", HTTP_OPTIONS, handleOptions);
-  server.on("/light-sensors", HTTP_OPTIONS, handleOptions);
-  server.on("/light-calibrate", HTTP_OPTIONS, handleOptions);
   server.on("/config", HTTP_POST, handleConfig);
   server.on("/update", HTTP_POST, handleUpdate, handleUpdateUpload);
   server.on("/pin-setup", HTTP_POST, handlePinSetup);
   server.on("/action", HTTP_POST, handleAction);
   server.on("/control-source", HTTP_POST, handleControlSource);
-  server.on("/light-calibrate", HTTP_POST, handleLightCalibrate);
   server.on("/ping", HTTP_GET, handlePing);
   server.on("/scan", HTTP_GET, handleScan);
   server.on("/status", HTTP_GET, handleStatus);
   server.on("/version", HTTP_GET, handleVersion);
-  server.on("/light-sensors", HTTP_GET, handleLightSensors);
 
   server.begin();
 }
@@ -917,21 +712,4 @@ void setup() {
 void loop() {
   server.handleClient();
   tickWifiConnect();
-
-  bool staConnected = WiFi.status() == WL_CONNECTED;
-  if (staWasConnected && !staConnected) {
-    // Lost station WiFi — fall back to light unless BLE is still connected.
-    if (!bleClientConnected) {
-      setControlSource(CONTROL_LIGHT);
-    }
-  }
-  staWasConnected = staConnected;
-
-  if (controlSource == CONTROL_LIGHT) {
-    uint32_t now = millis();
-    if (now - lastLightUpdateMs >= LIGHT_UPDATE_INTERVAL_MS) {
-      lastLightUpdateMs = now;
-      updateServosFromLight();
-    }
-  }
 }

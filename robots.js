@@ -89,7 +89,6 @@ window.ROBOTS_DATA = {
             dashboard: "talkingHead",
             startFlow: {
                 autoStart: true,
-                deferScreenLight: true,
                 steps: [
                     {
                         text: "Pair with your robot",

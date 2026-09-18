@@ -7,7 +7,7 @@ class App {
         this.dashboardMount = null;
         this.robotListEl = null;
         this.robotsData = null;
-        this.transmitters = ["none", "wifi", "bluetooth", "serial", "audio", "screen light"];
+        this.transmitters = ["none", "wifi", "bluetooth", "serial", "audio"];
         this.transmitterListEl = null;
         this.transmitterGuiMount = null;
         this.transmitterInstance = null;
@@ -169,10 +169,6 @@ class App {
             startFlowShouldSkipStep: (step) => this.startFlowShouldSkipStep(step),
             resolveStartFlowStepText: (step) => this.resolveStartFlowStepText(step)
         });
-        const deferScreenLight = !!robotConfig?.startFlow?.deferScreenLight;
-        if (!deferScreenLight) {
-            void this.preferScreenLightIfNoWifi();
-        }
         this.updateStartButtonState();
         this._refreshSettingsMenu();
         if (!options.skipUrlSync) this.syncUrlParams();
@@ -180,7 +176,6 @@ class App {
 
     /** Used by robot start-flow overlays after the user confirms setup steps. */
     async requestStartFromFlow() {
-        await this.preferScreenLightIfNoWifi();
         if (this.isRunLoopActive()) return;
         await this.onStart();
     }
@@ -202,7 +197,7 @@ class App {
         return this.getTransmitterKind() === "bluetooth" && this.isTransmitterReady();
     }
 
-    /** True when WiFi or Bluetooth is the active, ready link (skip optical brightness setup). */
+    /** True when WiFi or Bluetooth is the active, ready link. */
     isRadioTransmitterReady() {
         return this.isWifiConnected() || this.isBluetoothConnected();
     }
@@ -321,32 +316,6 @@ class App {
             );
         }
         return false;
-    }
-
-    /** When a robot is chosen and station WiFi/Bluetooth is not ready, default transmitter to screen light. */
-    async preferScreenLightIfNoWifi() {
-        if (!this.transmitterListEl) return;
-        const robotStillSelected = !!this.robot;
-        if (!robotStillSelected) return;
-
-        if (this.transmitterListEl.value === "wifi" && this.transmitterInstance) {
-            const wifiTx = this.transmitterInstance;
-            if (typeof wifiTx.waitForDetectMode === "function") {
-                await wifiTx.waitForDetectMode();
-            }
-            if (!this.robot) return;
-            if (this.transmitterInstance !== wifiTx) return;
-            if (typeof wifiTx.isReady === "function" && wifiTx.isReady()) return;
-        } else if (this.isWifiConnected()) {
-            return;
-        } else if (this.isBluetoothConnected()) {
-            return;
-        }
-
-        if (!this.robot) return;
-        if (this.transmitterListEl.value === "screen light") return;
-        this.transmitterListEl.value = "screen light";
-        this.onTransmitterSelect();
     }
 
     _renderEmptyDashboard() {
@@ -508,9 +477,6 @@ class App {
                 this.transmitterGuiMount,
                 this._getTransmitterOptions()
             );
-            this.transmitterInstance.setReadyChangeHandler(() => this.updateStartButtonState());
-        } else if (v === "screen light") {
-            this.transmitterInstance = new ScreenLightTransmitter(this.transmitterGuiMount);
             this.transmitterInstance.setReadyChangeHandler(() => this.updateStartButtonState());
         } else if (v === "bluetooth") {
             this.transmitterInstance = new BluetoothTransmitter(

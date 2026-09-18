@@ -1,8 +1,7 @@
-{
-
-  "fwVersion": "1.2.5",
-
-  "appBuildVersion": "207: AP connect probe no longer hangs offline"
-
-}
-
+{
+
+  "fwVersion": "1.2.6",
+
+  "appBuildVersion": "208: remove screen-light / light-sensor mode"
+
+}
