@@ -825,7 +825,6 @@ class WifiTransmitter {
   }
 
   async detectMode() {
-    // TEMP: paint debug — yield so the browser can paint before blocking confirm
     const gen = ++this._detectGen;
     const status = this.el("status");
     const wifiSetup = this.el("wifiSetup");
@@ -833,17 +832,9 @@ class WifiTransmitter {
     if (status) status.textContent = "Checking robot connection...";
     if (wifiSetup) wifiSetup.style.display = "none";
 
-    // Two animation frames: style/layout, then paint.
-    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
-
-    if (
-      !confirm(
-        "Paint should have happened.\n\n" +
-          "Look BEHIND this dialog — is status showing \"Checking robot connection...\"?\n\n" +
-          "OK = yes / keep going\nCancel = stop here"
-      )
-    )
-      return;
+    // TEMP: hold "Checking..." on screen so a fast fail is still visible
+    await new Promise((r) => setTimeout(r, 1500));
+    if (gen !== this._detectGen) return;
 
     const run = (async () => {
       await this._detectModeBody(gen);
