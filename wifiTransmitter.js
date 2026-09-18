@@ -147,7 +147,37 @@ function eventElement(e) {
   return t.parentElement || null;
 }
 
+function clientPlatform() {
+  const ua = String(
+    (typeof navigator !== "undefined" && (navigator.userAgentData?.platform || navigator.userAgent)) ||
+      ""
+  );
+  if (/Android/i.test(ua)) return "android";
+  if (/iPhone|iPad|iPod/i.test(ua)) return "ios";
+  // iPadOS 13+ may report as Mac; treat touch Macs as iOS for browser hints.
+  if (
+    typeof navigator !== "undefined" &&
+    /Mac/i.test(ua) &&
+    navigator.maxTouchPoints > 1
+  ) {
+    return "ios";
+  }
+  return "other";
+}
+
+/**
+ * @returns {Promise<{ok: boolean, kind: "ok"|"timeout"|"http"|"blocked", elapsedMs: number}>}
+ */
 async function ping(url, timeoutMs = 1500) {
+  const started =
+    typeof performance !== "undefined" && performance.now
+      ? performance.now()
+      : Date.now();
+  const elapsed = () =>
+    (typeof performance !== "undefined" && performance.now
+      ? performance.now()
+      : Date.now()) - started;
+
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -155,12 +185,79 @@ async function ping(url, timeoutMs = 1500) {
       method: "GET",
       signal: controller.signal
     });
-    if (res.ok) return true;
-  } catch (e) {}
-  finally {
+    const elapsedMs = elapsed();
+    if (res.ok) return { ok: true, kind: "ok", elapsedMs };
+    return { ok: false, kind: "http", elapsedMs };
+  } catch (e) {
+    const elapsedMs = elapsed();
+    const aborted =
+      (e && e.name === "AbortError") ||
+      (controller.signal && controller.signal.aborted);
+    if (aborted) return { ok: false, kind: "timeout", elapsedMs };
+    return { ok: false, kind: "blocked", elapsedMs };
+  } finally {
     clearTimeout(timeoutId);
   }
-  return false;
+}
+
+/** Failures under this duration are treated as "browser refused" (policy), not "robot absent". */
+const PING_INSTANT_MS = 400;
+
+function probeLooksInstantBlocked(p) {
+  return !!p && !p.ok && p.kind === "blocked" && p.elapsedMs < PING_INSTANT_MS;
+}
+
+/** True if any probe looks like the browser actually tried (timeout / response / slow fail). */
+function probesLookLikeSearch(probes) {
+  return probes.some(
+    (p) =>
+      p &&
+      (p.kind === "timeout" ||
+        p.kind === "http" ||
+        p.kind === "ok" ||
+        (p.kind === "blocked" && p.elapsedMs >= PING_INSTANT_MS))
+  );
+}
+
+function robotNotFoundStatusHtml(probes, apSsidHintHtml) {
+  const searched = probesLookLikeSearch(probes);
+  const refused =
+    !searched && probes.length > 0 && probes.every(probeLooksInstantBlocked);
+
+  const retryBtn =
+    '<br><br><button type="button" data-action="detect-mode">Click here when you are connected</button>';
+
+  if (refused) {
+    const platform = clientPlatform();
+    if (platform === "android") {
+      return (
+        "<span class='error'>Browser refused to search for the robot.</span><br><br>" +
+        'Open the app in <a href="https://play.google.com/store/apps/details?id=com.android.chrome" target="_blank" rel="noopener">Chrome</a>.' +
+        retryBtn
+      );
+    }
+    if (platform === "ios") {
+      return (
+        "<span class='error'>Browser refused to search for the robot.</span><br><br>" +
+        'Open the app in <a href="https://apps.apple.com/app/bluefy-web-ble-browser/id1492822055" target="_blank" rel="noopener">Bluefy browser</a>.' +
+        retryBtn
+      );
+    }
+    return (
+      "<span class='error'>Browser refused to search for the robot.</span><br><br>" +
+      "This page is likely blocked from reaching local HTTP (mixed content / local network). " +
+      'Try <a href="https://www.google.com/chrome/" target="_blank" rel="noopener">Chrome</a>, or open the app over HTTP on your LAN.' +
+      retryBtn
+    );
+  }
+
+  return (
+    "<span class='error'>Browser searched but robot not found.</span><br><br>" +
+    "Join the robot WiFi access point, then tap below again.<br><br>" +
+    apSsidHintHtml +
+    localNetworkAccessHintHtml() +
+    retryBtn
+  );
 }
 
 class WifiTransmitter {
@@ -832,10 +929,6 @@ class WifiTransmitter {
     if (status) status.textContent = "Checking robot connection...";
     if (wifiSetup) wifiSetup.style.display = "none";
 
-    // TEMP: hold "Checking..." on screen so a fast fail is still visible
-    await new Promise((r) => setTimeout(r, 1500));
-    if (gen !== this._detectGen) return;
-
     const run = (async () => {
       await this._detectModeBody(gen);
     })();
@@ -862,12 +955,13 @@ class WifiTransmitter {
     wifiSetup.style.display = "none";
 
     const staPromises = staTargets.map((base) => ping(base));
-    const [staResults, apOk] = await Promise.all([
+    const [staResults, apProbe] = await Promise.all([
       Promise.all(staPromises),
       ping(ESP_AP_IP)
     ]);
     if (gen !== this._detectGen) return;
-    const staOk = staResults.some(Boolean);
+    const apOk = !!(apProbe && apProbe.ok);
+    const staOk = staResults.some((r) => r && r.ok);
 
     // Clear station state before branching. If the phone is on the robot SoftAP,
     // pings to a saved STA URL can still succeed (AP+STA). Prefer AP UI so
@@ -909,7 +1003,7 @@ class WifiTransmitter {
     }
 
     if (staOk) {
-      const idx = staResults.findIndex(Boolean);
+      const idx = staResults.findIndex((r) => r && r.ok);
       const base = staTargets[idx];
       this.robotStaBaseUrl = base;
       this.setReady(true);
@@ -944,13 +1038,10 @@ class WifiTransmitter {
       return;
     }
 
-    status.innerHTML =
-      "<span class='error'>Robot not found.</span><br><br>" +
-      "Join the robot WiFi access point, then tap below again.<br><br>" +
-      this.apSsidHintHtml() +
-      localNetworkAccessHintHtml() +
-      "<br><br>" +
-      "<button type=\"button\" data-action=\"detect-mode\">Click here when you are connected</button>";
+    status.innerHTML = robotNotFoundStatusHtml(
+      [...staResults, apProbe],
+      this.apSsidHintHtml()
+    );
   }
 
   async sendCreds() {
