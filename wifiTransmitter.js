@@ -186,6 +186,8 @@ class WifiTransmitter {
       if (!el || !el.closest('[data-action="detect-mode"]')) return;
       e.preventDefault();
       e.stopPropagation();
+      // TEMP: verify click reaches handler (esp. Firefox)
+      if (!confirm("detect-mode click fired — continue?")) return;
       void this.detectMode();
     };
     this.buildDom();
