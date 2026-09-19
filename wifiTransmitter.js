@@ -318,7 +318,7 @@ function openBrowserInstallStore() {
  */
 function browserRefusedSwitchHtml(errorText) {
   const platform = clientPlatform();
-  const name = platform === "ios" ? "Bluefy" : "Chrome";
+  const name = platform === "ios" ? "Bluefy browser" : "Chrome browser";
   const launchAction = platform === "ios" ? "open-in-bluefy" : "open-in-chrome";
   const launchHref =
     platform === "ios" ? bluefyOpenCurrentPageHref() : chromeIntentHref();
@@ -345,11 +345,7 @@ function browserRefusedSwitchHtml(errorText) {
 }
 
 function robotNotFoundStatusHtml(probes, apSsidHintHtml) {
-  const searched = probesLookLikeSearch(probes);
-  const refused =
-    !searched && probes.length > 0 && probes.every(probeLooksInstantBlocked);
-
-  if (refused) {
+  if (probesIndicateBrowserRefused(probes)) {
     return browserRefusedSwitchHtml("Browser refused to search for the robot.");
   }
 
@@ -362,6 +358,13 @@ function robotNotFoundStatusHtml(probes, apSsidHintHtml) {
     apSsidHintHtml +
     localNetworkAccessHintHtml() +
     retryBtn
+  );
+}
+
+function probesIndicateBrowserRefused(probes) {
+  const searched = probesLookLikeSearch(probes);
+  return (
+    !searched && probes.length > 0 && probes.every(probeLooksInstantBlocked)
   );
 }
 
@@ -383,6 +386,8 @@ class WifiTransmitter {
     this._detectPromise = null;
     /** Bumps on each detectMode so a hung probe cannot block later taps. */
     this._detectGen = 0;
+    /** True when UI is reduced to browser-switch only (policy blocked probes). */
+    this._browserBlocked = false;
     this._onContainerClick = (e) => {
       const el = eventElement(e);
       if (!el) return;
@@ -653,6 +658,10 @@ class WifiTransmitter {
     const wrap = this.el("robotPicker");
     const sel = this.el("knownRobotSelect");
     if (!wrap || !sel) return;
+    if (this._browserBlocked) {
+      wrap.style.display = "none";
+      return;
+    }
     const robots = loadRobots();
     const visible = this._filteredRobots(robots);
     if (visible.length === 0) {
@@ -833,6 +842,7 @@ class WifiTransmitter {
   setFirmwarePanelVisible(show) {
     const panel = this.el("firmwarePanel");
     if (!panel) return;
+    if (this._browserBlocked) show = false;
     panel.style.display = show ? "block" : "none";
     if (!show) {
       const st = this.el("firmwareStatus");
@@ -845,6 +855,19 @@ class WifiTransmitter {
       }
       if (vi) vi.innerHTML = "";
     }
+  }
+
+  /** Hide rate / picker / firmware when the browser cannot reach the robot at all. */
+  _setBrowserBlockedUi(blocked) {
+    this._browserBlocked = !!blocked;
+    const rate = this.el("actionRatePanel");
+    if (rate) rate.style.display = blocked ? "none" : "";
+    const setup = this.el("wifiSetup");
+    if (blocked && setup) setup.style.display = "none";
+    const disc = this.el("wifiDisconnectBtn");
+    if (blocked && disc) disc.style.display = "none";
+    this.setFirmwarePanelVisible(false);
+    this.refreshRobotPicker();
   }
 
   disconnect() {
@@ -1092,6 +1115,7 @@ class WifiTransmitter {
     // credential inputs always show when joined to the robot AP.
     this.robotStaBaseUrl = null;
     this.setReady(false);
+    this._setBrowserBlockedUi(false);
     this.setFirmwarePanelVisible(false);
     const switchBtn = this.el("wifiDisconnectBtn");
     if (switchBtn) switchBtn.style.display = "none";
@@ -1165,6 +1189,9 @@ class WifiTransmitter {
     status.innerHTML = robotNotFoundStatusHtml(
       [...staResults, apProbe],
       this.apSsidHintHtml()
+    );
+    this._setBrowserBlockedUi(
+      probesIndicateBrowserRefused([...staResults, apProbe])
     );
   }
 

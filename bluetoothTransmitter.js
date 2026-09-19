@@ -178,8 +178,7 @@ class BluetoothTransmitter {
         typeof browserRefusedSwitchHtml === "function"
           ? browserRefusedSwitchHtml("Web Bluetooth is not available in this browser.")
           : "<span class='error'>Web Bluetooth is not available in this browser.</span>";
-      connectBtn.style.display = "none";
-      connectBtn.disabled = true;
+      this._setBrowserBlockedUi(true);
       this.setReady(false);
       return;
     }
@@ -191,13 +190,12 @@ class BluetoothTransmitter {
               "Web Bluetooth requires a secure context (HTTPS or localhost)."
             )
           : "<span class='error'>Web Bluetooth requires a secure context (HTTPS or localhost).</span>";
-      connectBtn.style.display = "none";
-      connectBtn.disabled = true;
+      this._setBrowserBlockedUi(true);
       this.setReady(false);
       return;
     }
 
-    connectBtn.style.display = "";
+    this._setBrowserBlockedUi(false);
     status.innerHTML = this.deviceFilter
       ? "<span class='muted'>Not connected.</span> Tap Connect to pair with <b>" +
         escapeHtml(this.deviceFilter.bleName) +
@@ -205,6 +203,23 @@ class BluetoothTransmitter {
       : "<span class='muted'>Not connected.</span> Tap Connect and pick your robot from the list.";
     connectBtn.disabled = false;
     this.setReady(false);
+  }
+
+  /** Hide rate / device hint when this browser cannot use Web Bluetooth. */
+  _setBrowserBlockedUi(blocked) {
+    const rate = this.el("actionRatePanel");
+    if (rate) rate.style.display = blocked ? "none" : "";
+    const hint = this.el("bleDeviceHint");
+    if (hint) hint.style.display = blocked ? "none" : "";
+    const info = this.el("bleDeviceInfo");
+    if (info) info.style.display = blocked ? "none" : "";
+    const connectBtn = this.el("bleConnectBtn");
+    if (connectBtn) {
+      connectBtn.style.display = blocked ? "none" : "";
+      connectBtn.disabled = !!blocked;
+    }
+    const disc = this.el("bleDisconnectBtn");
+    if (blocked && disc) disc.style.display = "none";
   }
 
   _buildRequestDeviceOptions() {
