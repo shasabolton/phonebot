@@ -266,7 +266,7 @@ window.ROBOTS_DATA = {
                 { type: "camera", mirror: true }
             ],
             processing: [
-                { type: "audioPlayer", delayMs: 200},
+                { type: "audioPlayer", delayMs: 200, makeupGain: 2, compressorThreshold: -24 },
                 { type: "audioMouthFilter", input: "audioPlayer", threshold: 0.01, gain: 20 },
                 {
                     type: "computervision",
