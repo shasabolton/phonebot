@@ -122,23 +122,6 @@ async function robotFetch(url, options = {}) {
   throw lastErr || new Error("network error");
 }
 
-function localNetworkAccessHintHtml() {
-  const https =
-    typeof location !== "undefined" && location.protocol === "https:";
-  if (!https) return "";
-  return (
-    "<br><br><span class='warn'><b>HTTPS note:</b> Many Firefox builds block reaching " +
-    "<code>http://192.168.4.1</code> from this page (mixed content / local network). " +
-    "There may be no permission prompt. Use Chrome with Bluetooth, or open this app over " +
-    "<b>HTTP on your LAN</b>. You can still verify the robot AP in a new tab: " +
-    "<a href=\"" +
-    ESP_AP_IP +
-    "/ping\" target=\"_blank\" rel=\"noopener\">" +
-    ESP_AP_IP +
-    "/ping</a>.</span>"
-  );
-}
-
 /** Resolve the Element for a click/tap (Firefox may target a text node inside the button). */
 function eventElement(e) {
   const t = e && e.target;
@@ -344,21 +327,11 @@ function browserRefusedSwitchHtml(errorText) {
   );
 }
 
-function robotNotFoundStatusHtml(probes, apSsidHintHtml) {
+function robotNotFoundStatusHtml(probes) {
   if (probesIndicateBrowserRefused(probes)) {
     return browserRefusedSwitchHtml("Browser refused to search for the robot.");
   }
-
-  const retryBtn =
-    '<br><br><button type="button" data-action="detect-mode">Click here when you are connected</button>';
-
-  return (
-    "<span class='error'>Browser searched but robot not found.</span><br><br>" +
-    "Join the robot WiFi access point, then tap below again.<br><br>" +
-    apSsidHintHtml +
-    localNetworkAccessHintHtml() +
-    retryBtn
-  );
+  return "<span class='error'>Browser searched but robot not found.</span>";
 }
 
 function probesIndicateBrowserRefused(probes) {
@@ -510,15 +483,15 @@ class WifiTransmitter {
 
   buildDom() {
     this.container.innerHTML = `
-<div id="robotPicker" class="box" style="display:none;">
-  <label for="knownRobotSelect"><b>Known robots</b> (on your home / hotspot WiFi)</label>
-  <select id="knownRobotSelect"></select>
-  <div id="knownRobotStoredIp" class="muted" style="margin-top:6px;word-break:break-all;"></div>
-  <p class="muted">Pick a robot, then check connection after you switch your computer to the same WiFi.</p>
-  <button type="button" data-action="detect-mode">Check connection</button>
+<div id="wifiConnectPanel" class="box">
+  <div id="status">Checking robot connection...</div>
+  <div id="knownRobotWrap" style="display:none;margin-top:12px;">
+    <label for="knownRobotSelect"><b>Known robots</b> (on your home / hotspot WiFi)</label>
+    <select id="knownRobotSelect"></select>
+  </div>
+  <p id="wifiJoinHint" class="muted" style="display:none;margin-top:12px;margin-bottom:0;"></p>
+  <button type="button" data-action="detect-mode" id="wifiCheckBtn" style="display:none;margin-top:12px;">Check connection</button>
 </div>
-
-<div id="status" class="box">Checking robot connection...</div>
 <button type="button" id="wifiDisconnectBtn" style="display:none;">Disconnect / Switch Device</button>
 
 <div id="actionRatePanel" class="box">
@@ -570,8 +543,6 @@ class WifiTransmitter {
     if (disc) disc.addEventListener("click", () => this.disconnect());
     const fw = this.el("firmwareBtn");
     if (fw) fw.addEventListener("click", () => this.uploadFirmware());
-    const known = this.el("knownRobotSelect");
-    if (known) known.addEventListener("change", () => this.updateKnownRobotStoredIpHint());
     const nl = this.el("networkList");
     if (nl) nl.addEventListener("change", () => this.onNetworkSelected());
     const scan = this.el("wifiScanNetworksBtn");
@@ -623,39 +594,61 @@ class WifiTransmitter {
     this.refreshRobotPicker();
   }
 
-  updateKnownRobotStoredIpHint() {
-    const hint = this.el("knownRobotStoredIp");
-    const sel = this.el("knownRobotSelect");
-    if (!hint || !sel) return;
-    const robots = this._filteredRobots(loadRobots());
-    if (robots.length === 0) {
-      if (this.deviceFilter) {
-        hint.textContent =
-          "URL is scoped to " +
-          this.deviceFilter.hostname +
-          ". Connect to its WiFi AP or pair once to save it here.";
-      } else {
-        hint.textContent = "";
-      }
+  wifiJoinHintHtml() {
+    const apName = this.deviceFilter
+      ? this.deviceFilter.apSsid
+      : "Robot-XXXX";
+    const hasKnown = this._filteredRobots(loadRobots()).length > 0;
+    let html =
+      "Join the <b>" +
+      escapeHtml(apName) +
+      "</b> WiFi AP in your WiFi settings";
+    if (hasKnown) {
+      html += ", else select a known robot from the list";
+    }
+    html += ".";
+    return html;
+  }
+
+  /**
+   * @param {"checking"|"prompt"|"connected"|"refused"} mode
+   */
+  _setWifiConnectMode(mode) {
+    const hint = this.el("wifiJoinHint");
+    const checkBtn = this.el("wifiCheckBtn");
+    const knownWrap = this.el("knownRobotWrap");
+
+    if (mode === "refused") {
+      if (hint) hint.style.display = "none";
+      if (checkBtn) checkBtn.style.display = "none";
+      if (knownWrap) knownWrap.style.display = "none";
       return;
     }
-    const id = sel.value;
-    if (!id) {
-      hint.textContent =
-        "Stored IPs on this device: " +
-        robots
-          .map((r) => (r.hostname || r.chipId) + " → " + (r.lastIp || "(none)"))
-          .join(" · ");
+
+    if (mode === "connected") {
+      if (hint) hint.style.display = "none";
+      if (checkBtn) checkBtn.style.display = "none";
+      if (knownWrap) knownWrap.style.display = "none";
       return;
     }
-    const r = robots.find((x) => x.chipId === id);
-    hint.textContent = r
-      ? "Stored IP on this device: " + (r.lastIp || "(none)")
-      : "";
+
+    if (mode === "checking") {
+      if (hint) hint.style.display = "none";
+      if (checkBtn) checkBtn.style.display = "none";
+      return;
+    }
+
+    // prompt
+    if (hint) {
+      hint.innerHTML = this.wifiJoinHintHtml();
+      hint.style.display = "block";
+    }
+    if (checkBtn) checkBtn.style.display = "inline-block";
+    this.refreshRobotPicker();
   }
 
   refreshRobotPicker() {
-    const wrap = this.el("robotPicker");
+    const wrap = this.el("knownRobotWrap");
     const sel = this.el("knownRobotSelect");
     if (!wrap || !sel) return;
     if (this._browserBlocked) {
@@ -665,23 +658,8 @@ class WifiTransmitter {
     const robots = loadRobots();
     const visible = this._filteredRobots(robots);
     if (visible.length === 0) {
-      if (this.deviceFilter) {
-        wrap.style.display = "block";
-        sel.innerHTML = "";
-        const pending = document.createElement("option");
-        pending.value = "";
-        pending.textContent =
-          "(No saved entry for " + this.deviceFilter.hostname + " yet)";
-        pending.disabled = true;
-        pending.selected = true;
-        sel.appendChild(pending);
-        this.updateKnownRobotStoredIpHint();
-        return;
-      }
       wrap.style.display = "none";
       sel.innerHTML = "";
-      const hint = this.el("knownRobotStoredIp");
-      if (hint) hint.textContent = "";
       return;
     }
     wrap.style.display = "block";
@@ -690,18 +668,15 @@ class WifiTransmitter {
       const allOpt = document.createElement("option");
       allOpt.value = "";
       allOpt.textContent = "(All saved — try each)";
-      allOpt.title = "Try every saved robot; see stored IPs below.";
       sel.appendChild(allOpt);
     }
 
     visible.forEach((r) => {
       const opt = document.createElement("option");
       opt.value = r.chipId;
-      const ipPart = r.lastIp ? r.lastIp : "(no IP saved)";
       let label = r.hostname
         ? r.hostname + (r.apSsid ? " (" + r.apSsid + ")" : "")
         : r.apSsid || r.chipId;
-      label += " — " + ipPart;
       opt.textContent = label;
       opt.title = label;
       sel.appendChild(opt);
@@ -709,7 +684,6 @@ class WifiTransmitter {
     if (this.deviceFilter && visible.length === 1) {
       sel.value = visible[0].chipId;
     }
-    this.updateKnownRobotStoredIpHint();
   }
 
   async fetchRobotIdentityFromAp() {
@@ -761,33 +735,6 @@ class WifiTransmitter {
       add("http://esp8266.local");
     }
     return urls;
-  }
-
-  apSsidHintHtml() {
-    if (this.deviceFilter) {
-      return (
-        "Connect to WiFi <b>" +
-        this.deviceFilter.apSsid +
-        "</b> (password <b>" +
-        ESP_AP_PASS +
-        "</b>)."
-      );
-    }
-    const robots = loadRobots();
-    if (robots.length === 0) {
-      return (
-        "Look for a WiFi network named <b>Robot-</b> followed by hex digits " +
-        "(same id as this robot's hostname). Password: <b>" + ESP_AP_PASS + "</b>"
-      );
-    }
-    const lines = robots
-      .map((r) => (r.apSsid ? "<b>" + r.apSsid + "</b>" : null))
-      .filter(Boolean);
-    if (lines.length === 0) {
-      return "Password: <b>" + ESP_AP_PASS + "</b>";
-    }
-    return "Try one of these AP names (or a new Robot-XXXXXX): " + lines.join(", ") +
-      ". Password: <b>" + ESP_AP_PASS + "</b>";
   }
 
   onNetworkSelected() {
@@ -857,7 +804,7 @@ class WifiTransmitter {
     }
   }
 
-  /** Hide rate / picker / firmware when the browser cannot reach the robot at all. */
+  /** Hide rate / firmware when the browser cannot reach the robot at all. */
   _setBrowserBlockedUi(blocked) {
     this._browserBlocked = !!blocked;
     const rate = this.el("actionRatePanel");
@@ -867,7 +814,8 @@ class WifiTransmitter {
     const disc = this.el("wifiDisconnectBtn");
     if (blocked && disc) disc.style.display = "none";
     this.setFirmwarePanelVisible(false);
-    this.refreshRobotPicker();
+    if (blocked) this._setWifiConnectMode("refused");
+    else this.refreshRobotPicker();
   }
 
   disconnect() {
@@ -880,9 +828,9 @@ class WifiTransmitter {
     if (wifiSetup) wifiSetup.style.display = "none";
     if (btn) btn.style.display = "none";
     if (status) {
-      status.innerHTML =
-        "<span class='muted'>Disconnected. Select a saved robot and click Check connection, or connect to another robot AP.</span>";
+      status.innerHTML = "<span class='muted'>Disconnected.</span>";
     }
+    this._setWifiConnectMode("prompt");
   }
 
   async checkFirmwareVersion(baseUrl) {
@@ -1075,6 +1023,7 @@ class WifiTransmitter {
     // Update UI synchronously so Firefox taps never look "dead" while a probe runs.
     if (status) status.textContent = "Checking robot connection...";
     if (wifiSetup) wifiSetup.style.display = "none";
+    this._setWifiConnectMode("checking");
 
     const run = (async () => {
       await this._detectModeBody(gen);
@@ -1128,6 +1077,7 @@ class WifiTransmitter {
       const switchBtnAp = this.el("wifiDisconnectBtn");
       if (switchBtnAp) switchBtnAp.style.display = "block";
       wifiSetup.style.display = "block";
+      this._setWifiConnectMode("connected");
       const identity = await this.fetchRobotIdentityFromAp();
       if (gen !== this._detectGen) return;
       if (this.deviceFilter && identity && !this._identityMatchesFilter(identity)) {
@@ -1140,6 +1090,7 @@ class WifiTransmitter {
           this.deviceFilter.apSsid +
           "</b>.";
         wifiSetup.style.display = "none";
+        this._setWifiConnectMode("prompt");
         return;
       }
       status.innerHTML =
@@ -1156,6 +1107,7 @@ class WifiTransmitter {
       this.robotStaBaseUrl = base;
       this.setReady(true);
       this.setFirmwarePanelVisible(true);
+      this._setWifiConnectMode("connected");
       const switchBtnSta = this.el("wifiDisconnectBtn");
       if (switchBtnSta) switchBtnSta.style.display = "block";
       const robots = this._filteredRobots(loadRobots());
@@ -1186,13 +1138,13 @@ class WifiTransmitter {
       return;
     }
 
-    status.innerHTML = robotNotFoundStatusHtml(
-      [...staResults, apProbe],
-      this.apSsidHintHtml()
-    );
-    this._setBrowserBlockedUi(
-      probesIndicateBrowserRefused([...staResults, apProbe])
-    );
+    const probes = [...staResults, apProbe];
+    status.innerHTML = robotNotFoundStatusHtml(probes);
+    if (probesIndicateBrowserRefused(probes)) {
+      this._setBrowserBlockedUi(true);
+    } else {
+      this._setWifiConnectMode("prompt");
+    }
   }
 
   async sendCreds() {
@@ -1216,8 +1168,8 @@ class WifiTransmitter {
       result.innerHTML =
         "<span class='ok'>Robot connected to WiFi.</span><br>" +
         "Robot IP: " + ipText + "<br><br>" +
-        "Now reconnect your computer to the same WiFi, pick this robot above, and click Check connection.<br><br>" +
-        "<button type=\"button\" data-action=\"detect-mode\">I switched networks — check robot</button>";
+        "Now reconnect your computer to the same WiFi, pick this robot above if listed, and tap Check connection.<br><br>" +
+        "<button type=\"button\" data-action=\"detect-mode\">Check connection</button>";
     };
 
     const mergeStatusFromAp = async (ipHint) => {
