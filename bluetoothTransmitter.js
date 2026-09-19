@@ -59,11 +59,9 @@ class BluetoothTransmitter {
       }
     };
     this._onDisconnect = () => {
-      this._clearConnection(false);
-      this._setStatus(
-        "<span class='warn'>Bluetooth disconnected.</span> " +
-          "<button type='button' data-action='ble-connect'>Connect again</button>"
-      );
+      this._clearConnection(true);
+      this._setStatus("<span class='warn'>Bluetooth disconnected.</span>");
+      this._setDeviceInfo("");
     };
 
     this.buildDom();
@@ -124,25 +122,12 @@ class BluetoothTransmitter {
     this._refreshAvailability();
   }
 
-  _deviceHintHtml() {
-    if (this.deviceFilter) {
-      return (
-        "This link is scoped to <b>" +
-        escapeHtml(this.deviceFilter.bleName) +
-        "</b>. Only that robot should appear in the Bluetooth list."
-      );
-    }
-    return (
-      "Look for a device named <b>robot-</b> followed by hex digits (full MAC on ESP32; same id as the WiFi AP). " +
-      "Keep the phone within a few metres of the ESP32. Bluetooth control works without WiFi."
-    );
-  }
-
   buildDom() {
     this.container.innerHTML = `
 <div id="bleStatus" class="box">Checking Bluetooth support…</div>
 <button type="button" id="bleConnectBtn" data-action="ble-connect">Connect to robot</button>
 <button type="button" id="bleDisconnectBtn" style="display:none;">Disconnect</button>
+<div id="bleDeviceInfo" class="muted" style="margin-top:8px;word-break:break-all;"></div>
 <div id="actionRatePanel" class="box">
   <label for="actionFreqHz"><b>Action send rate</b> <span id="actionFreqHzValue">10</span> Hz</label>
   <input type="range" id="actionFreqHz" min="1" max="20" step="1" value="10" style="width:100%;margin-top:8px;">
@@ -150,11 +135,7 @@ class BluetoothTransmitter {
     How often action GATT writes run while the transmit loop is on.
   </p>
 </div>
-<p id="bleDeviceHint" class="muted"></p>
-<div id="bleDeviceInfo" class="muted" style="margin-top:8px;word-break:break-all;"></div>
 `;
-    const hint = this.el("bleDeviceHint");
-    if (hint) hint.innerHTML = this._deviceHintHtml();
   }
 
   _bindControls() {
@@ -205,12 +186,10 @@ class BluetoothTransmitter {
     this.setReady(false);
   }
 
-  /** Hide rate / device hint when this browser cannot use Web Bluetooth. */
+  /** Hide rate when this browser cannot use Web Bluetooth. */
   _setBrowserBlockedUi(blocked) {
     const rate = this.el("actionRatePanel");
     if (rate) rate.style.display = blocked ? "none" : "";
-    const hint = this.el("bleDeviceHint");
-    if (hint) hint.style.display = blocked ? "none" : "";
     const info = this.el("bleDeviceInfo");
     if (info) info.style.display = blocked ? "none" : "";
     const connectBtn = this.el("bleConnectBtn");
@@ -316,16 +295,10 @@ class BluetoothTransmitter {
       this._clearConnection(true);
       const msg = e && e.message ? e.message : String(e);
       if (msg.indexOf("cancel") !== -1 || e.name === "NotFoundError") {
-        this._setStatus(
-          "<span class='muted'>Pairing cancelled.</span> " +
-            "<button type='button' data-action='ble-connect'>Try again</button>"
-        );
+        this._setStatus("<span class='muted'>Pairing cancelled.</span>");
       } else {
         this._setStatus(
-          "<span class='error'>Bluetooth error: " +
-            escapeHtml(msg) +
-            "</span> " +
-            "<button type='button' data-action='ble-connect'>Try again</button>"
+          "<span class='error'>Bluetooth error: " + escapeHtml(msg) + "</span>"
         );
       }
       this._setDeviceInfo("");
@@ -348,10 +321,7 @@ class BluetoothTransmitter {
       }
     }
     this._clearConnection(true);
-    this._setStatus(
-      "<span class='muted'>Disconnected.</span> " +
-        "<button type='button' data-action='ble-connect'>Connect to robot</button>"
-    );
+    this._setStatus("<span class='muted'>Disconnected.</span>");
     const connectBtn = this.el("bleConnectBtn");
     if (connectBtn) connectBtn.disabled = false;
   }

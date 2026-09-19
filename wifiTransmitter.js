@@ -530,14 +530,6 @@ class WifiTransmitter {
 
 <button type="button" id="wifiDisconnectBtn" style="display:none;">Disconnect / Switch Device</button>
 
-<div id="actionRatePanel" class="box" style="display:none;">
-  <label for="actionFreqHz"><b>Action send rate</b> <span id="actionFreqHzValue">10</span> Hz</label>
-  <input type="range" id="actionFreqHz" min="1" max="20" step="1" value="10" style="width:100%;margin-top:8px;">
-  <p class="muted" style="margin-top:6px;margin-bottom:0;">
-    How often <code>/action</code> is posted while the transmit loop is on.
-  </p>
-</div>
-
 <div id="firmwarePanel" class="box" style="display:none;">
   <h3>Firmware</h3>
   <div id="firmwareVersionInfo" class="muted" style="margin-bottom:10px;"></div>
@@ -548,6 +540,14 @@ class WifiTransmitter {
   <input type="file" id="firmwareFile" accept=".bin" style="display:none;">
   <button type="button" id="firmwareBtn" style="display:none;">Update firmware</button>
   <div id="firmwareStatus" class="muted" style="margin-top:8px;"></div>
+</div>
+
+<div id="actionRatePanel" class="box" style="display:none;">
+  <label for="actionFreqHz"><b>Action send rate</b> <span id="actionFreqHzValue">10</span> Hz</label>
+  <input type="range" id="actionFreqHz" min="1" max="20" step="1" value="10" style="width:100%;margin-top:8px;">
+  <p class="muted" style="margin-top:6px;margin-bottom:0;">
+    How often <code>/action</code> is posted while the transmit loop is on.
+  </p>
 </div>
 `;
   }
