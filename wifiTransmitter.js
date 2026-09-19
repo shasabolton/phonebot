@@ -232,16 +232,35 @@ const CHROME_PLAY_STORE_URL =
 const BLUEFY_APP_STORE_URL =
   "https://apps.apple.com/app/bluefy-web-ble-browser/id1492822055";
 
-/** Chrome custom scheme: open this page in Chrome (Android). */
-function chromeNavigateSchemeHref() {
+/** Copy current page URL (best-effort; must run in a user-gesture click). */
+function copyPageUrlToClipboard() {
   const href = currentPageUrl();
-  if (!href) return CHROME_PLAY_STORE_URL;
-  return "googlechrome://navigate?url=" + encodeURIComponent(href);
+  if (!href) return false;
+  try {
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+      void navigator.clipboard.writeText(href);
+      return true;
+    }
+  } catch (_) {}
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = href;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.left = "-9999px";
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand("copy");
+    document.body.removeChild(ta);
+    return !!ok;
+  } catch (_) {
+    return false;
+  }
 }
 
 /**
- * Android Intent targeting Chrome. Fallback is Play Store — never the current page,
- * or Firefox will just reopen this tab when it cannot hand off.
+ * Single Android Intent targeting Chrome with this page URL.
+ * No Play Store fallback (that caused store + chooser + about:blank).
  */
 function chromeIntentHref() {
   const href = currentPageUrl();
@@ -254,9 +273,7 @@ function chromeIntentHref() {
       hostAndPath +
       "#Intent;scheme=" +
       u.protocol.replace(":", "") +
-      ";package=com.android.chrome;S.browser_fallback_url=" +
-      encodeURIComponent(CHROME_PLAY_STORE_URL) +
-      ";end"
+      ";package=com.android.chrome;end"
     );
   } catch (_) {
     return CHROME_PLAY_STORE_URL;
@@ -270,21 +287,15 @@ function bluefyOpenCurrentPageHref() {
   return "bluefy://open?url=" + encodeURIComponent(href);
 }
 
-/** Try to hand the current page to Chrome (Android). */
 function openCurrentPageInChrome() {
-  // Prefer Chrome's navigate scheme; Intent is a second try if we're still here.
+  copyPageUrlToClipboard();
   try {
-    location.href = chromeNavigateSchemeHref();
+    location.href = chromeIntentHref();
   } catch (_) {}
-  window.setTimeout(() => {
-    try {
-      location.href = chromeIntentHref();
-    } catch (_) {}
-  }, 600);
 }
 
-/** Try to hand the current page to Bluefy (iOS). */
 function openCurrentPageInBluefy() {
+  copyPageUrlToClipboard();
   try {
     location.href = bluefyOpenCurrentPageHref();
   } catch (_) {}
@@ -298,14 +309,21 @@ function robotNotFoundStatusHtml(probes, apSsidHintHtml) {
   const retryBtn =
     '<br><br><button type="button" data-action="detect-mode">Click here when you are connected</button>';
 
+  const pasteHint =
+    "<br><span class='muted'>Tapping the browser link also copies this page URL. If it opens blank, paste into the address bar.</span>";
+
   if (refused) {
     const platform = clientPlatform();
     if (platform === "android") {
       return (
         "<span class='error'>Browser refused to search for the robot.</span><br><br>" +
         'Open the app in <a href="' +
-        escapeHtml(chromeNavigateSchemeHref()) +
+        escapeHtml(chromeIntentHref()) +
         '" data-action="open-in-chrome">Chrome</a>.' +
+        pasteHint +
+        '<br><br>Need Chrome? <a href="' +
+        escapeHtml(CHROME_PLAY_STORE_URL) +
+        '" target="_blank" rel="noopener">Install Chrome</a>.' +
         retryBtn
       );
     }
@@ -315,6 +333,10 @@ function robotNotFoundStatusHtml(probes, apSsidHintHtml) {
         'Open the app in <a href="' +
         escapeHtml(bluefyOpenCurrentPageHref()) +
         '" data-action="open-in-bluefy">Bluefy browser</a>.' +
+        pasteHint +
+        '<br><br>Need Bluefy? <a href="' +
+        escapeHtml(BLUEFY_APP_STORE_URL) +
+        '" target="_blank" rel="noopener">Install Bluefy</a>.' +
         retryBtn
       );
     }
@@ -322,8 +344,9 @@ function robotNotFoundStatusHtml(probes, apSsidHintHtml) {
       "<span class='error'>Browser refused to search for the robot.</span><br><br>" +
       "This page is likely blocked from reaching local HTTP (mixed content / local network). " +
       'Try <a href="' +
-      escapeHtml(chromeNavigateSchemeHref()) +
+      escapeHtml(chromeIntentHref()) +
       '" data-action="open-in-chrome">Chrome</a>, or open the app over HTTP on your LAN.' +
+      pasteHint +
       retryBtn
     );
   }
