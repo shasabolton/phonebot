@@ -609,19 +609,15 @@ class WifiTransmitter {
   }
 
   wifiJoinHintHtml() {
-    const apName = this.deviceFilter
-      ? this.deviceFilter.apSsid
-      : "Robot-XXXX";
     const hasKnown = this._filteredRobots(loadRobots()).length > 0;
-    let html =
-      "Join the <b>" +
-      escapeHtml(apName) +
-      "</b> WiFi AP in your WiFi settings";
-    if (hasKnown) {
-      html += ", else select a known robot from the list";
-    }
-    html += ".";
-    return html;
+    const apName = this.deviceFilter ? this.deviceFilter.apSsid : null;
+    const joinAp = apName
+      ? "open your WiFi settings to join <b>" + escapeHtml(apName) + "</b>"
+      : "open your WiFi settings to join an available new robot’s access point";
+    const html = hasKnown
+      ? "Choose a known robot from the list, or " + joinAp
+      : joinAp.charAt(0).toUpperCase() + joinAp.slice(1);
+    return html + ". Password: <b>" + ESP_AP_PASS + "</b>.";
   }
 
   /**
