@@ -308,6 +308,15 @@ class App {
         this.updateStartButtonState();
         if (this.isBluetoothConnected()) return true;
 
+        if (typeof tx.isLinked === "function" && tx.isLinked()) {
+            if (this.robot && typeof this.robot.setStartFlowFeedback === "function") {
+                this.robot.setStartFlowFeedback(
+                    "Robot firmware is out of date or could not be verified. Switch the transmitter to WiFi (station mode) to update firmware, then pair again."
+                );
+            }
+            return false;
+        }
+
         this._showStartFlowBrowserSwitch(
             "Bluetooth pairing failed. Open this app in a supported browser."
         );

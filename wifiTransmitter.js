@@ -54,6 +54,29 @@ function escapeHtml(s) {
     .replace(/"/g, "&quot;");
 }
 
+/** Load fwVersion from this page's version.json (null if unavailable). */
+async function fetchAppFwVersion(timeoutMs = 2500) {
+  if (
+    typeof window === "undefined" ||
+    (window.location.protocol !== "http:" && window.location.protocol !== "https:")
+  ) {
+    return null;
+  }
+  const ac = new AbortController();
+  const to = setTimeout(() => ac.abort(), timeoutMs);
+  try {
+    const u = new URL("version.json", window.location.href).href;
+    const r = await fetch(u, { method: "GET", cache: "no-store", signal: ac.signal });
+    if (!r.ok) return null;
+    const j = await r.json();
+    return j.fwVersion != null ? String(j.fwVersion) : null;
+  } catch (_) {
+    return null;
+  } finally {
+    clearTimeout(to);
+  }
+}
+
 /**
  * Classify a robot control URL for Local Network Access (Firefox/Chrome).
  * HTTPS pages need targetAddressSpace so mixed-content to SoftAP HTTP is allowed
@@ -870,19 +893,7 @@ class WifiTransmitter {
 
     let latestFw = null;
     if (window.location.protocol === "http:" || window.location.protocol === "https:") {
-      const acPage = new AbortController();
-      const toPage = setTimeout(() => acPage.abort(), 2500);
-      try {
-        const u = new URL("version.json", window.location.href).href;
-        const r = await fetch(u, { method: "GET", cache: "no-store", signal: acPage.signal });
-        if (r.ok) {
-          const j = await r.json();
-          latestFw = j.fwVersion != null ? String(j.fwVersion) : null;
-        }
-      } catch (e) {}
-      finally {
-        clearTimeout(toPage);
-      }
+      latestFw = await fetchAppFwVersion(2500);
     }
 
     if (!robotFw) {

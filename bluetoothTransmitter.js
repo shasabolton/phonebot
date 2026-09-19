@@ -62,6 +62,7 @@ class BluetoothTransmitter {
       this._clearConnection(true);
       this._setStatus("<span class='warn'>Bluetooth disconnected.</span>");
       this._setDeviceInfo("");
+      this._setFirmwareInfoHtml("");
     };
 
     this.buildDom();
@@ -83,10 +84,21 @@ class BluetoothTransmitter {
     const changed = this.ready !== ready;
     this.ready = ready;
     if (changed && this._readyChangeHandler) this._readyChangeHandler(this.ready);
+    this._setActionRateVisible(this.isReady());
   }
 
   isReady() {
     return this.ready && !!this._actionChar;
+  }
+
+  /** GATT linked (may still be blocked by outdated firmware). */
+  isLinked() {
+    return !!(this._device && this._actionChar);
+  }
+
+  _setActionRateVisible(show) {
+    const rate = this.el("actionRatePanel");
+    if (rate) rate.style.display = show ? "" : "none";
   }
 
   getActionIntervalMs() {
@@ -128,7 +140,8 @@ class BluetoothTransmitter {
 <button type="button" id="bleConnectBtn" data-action="ble-connect">Connect to robot</button>
 <button type="button" id="bleDisconnectBtn" style="display:none;">Disconnect</button>
 <div id="bleDeviceInfo" class="muted" style="margin-top:8px;word-break:break-all;"></div>
-<div id="actionRatePanel" class="box">
+<div id="bleFirmwareInfo" class="box" style="display:none;margin-top:8px;"></div>
+<div id="actionRatePanel" class="box" style="display:none;">
   <label for="actionFreqHz"><b>Action send rate</b> <span id="actionFreqHzValue">10</span> Hz</label>
   <input type="range" id="actionFreqHz" min="1" max="20" step="1" value="10" style="width:100%;margin-top:8px;">
   <p class="muted" style="margin-top:6px;margin-bottom:0;">
@@ -186,10 +199,14 @@ class BluetoothTransmitter {
     this.setReady(false);
   }
 
-  /** Hide rate when this browser cannot use Web Bluetooth. */
+  /** Hide controls when this browser cannot use Web Bluetooth. */
   _setBrowserBlockedUi(blocked) {
-    const rate = this.el("actionRatePanel");
-    if (rate) rate.style.display = blocked ? "none" : "";
+    this._setActionRateVisible(false);
+    const fw = this.el("bleFirmwareInfo");
+    if (fw) {
+      fw.style.display = "none";
+      fw.innerHTML = "";
+    }
     const info = this.el("bleDeviceInfo");
     if (info) info.style.display = blocked ? "none" : "";
     const connectBtn = this.el("bleConnectBtn");
@@ -199,6 +216,32 @@ class BluetoothTransmitter {
     }
     const disc = this.el("bleDisconnectBtn");
     if (blocked && disc) disc.style.display = "none";
+  }
+
+  _setFirmwareInfoHtml(html) {
+    const fw = this.el("bleFirmwareInfo");
+    if (!fw) return;
+    if (!html) {
+      fw.style.display = "none";
+      fw.innerHTML = "";
+      return;
+    }
+    fw.innerHTML = html;
+    fw.style.display = "block";
+  }
+
+  /**
+   * Compare robot BLE status fwVersion to page version.json.
+   * @returns {Promise<{ok: boolean, robotFw: string|null, latestFw: string|null}>}
+   */
+  async _evaluateFirmware(robotFw) {
+    const latestFw =
+      typeof fetchAppFwVersion === "function" ? await fetchAppFwVersion(2500) : null;
+    return {
+      ok: !!(robotFw && latestFw && robotFw === latestFw),
+      robotFw: robotFw || null,
+      latestFw: latestFw || null
+    };
   }
 
   _buildRequestDeviceOptions() {
@@ -234,6 +277,7 @@ class BluetoothTransmitter {
     this._actionChar = null;
     this.setReady(false);
     if (!updateUi) return;
+    this._setFirmwareInfoHtml("");
     const connectBtn = this.el("bleConnectBtn");
     const discBtn = this.el("bleDisconnectBtn");
     if (connectBtn) connectBtn.style.display = "";
@@ -249,6 +293,7 @@ class BluetoothTransmitter {
     this._connectBusy = true;
     const connectBtn = this.el("bleConnectBtn");
     if (connectBtn) connectBtn.disabled = true;
+    this._setFirmwareInfoHtml("");
     this._setStatus(
       this.deviceFilter
         ? "Opening Bluetooth picker for <b>" + escapeHtml(this.deviceFilter.bleName) + "</b>…"
@@ -272,25 +317,66 @@ class BluetoothTransmitter {
       this._pinSetupChar = await service.getCharacteristic(PHONEBOT_BLE.pinSetupUuid);
       this._actionChar = await service.getCharacteristic(PHONEBOT_BLE.actionUuid);
 
-      let fwText = "";
+      let robotFw = null;
       try {
         const statusChar = await service.getCharacteristic(PHONEBOT_BLE.statusUuid);
         const value = await statusChar.readValue();
         const json = JSON.parse(new TextDecoder().decode(value));
-        if (json.fwVersion) fwText = "Firmware " + json.fwVersion;
+        if (json.fwVersion != null) robotFw = String(json.fwVersion);
       } catch (_) {
         /* status read optional */
       }
 
-      this.setReady(true);
-      this._setStatus("<span class='ok'>Connected via Bluetooth.</span>");
-      this._setDeviceInfo(
-        (device.name || "robot") + (fwText ? " · " + fwText : "")
-      );
+      this._setStatus("Checking firmware…");
+      const fwCheck = await this._evaluateFirmware(robotFw);
 
+      this._setDeviceInfo(device.name || "robot");
       const discBtn = this.el("bleDisconnectBtn");
       if (connectBtn) connectBtn.style.display = "none";
       if (discBtn) discBtn.style.display = "";
+
+      if (fwCheck.ok) {
+        this._setFirmwareInfoHtml(
+          "<span class='ok'>Firmware up to date with version <b>" +
+            escapeHtml(fwCheck.robotFw) +
+            "</b>.</span>"
+        );
+        this._setStatus("<span class='ok'>Connected via Bluetooth.</span>");
+        this.setReady(true);
+      } else if (fwCheck.robotFw && fwCheck.latestFw) {
+        this._setFirmwareInfoHtml(
+          "<span class='warn'>The robot has firmware version <b>" +
+            escapeHtml(fwCheck.robotFw) +
+            "</b>. Update to <b>" +
+            escapeHtml(fwCheck.latestFw) +
+            "</b>.</span><br><br>" +
+            "Connect via <b>WiFi</b> (station mode) to update firmware. Bluetooth control is disabled until then."
+        );
+        this._setStatus(
+          "<span class='warn'>Connected via Bluetooth, but firmware is out of date — control disabled.</span>"
+        );
+        this.setReady(false);
+      } else if (fwCheck.robotFw && !fwCheck.latestFw) {
+        this._setFirmwareInfoHtml(
+          "<span class='warn'>Robot firmware version: <b>" +
+            escapeHtml(fwCheck.robotFw) +
+            "</b>. Could not load <code>version.json</code> from this page to verify.</span><br><br>" +
+            "Connect via <b>WiFi</b> to update firmware if needed. Bluetooth control is disabled until the app can verify the version."
+        );
+        this._setStatus(
+          "<span class='warn'>Connected via Bluetooth, but firmware could not be verified — control disabled.</span>"
+        );
+        this.setReady(false);
+      } else {
+        this._setFirmwareInfoHtml(
+          "<span class='warn'>Could not read firmware version from the robot over Bluetooth.</span><br><br>" +
+            "Connect via <b>WiFi</b> to update firmware. Bluetooth control is disabled until the version is known and up to date."
+        );
+        this._setStatus(
+          "<span class='warn'>Connected via Bluetooth, but firmware is unknown — control disabled.</span>"
+        );
+        this.setReady(false);
+      }
     } catch (e) {
       this._clearConnection(true);
       const msg = e && e.message ? e.message : String(e);
@@ -302,18 +388,24 @@ class BluetoothTransmitter {
         );
       }
       this._setDeviceInfo("");
+      this._setFirmwareInfoHtml("");
     } finally {
       this._connectBusy = false;
       if (connectBtn && !this.isReady()) {
-        connectBtn.disabled = false;
-        connectBtn.style.display = "";
+        // Keep Connect hidden if still GATT-linked but not control-ready (outdated FW).
+        const stillLinked = !!(this._device && this._actionChar);
+        if (!stillLinked) {
+          connectBtn.disabled = false;
+          connectBtn.style.display = "";
+        }
       }
     }
   }
 
   async disconnect() {
     this._setDeviceInfo("");
-    if (this._device && this._device.gatt.connected) {
+    this._setFirmwareInfoHtml("");
+    if (this._device && this._device.gatt && this._device.gatt.connected) {
       try {
         this._device.gatt.disconnect();
       } catch (_) {
@@ -337,8 +429,14 @@ class BluetoothTransmitter {
   }
 
   async transmitPinSetup(message) {
-    if (!this._pinSetupChar) {
-      return { ok: false, status: 0, body: "Bluetooth not connected." };
+    if (!this.isReady() || !this._pinSetupChar) {
+      return {
+        ok: false,
+        status: 0,
+        body: this._actionChar
+          ? "Bluetooth connected but firmware must be up to date before control."
+          : "Bluetooth not connected."
+      };
     }
     try {
       await this._writeCharacteristic(this._pinSetupChar, message);
@@ -353,8 +451,14 @@ class BluetoothTransmitter {
   }
 
   async transmitAction(message) {
-    if (!this._actionChar) {
-      return { ok: false, status: 0, body: "Bluetooth not connected." };
+    if (!this.isReady() || !this._actionChar) {
+      return {
+        ok: false,
+        status: 0,
+        body: this._actionChar
+          ? "Bluetooth connected but firmware must be up to date before control."
+          : "Bluetooth not connected."
+      };
     }
     try {
       await this._writeCharacteristic(this._actionChar, message);
