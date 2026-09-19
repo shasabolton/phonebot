@@ -286,8 +286,8 @@ class App {
     }
 
     /**
-     * SoftAP control: user must join Robot-… in system WiFi settings (no in-browser WiFi UI),
-     * then tap "I'm connected" so we probe http://192.168.4.1.
+     * SoftAP provisioning: user joins Robot-… in system WiFi settings,
+     * then we probe http://192.168.4.1 (control requires station WiFi later).
      */
     async connectWifiApFromStartFlow() {
         if (this.isRadioTransmitterReady()) return true;
@@ -302,6 +302,9 @@ class App {
             }
             await tx.detectMode();
             this.updateStartButtonState();
+            if (typeof tx.isSoftApConnected === "function" && tx.isSoftApConnected()) {
+                return true;
+            }
             if (this.isWifiConnected()) return true;
         }
 

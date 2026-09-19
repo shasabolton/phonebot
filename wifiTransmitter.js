@@ -347,8 +347,10 @@ class WifiTransmitter {
     this.container = container;
     /** @type {object|null} */
     this.deviceFilter = options.deviceFilter || null;
-    /** Base URL of robot when reachable (station LAN or SoftAP), e.g. http://192.168.1.5 or http://192.168.4.1 */
+    /** Base URL of robot when reachable in station mode (not SoftAP control). */
     this.robotStaBaseUrl = null;
+    /** True while phone is on the robot SoftAP for provisioning only. */
+    this.onSoftAp = false;
     this.ready = false;
     this._readyChangeHandler = null;
     /** Hz for /action while the app transmit loop is on (1–20). */
@@ -403,6 +405,7 @@ class WifiTransmitter {
     this._detectPromise = null;
     this.setReady(false);
     this.robotStaBaseUrl = null;
+    this.onSoftAp = false;
   }
 
   setReadyChangeHandler(handler) {
@@ -418,10 +421,21 @@ class WifiTransmitter {
     const changed = this.ready !== ready;
     this.ready = ready;
     if (changed && this._readyChangeHandler) this._readyChangeHandler(this.ready);
+    this._setActionRateVisible(this.isReady());
   }
 
   isReady() {
-    return this.ready && !!this.robotStaBaseUrl;
+    return this.ready && !!this.robotStaBaseUrl && !this.onSoftAp;
+  }
+
+  /** SoftAP is reachable for WiFi provisioning (not for robot control). */
+  isSoftApConnected() {
+    return !!this.onSoftAp;
+  }
+
+  _setActionRateVisible(show) {
+    const rate = this.el("actionRatePanel");
+    if (rate) rate.style.display = show ? "" : "none";
   }
 
   getActionIntervalMs() {
@@ -492,34 +506,12 @@ class WifiTransmitter {
   <p id="wifiJoinHint" class="muted" style="display:none;margin-top:12px;margin-bottom:0;"></p>
   <button type="button" data-action="detect-mode" id="wifiCheckBtn" style="display:none;margin-top:12px;">Check connection</button>
 </div>
-<button type="button" id="wifiDisconnectBtn" style="display:none;">Disconnect / Switch Device</button>
-
-<div id="actionRatePanel" class="box">
-  <label for="actionFreqHz"><b>Action send rate</b> <span id="actionFreqHzValue">10</span> Hz</label>
-  <input type="range" id="actionFreqHz" min="1" max="20" step="1" value="10" style="width:100%;margin-top:8px;">
-  <p class="muted" style="margin-top:6px;margin-bottom:0;">
-    How often <code>/action</code> is posted while the transmit loop is on. SoftAP often needs a lower rate (~5 Hz).
-  </p>
-</div>
-
-<div id="firmwarePanel" class="box">
-  <h3>Firmware</h3>
-  <div id="firmwareVersionInfo" class="muted" style="margin-bottom:10px;"></div>
-  <p class="muted">
-    OTA loads the sketch’s Arduino build output under <code>espBootstrap/build/</code> or <code>espBootstrapEsp32/build/</code> (same repo you serve with this HTML).
-    After compile or “Export compiled Binary”, use the <code>.bin</code> under the board-specific folder (for example <code>nodemcuv2/espBootstrap.ino.bin</code> or <code>esp32/espBootstrapEsp32.ino.bin</code>). Serve the project root over HTTP.
-  </p>
-  <input type="file" id="firmwareFile" accept=".bin" style="display:none;">
-  <button type="button" id="firmwareBtn" style="display:none;">Update firmware</button>
-  <div id="firmwareStatus" class="muted" style="margin-top:8px;"></div>
-</div>
 
 <div id="wifiSetup" class="box" style="display:none;">
-  <h3>Optional: Connect Robot to Your WiFi</h3>
+  <h3>Connect Robot to Your WiFi</h3>
 
   <p>
-    Robot control already works on this access point.<br><br>
-    Optionally give it your WiFi credentials so it can join your network (useful if your phone loses cellular on this AP).
+    Give the robot your WiFi credentials so it can join your network. Control works after the robot is on that network (station mode), not on this access point.
   </p>
 
   <select id="networkList">
@@ -534,6 +526,28 @@ class WifiTransmitter {
   <button type="button" id="wifiSendCredsBtn">Connect Robot to WiFi</button>
 
   <div id="setupResult"></div>
+</div>
+
+<button type="button" id="wifiDisconnectBtn" style="display:none;">Disconnect / Switch Device</button>
+
+<div id="actionRatePanel" class="box" style="display:none;">
+  <label for="actionFreqHz"><b>Action send rate</b> <span id="actionFreqHzValue">10</span> Hz</label>
+  <input type="range" id="actionFreqHz" min="1" max="20" step="1" value="10" style="width:100%;margin-top:8px;">
+  <p class="muted" style="margin-top:6px;margin-bottom:0;">
+    How often <code>/action</code> is posted while the transmit loop is on.
+  </p>
+</div>
+
+<div id="firmwarePanel" class="box" style="display:none;">
+  <h3>Firmware</h3>
+  <div id="firmwareVersionInfo" class="muted" style="margin-bottom:10px;"></div>
+  <p class="muted">
+    OTA loads the sketch’s Arduino build output under <code>espBootstrap/build/</code> or <code>espBootstrapEsp32/build/</code> (same repo you serve with this HTML).
+    After compile or “Export compiled Binary”, use the <code>.bin</code> under the board-specific folder (for example <code>nodemcuv2/espBootstrap.ino.bin</code> or <code>esp32/espBootstrapEsp32.ino.bin</code>). Serve the project root over HTTP.
+  </p>
+  <input type="file" id="firmwareFile" accept=".bin" style="display:none;">
+  <button type="button" id="firmwareBtn" style="display:none;">Update firmware</button>
+  <div id="firmwareStatus" class="muted" style="margin-top:8px;"></div>
 </div>
 `;
   }
@@ -807,8 +821,7 @@ class WifiTransmitter {
   /** Hide rate / firmware when the browser cannot reach the robot at all. */
   _setBrowserBlockedUi(blocked) {
     this._browserBlocked = !!blocked;
-    const rate = this.el("actionRatePanel");
-    if (rate) rate.style.display = blocked ? "none" : "";
+    this._setActionRateVisible(!blocked && this.isReady());
     const setup = this.el("wifiSetup");
     if (blocked && setup) setup.style.display = "none";
     const disc = this.el("wifiDisconnectBtn");
@@ -820,8 +833,10 @@ class WifiTransmitter {
 
   disconnect() {
     this.robotStaBaseUrl = null;
+    this.onSoftAp = false;
     this.setReady(false);
     this.setFirmwarePanelVisible(false);
+    this._setActionRateVisible(false);
     const wifiSetup = this.el("wifiSetup");
     const status = this.el("status");
     const btn = this.el("wifiDisconnectBtn");
@@ -1063,17 +1078,21 @@ class WifiTransmitter {
     // pings to a saved STA URL can still succeed (AP+STA). Prefer AP UI so
     // credential inputs always show when joined to the robot AP.
     this.robotStaBaseUrl = null;
+    this.onSoftAp = false;
     this.setReady(false);
     this._setBrowserBlockedUi(false);
     this.setFirmwarePanelVisible(false);
+    this._setActionRateVisible(false);
     const switchBtn = this.el("wifiDisconnectBtn");
     if (switchBtn) switchBtn.style.display = "none";
 
     if (apOk) {
-      // SoftAP is a full control link (same HTTP /action + /pin-setup as station).
-      this.robotStaBaseUrl = ESP_AP_IP;
-      this.setReady(true);
-      this.setFirmwarePanelVisible(true);
+      // SoftAP is for WiFi provisioning only — not robot control.
+      this.onSoftAp = true;
+      this.robotStaBaseUrl = null;
+      this.setReady(false);
+      this.setFirmwarePanelVisible(false);
+      this._setActionRateVisible(false);
       const switchBtnAp = this.el("wifiDisconnectBtn");
       if (switchBtnAp) switchBtnAp.style.display = "block";
       wifiSetup.style.display = "block";
@@ -1081,7 +1100,7 @@ class WifiTransmitter {
       const identity = await this.fetchRobotIdentityFromAp();
       if (gen !== this._detectGen) return;
       if (this.deviceFilter && identity && !this._identityMatchesFilter(identity)) {
-        this.robotStaBaseUrl = null;
+        this.onSoftAp = false;
         this.setReady(false);
         this.setFirmwarePanelVisible(false);
         if (switchBtnAp) switchBtnAp.style.display = "none";
@@ -1094,20 +1113,21 @@ class WifiTransmitter {
         return;
       }
       status.innerHTML =
-        "<span class='ok'>Connected to robot access point — control is active.</span>";
+        "<span class='ok'>Connected to robot access point.</span> Enter WiFi credentials below to put the robot on your network.";
       // Do not await: page-origin fetches (version.json) hang or stall with no internet on SoftAP.
       void this.scanNetworks();
-      void this.checkFirmwareVersion(ESP_AP_IP);
       return;
     }
 
     if (staOk) {
       const idx = staResults.findIndex((r) => r && r.ok);
       const base = staTargets[idx];
+      this.onSoftAp = false;
       this.robotStaBaseUrl = base;
       this.setReady(true);
       this.setFirmwarePanelVisible(true);
       this._setWifiConnectMode("connected");
+      wifiSetup.style.display = "none";
       const switchBtnSta = this.el("wifiDisconnectBtn");
       if (switchBtnSta) switchBtnSta.style.display = "block";
       const robots = this._filteredRobots(loadRobots());
