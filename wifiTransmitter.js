@@ -227,10 +227,25 @@ function currentPageUrl() {
   }
 }
 
-/** Open the current page in Android Chrome (falls back to Play Store / same URL). */
-function chromeOpenCurrentPageHref() {
+const CHROME_PLAY_STORE_URL =
+  "https://play.google.com/store/apps/details?id=com.android.chrome";
+const BLUEFY_APP_STORE_URL =
+  "https://apps.apple.com/app/bluefy-web-ble-browser/id1492822055";
+
+/** Chrome custom scheme: open this page in Chrome (Android). */
+function chromeNavigateSchemeHref() {
   const href = currentPageUrl();
-  if (!href) return "https://play.google.com/store/apps/details?id=com.android.chrome";
+  if (!href) return CHROME_PLAY_STORE_URL;
+  return "googlechrome://navigate?url=" + encodeURIComponent(href);
+}
+
+/**
+ * Android Intent targeting Chrome. Fallback is Play Store — never the current page,
+ * or Firefox will just reopen this tab when it cannot hand off.
+ */
+function chromeIntentHref() {
+  const href = currentPageUrl();
+  if (!href) return CHROME_PLAY_STORE_URL;
   try {
     const u = new URL(href);
     const hostAndPath = u.host + u.pathname + u.search + u.hash;
@@ -238,23 +253,41 @@ function chromeOpenCurrentPageHref() {
       "intent://" +
       hostAndPath +
       "#Intent;scheme=" +
-      encodeURIComponent(u.protocol.replace(":", "")) +
+      u.protocol.replace(":", "") +
       ";package=com.android.chrome;S.browser_fallback_url=" +
-      encodeURIComponent(href) +
+      encodeURIComponent(CHROME_PLAY_STORE_URL) +
       ";end"
     );
   } catch (_) {
-    return href;
+    return CHROME_PLAY_STORE_URL;
   }
 }
 
 /** Open the current page in Bluefy (iOS). */
 function bluefyOpenCurrentPageHref() {
   const href = currentPageUrl();
-  if (!href) {
-    return "https://apps.apple.com/app/bluefy-web-ble-browser/id1492822055";
-  }
+  if (!href) return BLUEFY_APP_STORE_URL;
   return "bluefy://open?url=" + encodeURIComponent(href);
+}
+
+/** Try to hand the current page to Chrome (Android). */
+function openCurrentPageInChrome() {
+  // Prefer Chrome's navigate scheme; Intent is a second try if we're still here.
+  try {
+    location.href = chromeNavigateSchemeHref();
+  } catch (_) {}
+  window.setTimeout(() => {
+    try {
+      location.href = chromeIntentHref();
+    } catch (_) {}
+  }, 600);
+}
+
+/** Try to hand the current page to Bluefy (iOS). */
+function openCurrentPageInBluefy() {
+  try {
+    location.href = bluefyOpenCurrentPageHref();
+  } catch (_) {}
 }
 
 function robotNotFoundStatusHtml(probes, apSsidHintHtml) {
@@ -271,8 +304,8 @@ function robotNotFoundStatusHtml(probes, apSsidHintHtml) {
       return (
         "<span class='error'>Browser refused to search for the robot.</span><br><br>" +
         'Open the app in <a href="' +
-        escapeHtml(chromeOpenCurrentPageHref()) +
-        '">Chrome</a>.' +
+        escapeHtml(chromeNavigateSchemeHref()) +
+        '" data-action="open-in-chrome">Chrome</a>.' +
         retryBtn
       );
     }
@@ -281,7 +314,7 @@ function robotNotFoundStatusHtml(probes, apSsidHintHtml) {
         "<span class='error'>Browser refused to search for the robot.</span><br><br>" +
         'Open the app in <a href="' +
         escapeHtml(bluefyOpenCurrentPageHref()) +
-        '">Bluefy browser</a>.' +
+        '" data-action="open-in-bluefy">Bluefy browser</a>.' +
         retryBtn
       );
     }
@@ -289,8 +322,8 @@ function robotNotFoundStatusHtml(probes, apSsidHintHtml) {
       "<span class='error'>Browser refused to search for the robot.</span><br><br>" +
       "This page is likely blocked from reaching local HTTP (mixed content / local network). " +
       'Try <a href="' +
-      escapeHtml(chromeOpenCurrentPageHref()) +
-      '">Chrome</a>, or open the app over HTTP on your LAN.' +
+      escapeHtml(chromeNavigateSchemeHref()) +
+      '" data-action="open-in-chrome">Chrome</a>, or open the app over HTTP on your LAN.' +
       retryBtn
     );
   }
@@ -324,7 +357,20 @@ class WifiTransmitter {
     this._detectGen = 0;
     this._onContainerClick = (e) => {
       const el = eventElement(e);
-      if (!el || !el.closest('[data-action="detect-mode"]')) return;
+      if (!el) return;
+      if (el.closest('[data-action="open-in-chrome"]')) {
+        e.preventDefault();
+        e.stopPropagation();
+        openCurrentPageInChrome();
+        return;
+      }
+      if (el.closest('[data-action="open-in-bluefy"]')) {
+        e.preventDefault();
+        e.stopPropagation();
+        openCurrentPageInBluefy();
+        return;
+      }
+      if (!el.closest('[data-action="detect-mode"]')) return;
       e.preventDefault();
       e.stopPropagation();
       void this.detectMode();
