@@ -267,7 +267,7 @@ window.ROBOTS_DATA = {
             ],
             processing: [
                 { type: "audioPlayer", delayMs: 200, makeupGain: 2, compressorThreshold: -24 },
-                { type: "audioMouthFilter", input: "audioPlayer", threshold: 0.01, gain: 20 },
+                { type: "audioMouthFilter", input: "audioPlayer", threshold: 0.1, gain: 4 },
                 {
                     type: "computervision",
                     on: true,
