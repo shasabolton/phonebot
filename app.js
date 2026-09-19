@@ -7,7 +7,7 @@ class App {
         this.dashboardMount = null;
         this.robotListEl = null;
         this.robotsData = null;
-        this.transmitters = ["none", "wifi", "bluetooth", "serial", "audio"];
+        this.transmitters = ["none", "wifi", "bluetooth"];
         this.transmitterListEl = null;
         this.transmitterGuiMount = null;
         this.transmitterInstance = null;
@@ -274,15 +274,44 @@ class App {
         return true;
     }
 
+    _showStartFlowBrowserSwitch(message) {
+        if (this.robot && typeof this.robot.showStartFlowBrowserSwitch === "function") {
+            this.robot.showStartFlowBrowserSwitch(message);
+        }
+    }
+
     /** Pair via Web Bluetooth picker only — does not open the transmitter settings menu. */
     async pairBluetoothFromStartFlow() {
         if (this.isRadioTransmitterReady()) return true;
+
+        if (!this.hasWebBluetooth()) {
+            this._showStartFlowBrowserSwitch(
+                "Web Bluetooth is not available in this browser."
+            );
+            return false;
+        }
+
         this.selectTransmitter("bluetooth");
         const tx = this.transmitterInstance;
-        if (!tx || typeof tx.connect !== "function") return false;
-        await tx.connect();
+        if (!tx || typeof tx.connect !== "function") {
+            this._showStartFlowBrowserSwitch(
+                "Web Bluetooth is not available in this browser."
+            );
+            return false;
+        }
+
+        try {
+            await tx.connect();
+        } catch (err) {
+            console.error("Bluetooth pair from start flow failed:", err);
+        }
         this.updateStartButtonState();
-        return this.isBluetoothConnected();
+        if (this.isBluetoothConnected()) return true;
+
+        this._showStartFlowBrowserSwitch(
+            "Bluetooth pairing failed. Open this app in a supported browser."
+        );
+        return false;
     }
 
     /**

@@ -47,6 +47,7 @@ class Robot {
         this._startFlowOverlay = null;
         this._startFlowStep = 0;
         this._startFlowBusy = false;
+        this._startFlowBrowserSwitchWired = false;
 
         this.stateMachine = null;
         this.strategies = null;
@@ -1134,10 +1135,14 @@ class Robot {
             }
         }
         const label = String(step.button || step.buttonLabel || "Done").trim() || "Done";
-        if (this._startFlowTextEl) this._startFlowTextEl.textContent = text;
+        if (this._startFlowTextEl) {
+            this._startFlowTextEl.textContent = text;
+            this._startFlowTextEl.classList.remove("robot-start-flow-text--browser-switch");
+        }
         if (this._startFlowBtn) {
             this._startFlowBtn.textContent = label;
             this._startFlowBtn.disabled = false;
+            this._startFlowBtn.hidden = false;
         }
         const cancelLabel = String(step.cancelButton || "").trim();
         if (this._startFlowCancelBtn) {
@@ -1150,6 +1155,67 @@ class Robot {
             }
         }
         this._startFlowOverlay.hidden = false;
+
+        if (String(step.action || "").trim() === "bluetoothPair") {
+            const secure = typeof window !== "undefined" && window.isSecureContext;
+            if (!navigator.bluetooth || !secure) {
+                this.showStartFlowBrowserSwitch(
+                    !secure
+                        ? "Web Bluetooth requires a secure context (HTTPS or localhost)."
+                        : "Web Bluetooth is not available in this browser."
+                );
+            }
+        }
+    }
+
+    /**
+     * Same Chrome/Bluefy handoff UI as the WiFi/Bluetooth transmitter when the
+     * current browser cannot pair.
+     */
+    showStartFlowBrowserSwitch(message) {
+        if (!this._startFlowTextEl) return;
+        const msg =
+            String(message || "").trim() ||
+            "Web Bluetooth is not available in this browser.";
+        const html =
+            typeof browserRefusedSwitchHtml === "function"
+                ? browserRefusedSwitchHtml(msg)
+                : "<span class='error'>" + msg + "</span>";
+        this._startFlowTextEl.innerHTML = html;
+        this._startFlowTextEl.classList.add("robot-start-flow-text--browser-switch");
+        if (this._startFlowBtn) this._startFlowBtn.hidden = true;
+        if (this._startFlowCancelBtn) {
+            this._startFlowCancelBtn.hidden = false;
+            this._startFlowCancelBtn.disabled = false;
+            if (!String(this._startFlowCancelBtn.textContent || "").trim()) {
+                this._startFlowCancelBtn.textContent = "Cancel";
+            }
+        }
+        this._wireStartFlowBrowserSwitchClicks();
+    }
+
+    _wireStartFlowBrowserSwitchClicks() {
+        if (!this._startFlowOverlay || this._startFlowBrowserSwitchWired) return;
+        this._startFlowBrowserSwitchWired = true;
+        this._startFlowOverlay.addEventListener("click", (e) => {
+            const t = e.target;
+            const el = t && (t instanceof Element ? t : t.parentElement);
+            if (!el) return;
+            if (el.closest('[data-action="open-in-chrome"]')) {
+                e.preventDefault();
+                if (typeof openCurrentPageInChrome === "function") openCurrentPageInChrome();
+                return;
+            }
+            if (el.closest('[data-action="open-in-bluefy"]')) {
+                e.preventDefault();
+                if (typeof openCurrentPageInBluefy === "function") openCurrentPageInBluefy();
+                return;
+            }
+            if (el.closest('[data-action="open-browser-install"]')) {
+                e.preventDefault();
+                if (typeof openBrowserInstallStore === "function") openBrowserInstallStore();
+            }
+        });
     }
 
     async _skipStartFlowStep() {
@@ -1169,6 +1235,7 @@ class Robot {
         const text = String(message || "").trim();
         if (!text || !this._startFlowTextEl) return;
         this._startFlowTextEl.textContent = text;
+        this._startFlowTextEl.classList.remove("robot-start-flow-text--browser-switch");
     }
 
     async _advanceStartFlow() {
@@ -1201,8 +1268,16 @@ class Robot {
             // User may have Cancel'd while the action was in flight.
             if (!this._startFlowOverlay) return;
             if (!ok) {
-                if (this._startFlowBtn) {
+                // Browser-switch UI owns the card; don't restore the Pair button over it.
+                const showingBrowserSwitch = !!(
+                    this._startFlowTextEl &&
+                    this._startFlowTextEl.classList.contains(
+                        "robot-start-flow-text--browser-switch"
+                    )
+                );
+                if (!showingBrowserSwitch && this._startFlowBtn) {
                     this._startFlowBtn.disabled = false;
+                    this._startFlowBtn.hidden = false;
                     this._startFlowBtn.textContent =
                         String(step.button || step.buttonLabel || "Done").trim() || "Done";
                 }
@@ -1247,6 +1322,7 @@ class Robot {
         this._startFlowBtn = null;
         this._startFlowCancelBtn = null;
         this._startFlowBusy = false;
+        this._startFlowBrowserSwitchWired = false;
     }
 
     _buildDefaultDashboard(container) {
