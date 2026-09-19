@@ -301,55 +301,60 @@ function openCurrentPageInBluefy() {
   } catch (_) {}
 }
 
+function openBrowserInstallStore() {
+  copyPageUrlToClipboard();
+  const platform = clientPlatform();
+  const store =
+    platform === "ios" ? BLUEFY_APP_STORE_URL : CHROME_PLAY_STORE_URL;
+  try {
+    location.href = store;
+  } catch (_) {}
+}
+
+/**
+ * Red error + two buttons to copy URL and launch/install Chrome (Android/other)
+ * or Bluefy (iOS). No "click when connected" retry.
+ * @param {string} errorText Plain error sentence (wrapped in .error).
+ */
+function browserRefusedSwitchHtml(errorText) {
+  const platform = clientPlatform();
+  const name = platform === "ios" ? "Bluefy" : "Chrome";
+  const launchAction = platform === "ios" ? "open-in-bluefy" : "open-in-chrome";
+  const launchHref =
+    platform === "ios" ? bluefyOpenCurrentPageHref() : chromeIntentHref();
+  const installHref =
+    platform === "ios" ? BLUEFY_APP_STORE_URL : CHROME_PLAY_STORE_URL;
+
+  return (
+    "<span class='error'>" +
+    escapeHtml(errorText) +
+    "</span><br><br>" +
+    '<button type="button" data-action="' +
+    launchAction +
+    '" data-href="' +
+    escapeHtml(launchHref) +
+    '">copy url, launch ' +
+    name +
+    "</button><br><br>" +
+    '<button type="button" data-action="open-browser-install" data-href="' +
+    escapeHtml(installHref) +
+    '">copy url, install ' +
+    name +
+    "</button>"
+  );
+}
+
 function robotNotFoundStatusHtml(probes, apSsidHintHtml) {
   const searched = probesLookLikeSearch(probes);
   const refused =
     !searched && probes.length > 0 && probes.every(probeLooksInstantBlocked);
 
+  if (refused) {
+    return browserRefusedSwitchHtml("Browser refused to search for the robot.");
+  }
+
   const retryBtn =
     '<br><br><button type="button" data-action="detect-mode">Click here when you are connected</button>';
-
-  const pasteHint =
-    "<br><span class='muted'>Tapping the browser link also copies this page URL. If it opens blank, paste into the address bar.</span>";
-
-  if (refused) {
-    const platform = clientPlatform();
-    if (platform === "android") {
-      return (
-        "<span class='error'>Browser refused to search for the robot.</span><br><br>" +
-        'Open the app in <a href="' +
-        escapeHtml(chromeIntentHref()) +
-        '" data-action="open-in-chrome">Chrome</a>.' +
-        pasteHint +
-        '<br><br>Need Chrome? <a href="' +
-        escapeHtml(CHROME_PLAY_STORE_URL) +
-        '" target="_blank" rel="noopener">Install Chrome</a>.' +
-        retryBtn
-      );
-    }
-    if (platform === "ios") {
-      return (
-        "<span class='error'>Browser refused to search for the robot.</span><br><br>" +
-        'Open the app in <a href="' +
-        escapeHtml(bluefyOpenCurrentPageHref()) +
-        '" data-action="open-in-bluefy">Bluefy browser</a>.' +
-        pasteHint +
-        '<br><br>Need Bluefy? <a href="' +
-        escapeHtml(BLUEFY_APP_STORE_URL) +
-        '" target="_blank" rel="noopener">Install Bluefy</a>.' +
-        retryBtn
-      );
-    }
-    return (
-      "<span class='error'>Browser refused to search for the robot.</span><br><br>" +
-      "This page is likely blocked from reaching local HTTP (mixed content / local network). " +
-      'Try <a href="' +
-      escapeHtml(chromeIntentHref()) +
-      '" data-action="open-in-chrome">Chrome</a>, or open the app over HTTP on your LAN.' +
-      pasteHint +
-      retryBtn
-    );
-  }
 
   return (
     "<span class='error'>Browser searched but robot not found.</span><br><br>" +
@@ -391,6 +396,12 @@ class WifiTransmitter {
         e.preventDefault();
         e.stopPropagation();
         openCurrentPageInBluefy();
+        return;
+      }
+      if (el.closest('[data-action="open-browser-install"]')) {
+        e.preventDefault();
+        e.stopPropagation();
+        openBrowserInstallStore();
         return;
       }
       if (!el.closest('[data-action="detect-mode"]')) return;

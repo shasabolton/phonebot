@@ -35,7 +35,25 @@ class BluetoothTransmitter {
     this._encoder = new TextEncoder();
     this._connectBusy = false;
     this._onContainerClick = (e) => {
-      if (e.target.closest('[data-action="ble-connect"]')) {
+      const t = e.target;
+      const el = t && (t instanceof Element ? t : t.parentElement);
+      if (!el) return;
+      if (el.closest('[data-action="open-in-chrome"]')) {
+        e.preventDefault();
+        if (typeof openCurrentPageInChrome === "function") openCurrentPageInChrome();
+        return;
+      }
+      if (el.closest('[data-action="open-in-bluefy"]')) {
+        e.preventDefault();
+        if (typeof openCurrentPageInBluefy === "function") openCurrentPageInBluefy();
+        return;
+      }
+      if (el.closest('[data-action="open-browser-install"]')) {
+        e.preventDefault();
+        if (typeof openBrowserInstallStore === "function") openBrowserInstallStore();
+        return;
+      }
+      if (el.closest('[data-action="ble-connect"]')) {
         e.preventDefault();
         void this.connect();
       }
@@ -157,8 +175,10 @@ class BluetoothTransmitter {
 
     if (!navigator.bluetooth) {
       status.innerHTML =
-        "<span class='error'>Web Bluetooth is not available in this browser.</span><br>" +
-        "Use Chrome or Edge on Android/desktop over HTTPS, or localhost while developing.";
+        typeof browserRefusedSwitchHtml === "function"
+          ? browserRefusedSwitchHtml("Web Bluetooth is not available in this browser.")
+          : "<span class='error'>Web Bluetooth is not available in this browser.</span>";
+      connectBtn.style.display = "none";
       connectBtn.disabled = true;
       this.setReady(false);
       return;
@@ -166,12 +186,18 @@ class BluetoothTransmitter {
 
     if (!window.isSecureContext) {
       status.innerHTML =
-        "<span class='error'>Web Bluetooth requires a secure context (HTTPS or localhost).</span>";
+        typeof browserRefusedSwitchHtml === "function"
+          ? browserRefusedSwitchHtml(
+              "Web Bluetooth requires a secure context (HTTPS or localhost)."
+            )
+          : "<span class='error'>Web Bluetooth requires a secure context (HTTPS or localhost).</span>";
+      connectBtn.style.display = "none";
       connectBtn.disabled = true;
       this.setReady(false);
       return;
     }
 
+    connectBtn.style.display = "";
     status.innerHTML = this.deviceFilter
       ? "<span class='muted'>Not connected.</span> Tap Connect to pair with <b>" +
         escapeHtml(this.deviceFilter.bleName) +
