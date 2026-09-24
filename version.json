@@ -1,7 +1,7 @@
 {
 
-  "fwVersion": "1.2.8",
+  "fwVersion": "1.2.9",
 
-  "appBuildVersion": "232: ESP32-S3 pins 1-8"
+  "appBuildVersion": "233: fix S3 servo LEDC channels"
 
 }

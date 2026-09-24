@@ -3,7 +3,6 @@
 #include <ESPmDNS.h>
 #include <LittleFS.h>
 #include <Update.h>
-#include <ESP32Servo.h>
 #include <BLEDevice.h>
 #include <BLEServer.h>
 #include <BLEUtils.h>
@@ -14,7 +13,7 @@
 
 // ===== CONFIG =====
 /** Bump this when releasing firmware; keep version.json in the repo in sync (manual for now). */
-#define FW_VERSION "1.2.8"
+#define FW_VERSION "1.2.9"
 
 /**
  * BUILD (ESP32-S3, e.g. ESP32-S3-WROOM-1 with 16MB flash):
@@ -27,11 +26,19 @@
  *   PSRAM: "Disabled" unless the sketch uses it
  * Sketch + BLE exceeds the default ~1.2MB app slot — keep the large dual-OTA scheme.
  * Servo signals: GPIO 1–8 (matches phonebot PCB SERVO1–8). Avoid 19/20 (USB).
+ *
+ * Servo PWM uses Arduino LEDC directly (one channel per pin). ESP32Servo on S3
+ * can leak writes across channels (odd/even pins moving together).
  */
 
 /** Phonebot PCB / app: hobby servos on GPIO 1–8 only. */
 const int SERVO_PIN_MIN = 1;
 const int SERVO_PIN_MAX = 8;
+
+/** 50 Hz hobby-servo frame; 14-bit duty is enough for ~1 µs steps. */
+const int SERVO_PWM_FREQ_HZ = 50;
+const int SERVO_PWM_RES_BITS = 14;
+const int SERVO_PERIOD_US = 20000;
 
 /** Phonebot BLE GATT — same UUIDs as bluetoothTransmitter.js */
 #define BLE_SERVICE_UUID        "4faf2012-5fb4-459e-8fcc-c5c9c331914b"
@@ -55,9 +62,10 @@ String ssid = "";
 String password = "";
 
 const int MAX_SERVO_CHANNELS = 8;
-Servo servos[MAX_SERVO_CHANNELS];
 bool servoAttached[MAX_SERVO_CHANNELS] = {false};
 int servoPins[MAX_SERVO_CHANNELS] = {-1, -1, -1, -1, -1, -1, -1, -1};
+int servoMinUs[MAX_SERVO_CHANNELS] = {1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000};
+int servoMaxUs[MAX_SERVO_CHANNELS] = {2000, 2000, 2000, 2000, 2000, 2000, 2000, 2000};
 
 /**
  * Control source: WiFi vs Bluetooth action stream.
@@ -83,6 +91,31 @@ void readMacBytes(uint8_t out[6]) {
 
 bool isValidServoPin(int pin) {
   return pin >= SERVO_PIN_MIN && pin <= SERVO_PIN_MAX;
+}
+
+/** Stable LEDC channel per GPIO: pin 1→ch0 … pin 8→ch7 (S3 has 8 LEDC channels). */
+int servoLedcChannelForPin(int pin) {
+  return pin - SERVO_PIN_MIN;
+}
+
+uint32_t servoUsToDuty(int us) {
+  if (us < 0) us = 0;
+  if (us > SERVO_PERIOD_US) us = SERVO_PERIOD_US;
+  const uint32_t maxDuty = (1u << SERVO_PWM_RES_BITS) - 1u;
+  return (uint32_t)(((uint64_t)us * maxDuty) / (uint32_t)SERVO_PERIOD_US);
+}
+
+bool attachServoPwm(int pin) {
+  const int channel = servoLedcChannelForPin(pin);
+  // Arduino-ESP32 3.x: pin + explicit channel (avoids ESP32Servo S3 channel bugs).
+  return ledcAttachChannel(pin, SERVO_PWM_FREQ_HZ, SERVO_PWM_RES_BITS, channel);
+}
+
+void writeServoMicroseconds(int idx, int us) {
+  if (idx < 0 || idx >= MAX_SERVO_CHANNELS || !servoAttached[idx]) return;
+  if (us < servoMinUs[idx]) us = servoMinUs[idx];
+  if (us > servoMaxUs[idx]) us = servoMaxUs[idx];
+  ledcWrite(servoPins[idx], servoUsToDuty(us));
 }
 
 int findServoIndexByPin(int pin) {
@@ -173,11 +206,16 @@ ProcessResult processPinSetup(const String& body, ControlSource src) {
       }
 
       if (!servoAttached[idx]) {
-        servos[idx].attach(pin, minUs, maxUs);
+        if (!attachServoPwm(pin)) {
+          r.error = "LEDC attach failed";
+          return r;
+        }
         servoAttached[idx] = true;
         servoPins[idx] = pin;
       }
-      servos[idx].writeMicroseconds(homeUs);
+      servoMinUs[idx] = minUs;
+      servoMaxUs[idx] = maxUs;
+      writeServoMicroseconds(idx, homeUs);
       r.count++;
     }
     if (comma == -1) break;
@@ -221,7 +259,7 @@ ProcessResult processAction(const String& body, ControlSource src) {
       }
       int idx = findServoIndexByPin(pin);
       if (idx >= 0 && servoAttached[idx]) {
-        servos[idx].writeMicroseconds(us);
+        writeServoMicroseconds(idx, us);
         r.count++;
       }
     }
