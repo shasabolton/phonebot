@@ -998,6 +998,34 @@ class WifiTransmitter {
     });
   }
 
+  /**
+   * After OTA the ESP reboots; poll until /ping succeeds, then refresh version UI.
+   * @returns {Promise<boolean>} true if the robot came back
+   */
+  async waitForRobotAfterOta(baseUrl, { attempts = 40, intervalMs = 1500 } = {}) {
+    const st = this.el("firmwareStatus");
+    const versionInfo = this.el("firmwareVersionInfo");
+    if (versionInfo) {
+      versionInfo.innerHTML =
+        "<span class='muted'>Waiting for robot to reboot and reconnect…</span>";
+    }
+    for (let i = 0; i < attempts; i++) {
+      if (st) {
+        st.innerHTML =
+          "<span class='muted'>Waiting for robot to reconnect… (" +
+          (i + 1) +
+          "/" +
+          attempts +
+          ")</span>";
+      }
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+      if (!this.robotStaBaseUrl || this.robotStaBaseUrl !== baseUrl) return false;
+      const p = await ping(baseUrl, 2000);
+      if (p && p.ok) return true;
+    }
+    return false;
+  }
+
   async uploadFirmware() {
     const btn = this.el("firmwareBtn");
     const st = this.el("firmwareStatus");
@@ -1020,15 +1048,30 @@ class WifiTransmitter {
     }
     btn.disabled = true;
     st.textContent = "Uploading to robot… (do not close this page)";
+    const baseUrl = this.robotStaBaseUrl;
     try {
       const form = new FormData();
       form.append("update", blob, "firmware.bin");
-      const res = await robotFetch(this.robotStaBaseUrl + "/update", {
+      const res = await robotFetch(baseUrl + "/update", {
         method: "POST",
         body: form
       });
       if (res.ok) {
         st.innerHTML = "<span class='ok'>Upload finished. Robot is restarting with new firmware.</span>";
+        this.setReady(false);
+        const back = await this.waitForRobotAfterOta(baseUrl);
+        if (!back) {
+          st.innerHTML =
+            "<span class='warn'>Upload finished, but the robot did not come back yet.</span> Tap <b>Check connection</b> once it rejoins WiFi.";
+          btn.disabled = false;
+        } else {
+          this.setReady(true);
+          st.innerHTML = "<span class='ok'>Robot reconnected. Checking firmware…</span>";
+          await this.checkFirmwareVersion(baseUrl);
+          st.innerHTML = "";
+          // Re-enable only if still shown (outdated / unverifiable).
+          if (btn.style.display !== "none") btn.disabled = false;
+        }
       } else {
         st.innerHTML = "<span class='error'>Update failed (HTTP " + res.status + ").</span>";
         btn.disabled = false;

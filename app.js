@@ -788,6 +788,13 @@ class App {
 
     _refreshSettingsMenu() {
         if (!this.settingsMenuEl) return;
+        // Banner is moved into this menu; detach before clearing or innerHTML destroys it.
+        const banner =
+            this._appBuildBanner || document.getElementById('appBuildBanner');
+        if (banner) {
+            this._appBuildBanner = banner;
+            banner.remove();
+        }
         this.settingsMenuEl.innerHTML = '';
         const list = document.createElement('div');
         list.className = 'app-settings-nav';
@@ -812,7 +819,6 @@ class App {
             list.appendChild(btn);
         }
 
-        const banner = document.getElementById('appBuildBanner');
         if (banner) {
             banner.hidden = false;
             banner.className = 'app-build-banner muted';

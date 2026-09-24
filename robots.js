@@ -2,7 +2,7 @@
 window.ROBOTS_DATA = {
     robots: [
         {
-            name: "6 servos",
+            name: "8 servos",
             actuators: [
                 {
                     type: "servo",
@@ -58,6 +58,26 @@ window.ROBOTS_DATA = {
                     type: "servo",
                     name: "H6",
                     pin: 6,
+                    homeMicroseconds: 1500,
+                    minMicroseconds: 1000,
+                    maxMicroseconds: 2000,
+                    deadbandMicrosecondsMin: 1480,
+                    deadbandMicrosecondsMax: 1520
+                },
+                {
+                    type: "servo",
+                    name: "H7",
+                    pin: 7,
+                    homeMicroseconds: 1500,
+                    minMicroseconds: 1000,
+                    maxMicroseconds: 2000,
+                    deadbandMicrosecondsMin: 1480,
+                    deadbandMicrosecondsMax: 1520
+                },
+                {
+                    type: "servo",
+                    name: "H8",
+                    pin: 8,
                     homeMicroseconds: 1500,
                     minMicroseconds: 1000,
                     maxMicroseconds: 2000,

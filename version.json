@@ -1,7 +1,14 @@
-{
-
-  "fwVersion": "1.2.9",
-
-  "appBuildVersion": "233: fix S3 servo LEDC channels"
-
-}
+{
+
+
+
+  "fwVersion": "1.2.9",
+
+
+
+  "appBuildVersion": "234: 8 servos"
+
+
+
+}
+
