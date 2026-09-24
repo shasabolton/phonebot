@@ -7,7 +7,7 @@ window.ROBOTS_DATA = {
                 {
                     type: "servo",
                     name: "H1",
-                    pin: 23,
+                    pin: 1,
                     homeMicroseconds: 1500,
                     minMicroseconds: 1000,
                     maxMicroseconds: 2000,
@@ -17,7 +17,7 @@ window.ROBOTS_DATA = {
                 {
                     type: "servo",
                     name: "H2",
-                    pin: 22,
+                    pin: 2,
                     homeMicroseconds: 1500,
                     minMicroseconds: 1000,
                     maxMicroseconds: 2000,
@@ -27,7 +27,7 @@ window.ROBOTS_DATA = {
                 {
                     type: "servo",
                     name: "H3",
-                    pin: 21,
+                    pin: 3,
                     homeMicroseconds: 1500,
                     minMicroseconds: 1000,
                     maxMicroseconds: 2000,
@@ -37,7 +37,7 @@ window.ROBOTS_DATA = {
                 {
                     type: "servo",
                     name: "H4",
-                    pin: 19,
+                    pin: 4,
                     homeMicroseconds: 1500,
                     minMicroseconds: 1000,
                     maxMicroseconds: 2000,
@@ -47,7 +47,7 @@ window.ROBOTS_DATA = {
                 {
                     type: "servo",
                     name: "H5",
-                    pin: 18,
+                    pin: 5,
                     homeMicroseconds: 1500,
                     minMicroseconds: 1000,
                     maxMicroseconds: 2000,
@@ -57,7 +57,7 @@ window.ROBOTS_DATA = {
                 {
                     type: "servo",
                     name: "H6",
-                    pin: 25,
+                    pin: 6,
                     homeMicroseconds: 1500,
                     minMicroseconds: 1000,
                     maxMicroseconds: 2000,
@@ -115,7 +115,7 @@ window.ROBOTS_DATA = {
                 {
                     type: "servo",
                     name: "mouth",
-                    pin: 23,
+                    pin: 1,
                     homeMicroseconds: 1500,
                     minMicroseconds: 1000,
                     maxMicroseconds: 2000,
@@ -126,7 +126,7 @@ window.ROBOTS_DATA = {
                 {
                     type: "servo",
                     name: "eye yaw",
-                    pin: 22,
+                    pin: 2,
                     homeMicroseconds: 1500,
                     minMicroseconds: 1000,
                     maxMicroseconds: 2000,
@@ -212,7 +212,7 @@ window.ROBOTS_DATA = {
                 {
                     type: "servo",
                     name: "eyebrows",
-                    pin: 21,
+                    pin: 3,
                     homeMicroseconds: 1500,
                     minMicroseconds: 1000,
                     maxMicroseconds: 2000,

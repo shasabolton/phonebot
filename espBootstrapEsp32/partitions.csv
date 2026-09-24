@@ -1,6 +1,7 @@
-# Phonebot ESP32 — larger OTA app slots (BLE + WiFi + HTTP need ~1.8MB).
+# Phonebot ESP32 / ESP32-S3 — larger OTA app slots (BLE + WiFi + HTTP need ~1.8MB).
 # Arduino IDE: Tools → Partition Scheme → "Minimal SPIFFS (1.9MB APP with OTA/128KB SPIFFS)"
 # Or: Tools → Partition Scheme → Custom (uses this file from the sketch folder).
+# Layout fits in the first 4MB; fine on 4MB or 16MB modules.
 # Name,   Type, SubType, Offset,  Size, Flags
 nvs,      data, nvs,     0x9000,  0x5000,
 otadata,  data, ota,     0xe000,  0x2000,

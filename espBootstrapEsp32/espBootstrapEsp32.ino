@@ -9,18 +9,29 @@
 #include <BLEUtils.h>
 #include <BLE2902.h>
 #include <esp_wifi.h>
+#include <esp_mac.h>
 #include "phonebotProcess.h"
 
 // ===== CONFIG =====
 /** Bump this when releasing firmware; keep version.json in the repo in sync (manual for now). */
-#define FW_VERSION "1.2.7"
+#define FW_VERSION "1.2.8"
 
 /**
- * BUILD (ESP32 Dev Module, 4MB flash): sketch + BLE exceeds the default 1.2MB app slot.
- * Arduino IDE → Tools → Partition Scheme →
- *   "Minimal SPIFFS (1.9MB APP with OTA/128KB SPIFFS)"
- * (or "Custom" to use partitions.csv in this folder). WiFi OTA still works with dual app slots.
+ * BUILD (ESP32-S3, e.g. ESP32-S3-WROOM-1 with 16MB flash):
+ * Arduino IDE → Tools:
+ *   Board: "ESP32S3 Dev Module" (or your exact S3 board)
+ *   USB CDC On Boot: "Enabled" (native USB Serial)
+ *   Flash Size: match module (16MB for N16R2)
+ *   Partition Scheme: "Minimal SPIFFS (1.9MB APP with OTA/128KB SPIFFS)"
+ *     or "Custom" to use partitions.csv in this folder
+ *   PSRAM: "Disabled" unless the sketch uses it
+ * Sketch + BLE exceeds the default ~1.2MB app slot — keep the large dual-OTA scheme.
+ * Servo signals: GPIO 1–8 (matches phonebot PCB SERVO1–8). Avoid 19/20 (USB).
  */
+
+/** Phonebot PCB / app: hobby servos on GPIO 1–8 only. */
+const int SERVO_PIN_MIN = 1;
+const int SERVO_PIN_MAX = 8;
 
 /** Phonebot BLE GATT — same UUIDs as bluetoothTransmitter.js */
 #define BLE_SERVICE_UUID        "4faf2012-5fb4-459e-8fcc-c5c9c331914b"
@@ -65,15 +76,13 @@ const uint32_t WIFI_CONNECT_TIMEOUT_MS = 20000;
 BLEServer* bleServer = nullptr;
 BLECharacteristic* bleStatusChar = nullptr;
 
-/** Fill 6-byte MAC in network/printed order from little-endian getEfuseMac(). */
+/** Fill 6-byte STA MAC (printed order). Works on classic ESP32 and ESP32-S3. */
 void readMacBytes(uint8_t out[6]) {
-  uint64_t mac = ESP.getEfuseMac();
-  out[0] = (uint8_t)(mac);
-  out[1] = (uint8_t)(mac >> 8);
-  out[2] = (uint8_t)(mac >> 16);
-  out[3] = (uint8_t)(mac >> 24);
-  out[4] = (uint8_t)(mac >> 32);
-  out[5] = (uint8_t)(mac >> 40);
+  esp_read_mac(out, ESP_MAC_WIFI_STA);
+}
+
+bool isValidServoPin(int pin) {
+  return pin >= SERVO_PIN_MIN && pin <= SERVO_PIN_MAX;
 }
 
 int findServoIndexByPin(int pin) {
@@ -149,6 +158,10 @@ ProcessResult processPinSetup(const String& body, ControlSource src) {
       if (!parseIntField(pinStr, pin) || !parseIntField(minStr, minUs) ||
           !parseIntField(maxStr, maxUs) || !parseIntField(homeStr, homeUs)) {
         r.error = "Bad numeric setup values";
+        return r;
+      }
+      if (!isValidServoPin(pin)) {
+        r.error = "Servo pin must be 1-8";
         return r;
       }
 
@@ -691,10 +704,15 @@ void handlePing() {
 
 void setup() {
   Serial.begin(115200);
+  // Native USB CDC on ESP32-S3 needs a moment after reset before logs show.
+  delay(800);
 
   if (!LittleFS.begin(true)) {
     Serial.println("LittleFS mount failed");
   }
+
+  Serial.println("Phonebot ESP32-S3 firmware " FW_VERSION);
+  Serial.println("Servo GPIOs: 1-8");
 
   buildRobotIdentity();
 
