@@ -239,3 +239,57 @@ Useful checks:
 - Finishing Simon Says consumes the session; selecting/rematching requires another payment.
 - When hosted chat spends the AI budget, the session becomes `paused_for_payment`; paying
   again creates a continuation session while browser conversation/game state stays intact.
+
+---
+
+## TODO — PCB power for 8 micro servos (3 A / 5 V charger)
+
+Goal: safely run **8 hobby micro servos** (plus ESP32) from a typical **5 V / 3 A** USB charger without cooking the reverse-protection diode or letting a stall melt traces.
+
+**Expected servo current (5 V, typical SG90-class):**
+
+| State | Per servo | 8 servos + ESP (~0.1 A) |
+| --- | --- | --- |
+| Idle / hold, no load | ~5–20 mA | ~0.2–0.3 A |
+| Moving freely | ~100–200 mA | ~0.9–1.7 A |
+| Stall | ~500–800 mA | ~4–6 A (must not be sustained) |
+
+Normal free motion already sits around **1–2 A**, so parts rated for **1 A continuous** are undersized. Size protection for **normal motion under a 3 A supply**, and cut off **sustained stall**.
+
+### 1. Upgrade the VBUS Schottky (must do)
+
+**Why:** USB-C → Schottky → 5 V rail feeds **both** the ESP LDO and the servo headers. The current **1N5819 (~1 A)** will run at or above rating when all 8 servos move freely (~1–1.7 A). Heat and eventual failure are likely; a polyfuse on the servo branch does not protect this diode from normal motion current.
+
+**Choose:** a Schottky rated **≥ 3 A continuous** at 5 V (e.g. **SS34** SMA, or JLCPCB equivalent). That matches a **3 A charger** with headroom and lowers forward drop so servos see closer to 5 V.
+
+**Optional later:** ideal-diode / P-FET reverse protection (less heat than any Schottky).
+
+### 2. Add a polyfuse on the servo 5 V rail only
+
+**Why:** A charger’s own current limit is unreliable as board protection. Sustained multi-servo stall can pull **4 A+**, which overheats **1 mm traces** and stresses the connector path. A resettable fuse should open on long stalls while allowing brief current spikes during starts/direction changes.
+
+**Placement:**
+
+```text
+USB 5V (after Schottky)
+  ├─ LDO → ESP              (unfused — stays up if servos short)
+  └─ polyfuse → 220 µF + 100 nF → SERVO1–8
+```
+
+Put the fuse **before** the servo bulk caps, **not** on the shared ESP branch.
+
+**Choose:** **~2 A hold** PPTC (SMD, e.g. 1206/1812 class).
+
+| Spec | Why |
+| --- | --- |
+| Hold ≈ **2 A** | Allows free-running 8 micros (~1–1.7 A) without nuisance trips; stays under a **3 A** charger |
+| Trip ≈ **3.5–4 A** (typical ~2× hold) | Opens on sustained stall; brief ~4 A blips often pass (thermal mass) |
+| Servo rail only | ESP keeps running if the fuse opens |
+
+Do **not** use a 1 A hold part — free motion can nuisance-trip. Do **not** size the fuse to the charger’s full 3 A (that allows damaging stall current through thin traces).
+
+### Related layout notes (same power pass)
+
+- Widen **5 V and GND** to the servo headers (pours / ≥2 mm where possible); 1 mm at 3 A runs hot.
+- Keep the existing header bulk caps **after** the polyfuse.
+- Prefer a **≥2 A** USB cable/charger; many “fast” bricks are not 3 A at **5 V**.
