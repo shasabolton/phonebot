@@ -59,6 +59,11 @@ class AgentInterface {
         this._sendBtn = null;
         this._statusEl = null;
         this._historyEl = null;
+        /** Sparse ChatGPT-style chat under the talking-head video. */
+        this._dashboardChatEl = null;
+        this._dashboardHistoryEl = null;
+        this._dashboardPromptInput = null;
+        this._dashboardMicBtn = null;
         this._showFullSpeechPrompt = false;
         this._fullSpeechPromptInput = null;
         this._agentEnabled = true;
@@ -108,10 +113,11 @@ class AgentInterface {
     static PTT_RELEASE_TAIL_MS = 500;
     static PTT_MAX_RECORD_MS = 20000;
 
-    /** True when a hold-to-talk game is active (Philosophy, 20 Questions, Fortune Teller). */
+    /** True when a hold-to-talk game is active (Chat, Philosophy, 20 Questions, Fortune Teller). */
     _isConversationMode() {
         const mode = String(this.robot?.mode || "").trim().toLowerCase();
         return (
+            mode === "chat" ||
             mode === "philosophy" ||
             mode === "twentyquestions" ||
             mode === "fortuneteller"
@@ -1152,6 +1158,10 @@ class AgentInterface {
         this._pttBtnEl = null;
         this._pttLabelEl = null;
         this._pttState = "hidden";
+        this._syncDashboardMicState("hidden", {
+            disabled: true,
+            label: "Hold to talk"
+        });
     }
 
     /**
@@ -1252,7 +1262,6 @@ class AgentInterface {
         const phase = String(state || "idle").trim().toLowerCase();
         this._pttState = phase;
         const overlay = this._ensurePttOverlay();
-        if (!overlay) return;
 
         const labels = {
             idle: "Hold button while you talk",
@@ -1262,30 +1271,61 @@ class AgentInterface {
             talking: "Talking"
         };
 
-        overlay.classList.remove(
-            "sensor-camera-ptt-overlay--idle",
-            "sensor-camera-ptt-overlay--listening",
-            "sensor-camera-ptt-overlay--processing",
-            "sensor-camera-ptt-overlay--thinking",
-            "sensor-camera-ptt-overlay--talking"
-        );
-        overlay.classList.add(`sensor-camera-ptt-overlay--${phase}`);
-
         const labelText =
             String(options.label || options.hint || "").trim() || labels[phase] || labels.idle;
-        if (this._pttLabelEl) {
-            this._pttLabelEl.textContent = labelText;
+        const disabled =
+            phase === "processing" ||
+            phase === "thinking" ||
+            phase === "talking" ||
+            (phase === "idle" && !this._pttCanInteract());
+
+        if (overlay) {
+            overlay.classList.remove(
+                "sensor-camera-ptt-overlay--idle",
+                "sensor-camera-ptt-overlay--listening",
+                "sensor-camera-ptt-overlay--processing",
+                "sensor-camera-ptt-overlay--thinking",
+                "sensor-camera-ptt-overlay--talking"
+            );
+            overlay.classList.add(`sensor-camera-ptt-overlay--${phase}`);
+
+            if (this._pttLabelEl) {
+                this._pttLabelEl.textContent = labelText;
+            }
+            if (this._pttBtnEl) {
+                this._pttBtnEl.disabled = disabled;
+                this._pttBtnEl.setAttribute("aria-label", labelText);
+                this._pttBtnEl.setAttribute("aria-pressed", phase === "listening" ? "true" : "false");
+            }
         }
-        if (this._pttBtnEl) {
-            const disabled =
-                phase === "processing" ||
-                phase === "thinking" ||
-                phase === "talking" ||
-                (phase === "idle" && !this._pttCanInteract());
-            this._pttBtnEl.disabled = disabled;
-            this._pttBtnEl.setAttribute("aria-label", labelText);
-            this._pttBtnEl.setAttribute("aria-pressed", phase === "listening" ? "true" : "false");
-        }
+        this._syncDashboardMicState(phase, { disabled, label: labelText });
+    }
+
+    /**
+     * Mirror camera-frame PTT affordance onto the dashboard composer mic.
+     * @param {string} phase
+     * @param {{ disabled?: boolean, label?: string }} [options]
+     */
+    _syncDashboardMicState(phase, options = {}) {
+        const btn = this._dashboardMicBtn;
+        if (!btn) return;
+        const p = String(phase || this._pttState || "idle").trim().toLowerCase();
+        const disabled =
+            options.disabled != null
+                ? !!options.disabled
+                : p === "hidden" ||
+                  p === "processing" ||
+                  p === "thinking" ||
+                  p === "talking" ||
+                  (p === "idle" && !this._pttCanInteract());
+        const label =
+            String(options.label || "").trim() ||
+            (p === "listening" ? "Listening" : "Hold to talk");
+        btn.disabled = disabled;
+        btn.setAttribute("aria-label", label);
+        btn.setAttribute("aria-pressed", p === "listening" ? "true" : "false");
+        btn.classList.toggle("is-listening", p === "listening");
+        btn.classList.toggle("is-busy", p === "processing" || p === "thinking" || p === "talking");
     }
 
     _armConversationPtt() {
@@ -3189,7 +3229,7 @@ class AgentInterface {
     }
 
     async _onSend(options = {}) {
-        if (!this._sendBtn || !this._promptInput) return;
+        if (!this._promptInput && !this._dashboardPromptInput) return;
         if (!this._agentEnabled) {
             if (this._statusEl) {
                 this._statusEl.textContent = "Agent is off. Turn the agent on to send.";
@@ -3208,7 +3248,7 @@ class AgentInterface {
         if (this._simonPoseCycleRunning || this._conversationListenRunning) {
             this._stopSpeaking();
         }
-        const text = String(this._promptInput.value || "").trim();
+        const text = this._readPromptText();
         const isKickoff = !!options.isKickoff;
         const modeGeneration = options.modeGeneration;
         const modeStillCurrent = () =>
@@ -3269,7 +3309,7 @@ class AgentInterface {
             if (this._voiceOn) {
                 spokenForFollowUp = this._extractSpokenText(reply.contentText, reply.rawText);
             }
-            this._promptInput.value = "";
+            this._clearPromptInputs();
             if (this._statusEl && !spokenForFollowUp) {
                 this._statusEl.textContent = "Done.";
                 this._statusEl.className = "ok";
@@ -3316,8 +3356,9 @@ class AgentInterface {
         if (!this._agentEnabled) {
             return false;
         }
-        if (!this._promptInput) return false;
-        this._promptInput.value = next;
+        if (!this._promptInput && !this._dashboardPromptInput) return false;
+        if (this._promptInput) this._promptInput.value = next;
+        if (this._dashboardPromptInput) this._dashboardPromptInput.value = next;
         await this._onSend();
         return true;
     }
@@ -3441,18 +3482,37 @@ class AgentInterface {
     }
 
     _renderHistory() {
-        if (!this._historyEl) return;
-        this._historyEl.replaceChildren();
-        /** Full thread (API sends full history too — only provider token limits may trim). */
+        this._renderHistoryInto(this._historyEl, { includeKickoff: true, includeSystem: true });
+        this._renderHistoryInto(this._dashboardHistoryEl, {
+            includeKickoff: false,
+            includeSystem: false,
+            compact: true
+        });
+        this._updateDashboardPromptPlaceholder();
+    }
+
+    /**
+     * @param {HTMLElement|null} el
+     * @param {{ includeKickoff?: boolean, includeSystem?: boolean, compact?: boolean }} [options]
+     */
+    _renderHistoryInto(el, options = {}) {
+        if (!el) return;
+        el.replaceChildren();
+        const includeKickoff = options.includeKickoff !== false;
+        const includeSystem = options.includeSystem !== false;
+        const compact = !!options.compact;
         for (const m of this.messageHistory) {
+            if (!m) continue;
+            if (!includeKickoff && m.isKickoff) continue;
+            if (!includeSystem && m.role === "system") continue;
             const bubble = document.createElement("div");
-            const roleClass = m.role === "user" ? "agent-history-user" : m.role === "system" ? "agent-history-system" : "agent-history-agent";
+            const roleClass =
+                m.role === "user"
+                    ? "agent-history-user"
+                    : m.role === "system"
+                      ? "agent-history-system"
+                      : "agent-history-agent";
             bubble.className = "agent-history-bubble " + roleClass;
-            const who = document.createElement("span");
-            who.className = "agent-history-who";
-            who.textContent = m.role === "user" ? "You" : m.role === "system" ? "System" : "Agent";
-            const body = document.createElement("div");
-            body.className = "agent-history-body";
             let displayText = m.text != null ? String(m.text) : "";
             if (
                 m.role === "user" &&
@@ -3462,12 +3522,122 @@ class AgentInterface {
             ) {
                 displayText = m.fullPrompt;
             }
-            body.textContent = displayText;
-            bubble.appendChild(who);
-            bubble.appendChild(body);
-            this._historyEl.appendChild(bubble);
+            if (compact) {
+                bubble.textContent = displayText;
+            } else {
+                const who = document.createElement("span");
+                who.className = "agent-history-who";
+                who.textContent =
+                    m.role === "user" ? "You" : m.role === "system" ? "System" : "Agent";
+                const body = document.createElement("div");
+                body.className = "agent-history-body";
+                body.textContent = displayText;
+                bubble.appendChild(who);
+                bubble.appendChild(body);
+            }
+            el.appendChild(bubble);
         }
-        this._historyEl.scrollTop = this._historyEl.scrollHeight;
+        el.scrollTop = el.scrollHeight;
+    }
+
+    /** "Ask Robot" until the agent has spoken; then "Reply to Robot". */
+    _updateDashboardPromptPlaceholder() {
+        const input = this._dashboardPromptInput;
+        if (!input) return;
+        const hasAgentReply = (this.messageHistory || []).some(
+            (m) => m && m.role === "assistant" && String(m.text || "").trim()
+        );
+        input.placeholder = hasAgentReply ? "Reply to Robot" : "Ask Robot";
+    }
+
+    _readPromptText() {
+        const dash = String(this._dashboardPromptInput?.value || "").trim();
+        if (dash) return dash;
+        return String(this._promptInput?.value || "").trim();
+    }
+
+    _clearPromptInputs() {
+        if (this._promptInput) this._promptInput.value = "";
+        if (this._dashboardPromptInput) this._dashboardPromptInput.value = "";
+    }
+
+    _bindDashboardMicPointers(btn) {
+        if (!btn) return;
+        const endHold = (ev) => {
+            if (ev?.pointerId != null && btn.hasPointerCapture(ev.pointerId)) {
+                try {
+                    btn.releasePointerCapture(ev.pointerId);
+                } catch (_) {}
+            }
+            void this._onPttPointerUp(ev);
+        };
+        btn.addEventListener("pointerdown", (e) => {
+            if (e.button !== 0 && e.pointerType === "mouse") return;
+            try {
+                btn.setPointerCapture(e.pointerId);
+            } catch (_) {}
+            void this._onPttPointerDown(e);
+        });
+        btn.addEventListener("pointerup", endHold);
+        btn.addEventListener("pointercancel", endHold);
+        btn.addEventListener("lostpointercapture", () => {
+            if (this._pttRecording) void this._onPttPointerUp({ type: "lostpointercapture" });
+        });
+    }
+
+    /**
+     * Sparse ChatGPT-style transcript + composer for the talking-head dashboard.
+     * @param {HTMLElement} container
+     */
+    buildDashboardChat(container) {
+        if (!container) return;
+        if (this._dashboardChatEl && this._dashboardChatEl.parentNode) {
+            this._dashboardChatEl.parentNode.removeChild(this._dashboardChatEl);
+        }
+
+        const root = document.createElement("div");
+        root.className = "robot-dashboard-chat";
+
+        const historyEl = document.createElement("div");
+        historyEl.className = "robot-dashboard-chat-log agent-history-log";
+        historyEl.setAttribute("role", "log");
+        historyEl.setAttribute("aria-live", "polite");
+
+        const composer = document.createElement("div");
+        composer.className = "robot-dashboard-chat-composer";
+
+        const promptInput = document.createElement("input");
+        promptInput.type = "text";
+        promptInput.className = "robot-dashboard-chat-input";
+        promptInput.autocomplete = "off";
+        promptInput.enterKeyHint = "send";
+        promptInput.setAttribute("aria-label", "Message");
+        promptInput.addEventListener("keydown", (e) => {
+            if (e.key !== "Enter" || e.shiftKey) return;
+            e.preventDefault();
+            void this._onSend();
+        });
+
+        const micBtn = document.createElement("button");
+        micBtn.type = "button";
+        micBtn.className = "robot-dashboard-chat-mic";
+        micBtn.setAttribute("aria-label", "Hold to talk");
+        micBtn.appendChild(this._createPttMicIcon());
+        this._bindDashboardMicPointers(micBtn);
+
+        composer.appendChild(promptInput);
+        composer.appendChild(micBtn);
+        root.appendChild(historyEl);
+        root.appendChild(composer);
+        container.appendChild(root);
+
+        this._dashboardChatEl = root;
+        this._dashboardHistoryEl = historyEl;
+        this._dashboardPromptInput = promptInput;
+        this._dashboardMicBtn = micBtn;
+        this._updateDashboardPromptPlaceholder();
+        this._renderHistory();
+        this._syncDashboardMicState(this._pttState || "idle");
     }
 
     _syncKeyFromSelection() {
@@ -3782,6 +3952,10 @@ class AgentInterface {
         this._agentPowerBtn = null;
         this._statusEl = null;
         this._historyEl = null;
+        this._dashboardChatEl = null;
+        this._dashboardHistoryEl = null;
+        this._dashboardPromptInput = null;
+        this._dashboardMicBtn = null;
         this._aiBudgetEl = null;
         this.messageHistory = [];
     }

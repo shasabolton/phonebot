@@ -130,7 +130,7 @@ window.ROBOTS_DATA = {
             },
             bodyPlan: "A face with one servo for mouth, one for eye yaw, and one for eyebrows",
             controlPlan:
-                "Eyes track BlazeFace/MoveNet nose x ~70% of the time; otherwise random glances with held positions. Eyebrows use the same random hold/jitter mix (no nose tracking). Games: Menu / Fortune Teller / 20 Questions / Philosophy / Simon Says (Camera) / Parrot / Story: Escape the Wall. Lean in to speak on conversation games. Groq Orpheus or Gemini TTS / Mp3 → audioPlayer → audioMouthFilter → mouth servo.",
+                "Eyes track BlazeFace/MoveNet nose x ~70% of the time; otherwise random glances with held positions. Eyebrows use the same random hold/jitter mix (no nose tracking). Games: Menu / Chat / Fortune Teller / 20 Questions / Philosophy / Simon Says (Camera) / Parrot / Story: Escape the Wall. Lean in to speak on conversation games. Groq Orpheus or Gemini TTS / Mp3 → audioPlayer → audioMouthFilter → mouth servo.",
             actuators: [
                 {
                     type: "servo",
@@ -314,13 +314,23 @@ window.ROBOTS_DATA = {
                     free: true,
                     computervisionModel: "blazeface"
                 },
+                chat: {
+                    label: "Chat",
+                    promptTemplate: "promptTemplates/chatPrompt.txt",
+                    priceCents: 200,
+                    currency: "aud",
+                    endCondition: "manualOrTimeout",
+                    aiBudgetCents: 200,
+                    continuePriceCents: 200,
+                    computervisionModel: "blazeface"
+                },
                 fortuneTeller: {
                     label: "Fortune Teller",
                     promptTemplate: "promptTemplates/fortuneTellerPrompt.txt",
                     priceCents: 200,
                     currency: "aud",
                     endCondition: "manualOrTimeout",
-                    aiBudgetCents: 50,
+                    aiBudgetCents: 200,
                     continuePriceCents: 200,
                     computervisionModel: "blazeface"
                 },
@@ -330,7 +340,7 @@ window.ROBOTS_DATA = {
                     priceCents: 200,
                     currency: "aud",
                     endCondition: "gameFinished",
-                    aiBudgetCents: 50,
+                    aiBudgetCents: 200,
                     continuePriceCents: 200,
                     computervisionModel: "blazeface"
                 },
@@ -340,7 +350,7 @@ window.ROBOTS_DATA = {
                     priceCents: 200,
                     currency: "aud",
                     endCondition: "manualOrTimeout",
-                    aiBudgetCents: 50,
+                    aiBudgetCents: 200,
                     continuePriceCents: 200,
                     computervisionModel: "blazeface"
                 },
@@ -350,7 +360,7 @@ window.ROBOTS_DATA = {
                     priceCents: 200,
                     currency: "aud",
                     endCondition: "gameFinished",
-                    aiBudgetCents: 50,
+                    aiBudgetCents: 200,
                     continuePriceCents: 200,
                     computervisionModel: "blazeface"
                 },
@@ -374,6 +384,7 @@ window.ROBOTS_DATA = {
                 cameraCaptureMaxEdge: 960,
                 cameraCaptureJpegQuality: 0.85,
                 promptTemplates: [
+                    { name: "Chat", path: "promptTemplates/chatPrompt.txt" },
                     { name: "Fortune Teller", path: "promptTemplates/fortuneTellerPrompt.txt" },
                     { name: "20 Questions", path: "promptTemplates/20QuestionsPrompt.txt" },
                     { name: "Philosophy", path: "promptTemplates/philosophyPrompt.txt" },

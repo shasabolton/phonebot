@@ -7,46 +7,65 @@ import {
 } from "../../groqModelSelect.js";
 import { trySalvageGroqChatError, ensureVisionMaxTokens, extractAssistantContentText } from "../../groqChatRecover.js";
 
+/** Shared arcade pricing: player credit equals payment; provider cost × markup is debited. */
+const ARCADE_DEFAULT_PRICE_CENTS = 200;
+const ARCADE_MIN_PRICE_CENTS = 100;
+const ARCADE_MAX_PRICE_CENTS = 1000;
+const ARCADE_PRICE_STEP_CENTS = 100;
+const ARCADE_CURRENCY = "aud";
+/** Multiply Groq cost before debiting player credit. 2 ≈ keep half of payment as margin. */
+const ARCADE_AI_MARKUP = 2;
+
 const MODE_CATALOG = Object.freeze({
     simonSaysPoseMatch: {
         label: "Simon Says Basic",
-        priceCents: 200,
-        currency: "aud",
+        priceCents: ARCADE_DEFAULT_PRICE_CENTS,
+        currency: ARCADE_CURRENCY,
         aiBudgetCents: 0,
-        continuePriceCents: 200
+        continuePriceCents: ARCADE_DEFAULT_PRICE_CENTS,
+        fixedPrice: true
     },
     simonSaysAi: {
         label: "Simon Says Advanced",
-        priceCents: 200,
-        currency: "aud",
-        aiBudgetCents: 50,
-        continuePriceCents: 200
+        priceCents: ARCADE_DEFAULT_PRICE_CENTS,
+        currency: ARCADE_CURRENCY,
+        aiBudgetCents: ARCADE_DEFAULT_PRICE_CENTS,
+        continuePriceCents: ARCADE_DEFAULT_PRICE_CENTS
+    },
+    chat: {
+        label: "Chat",
+        priceCents: ARCADE_DEFAULT_PRICE_CENTS,
+        currency: ARCADE_CURRENCY,
+        aiBudgetCents: ARCADE_DEFAULT_PRICE_CENTS,
+        continuePriceCents: ARCADE_DEFAULT_PRICE_CENTS
     },
     philosophy: {
         label: "Philosophy",
-        priceCents: 200,
-        currency: "aud",
-        aiBudgetCents: 50,
-        continuePriceCents: 200
+        priceCents: ARCADE_DEFAULT_PRICE_CENTS,
+        currency: ARCADE_CURRENCY,
+        aiBudgetCents: ARCADE_DEFAULT_PRICE_CENTS,
+        continuePriceCents: ARCADE_DEFAULT_PRICE_CENTS
     },
     twentyQuestions: {
         label: "20 Questions",
-        priceCents: 200,
-        currency: "aud",
-        aiBudgetCents: 50,
-        continuePriceCents: 200
+        priceCents: ARCADE_DEFAULT_PRICE_CENTS,
+        currency: ARCADE_CURRENCY,
+        aiBudgetCents: ARCADE_DEFAULT_PRICE_CENTS,
+        continuePriceCents: ARCADE_DEFAULT_PRICE_CENTS
     },
     fortuneTeller: {
         label: "Fortune Teller",
-        priceCents: 200,
-        currency: "aud",
-        aiBudgetCents: 50,
-        continuePriceCents: 200
+        priceCents: ARCADE_DEFAULT_PRICE_CENTS,
+        currency: ARCADE_CURRENCY,
+        aiBudgetCents: ARCADE_DEFAULT_PRICE_CENTS,
+        continuePriceCents: ARCADE_DEFAULT_PRICE_CENTS
     }
 });
 
+/** Pending Checkout / unpaid rows. */
 const UNUSED_TTL_MS = 30 * 60 * 1000;
-const ACTIVE_TTL_MS = 2 * 60 * 60 * 1000;
+/** Paid AI credit remains reclaimable on the same device for a week of idle time. */
+const CREDIT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 export default {
     async fetch(request, env) {
@@ -119,18 +138,18 @@ async function createCheckout(request, env) {
     const continuation = body.continueSessionId
         ? await selectSession(env, cleanMetadata(body.continueSessionId, 64))
         : null;
+    // Credit is shared across all AI arcade modes on the same robot.
     if (
         continuation &&
-        (continuation.mode_id !== modeId ||
-            continuation.robot_slug !== robotSlug ||
-            !["active", "paused_for_payment"].includes(continuation.status))
+        (continuation.robot_slug !== robotSlug ||
+            !MODE_CATALOG[continuation.mode_id] ||
+            !["paid", "active", "paused_for_payment"].includes(continuation.status))
     ) {
         throw httpError(409, "Continuation session is not eligible.");
     }
 
-    // Price is server-authoritative; ignore any client-supplied amount.
-    const priceCents = continuation ? mode.continuePriceCents : mode.priceCents;
     const currency = mode.currency;
+    const { priceCents, aiBudgetCents } = resolveCheckoutAmounts(body, mode, continuation);
     const returnUrl = allowedReturnUrl(body.returnUrl, request, env);
     const playSessionId = crypto.randomUUID();
     const now = Date.now();
@@ -150,7 +169,7 @@ async function createCheckout(request, env) {
             machineId || null,
             priceCents,
             currency,
-            mode.aiBudgetCents,
+            aiBudgetCents,
             expiresAt,
             now,
             continuation?.id || null
@@ -170,7 +189,8 @@ async function createCheckout(request, env) {
         machine: machineId,
         priceCents: String(priceCents),
         currency,
-        continueSessionId: continuation?.id || ""
+        continueSessionId: continuation?.id || "",
+        aiBudgetCents: String(aiBudgetCents)
     };
     const params = new URLSearchParams();
     params.set("mode", "payment");
@@ -180,7 +200,10 @@ async function createCheckout(request, env) {
     params.set("line_items[0][quantity]", "1");
     params.set("line_items[0][price_data][currency]", currency);
     params.set("line_items[0][price_data][unit_amount]", String(priceCents));
-    params.set("line_items[0][price_data][product_data][name]", mode.label);
+    params.set(
+        "line_items[0][price_data][product_data][name]",
+        aiBudgetCents > 0 ? "Phonebot arcade AI credit" : mode.label
+    );
     for (const [key, value] of Object.entries(metadata)) {
         params.set(`metadata[${key}]`, value);
         params.set(`payment_intent_data[metadata][${key}]`, value);
@@ -202,7 +225,72 @@ async function createCheckout(request, env) {
     )
         .bind(stripeSession.id, playSessionId)
         .run();
-    return json({ url: stripeSession.url, playSessionId });
+    return json({ url: stripeSession.url, playSessionId, priceCents, aiBudgetCents });
+}
+
+/**
+ * First purchase: charge selected amount (= credit).
+ * Top-up / continuation: charge selected amount, but only as much as fits under the $10 cap.
+ */
+function resolveCheckoutAmounts(body, mode, continuation) {
+    if (mode.fixedPrice || !(mode.aiBudgetCents > 0)) {
+        const priceCents = Math.max(0, Number(mode.priceCents) || 0);
+        return { priceCents, aiBudgetCents: 0 };
+    }
+
+    const requested = resolveCheckoutPriceCents(body.priceCents, mode);
+    if (continuation) {
+        const remaining = Math.max(
+            0,
+            (Number(continuation.ai_budget_cents) || 0) - (Number(continuation.ai_spent_cents) || 0)
+        );
+        const room = Math.max(0, ARCADE_MAX_PRICE_CENTS - remaining);
+        const priceCents = Math.min(requested, room);
+        if (priceCents < 1) {
+            throw httpError(400, "Already at maximum credit.");
+        }
+        return {
+            priceCents,
+            aiBudgetCents: Math.min(ARCADE_MAX_PRICE_CENTS, remaining + priceCents)
+        };
+    }
+
+    return { priceCents: requested, aiBudgetCents: aiBudgetForPayment(requested, mode) };
+}
+
+/** Whole-dollar amounts only; clamps to arcade min/max. Fixed-price modes ignore the client. */
+function resolveCheckoutPriceCents(requested, mode) {
+    if (mode.fixedPrice || !(mode.aiBudgetCents > 0)) {
+        return Math.max(0, Number(mode.priceCents) || 0);
+    }
+    let cents = Number(requested);
+    if (!Number.isFinite(cents)) cents = Number(mode.priceCents) || ARCADE_DEFAULT_PRICE_CENTS;
+    cents = Math.round(cents / ARCADE_PRICE_STEP_CENTS) * ARCADE_PRICE_STEP_CENTS;
+    if (cents < ARCADE_MIN_PRICE_CENTS || cents > ARCADE_MAX_PRICE_CENTS) {
+        throw httpError(
+            400,
+            `Price must be a whole-dollar amount between ${ARCADE_MIN_PRICE_CENTS / 100} and ${ARCADE_MAX_PRICE_CENTS / 100}.`
+        );
+    }
+    return cents;
+}
+
+function aiBudgetForPayment(priceCents, mode) {
+    if (!(mode.aiBudgetCents > 0)) return 0;
+    // Full payment becomes visible credit; margin comes from ARCADE_AI_MARKUP on debits.
+    return Math.max(0, Math.round(Number(priceCents) || 0));
+}
+
+function arcadeAiMarkup(env) {
+    const fromEnv = Number(env?.GROQ_RATE_MARKUP);
+    if (Number.isFinite(fromEnv) && fromEnv > 0) return fromEnv;
+    return ARCADE_AI_MARKUP;
+}
+
+/** Provider cost × markup, at least 1¢ so a missing rate cannot unlock free play. */
+function applyArcadeMarkup(costCents, env) {
+    const marked = Math.max(0, Number(costCents) || 0) * arcadeAiMarkup(env);
+    return Math.max(1, Math.ceil(marked));
 }
 
 async function handleStripeWebhook(request, env) {
@@ -235,9 +323,12 @@ async function handleStripeWebhook(request, env) {
             .bind(event.id, event.type, Date.now()),
         env.DB.prepare(
             `UPDATE play_sessions
-             SET status = 'paid', stripe_checkout_session_id = ?, stripe_payment_intent_id = ?
+             SET status = 'paid',
+                 stripe_checkout_session_id = ?,
+                 stripe_payment_intent_id = ?,
+                 expires_at = ?
              WHERE id = ? AND status = 'pending'`
-        ).bind(checkout.id, checkout.payment_intent || null, id)
+        ).bind(checkout.id, checkout.payment_intent || null, Date.now() + CREDIT_TTL_MS, id)
     ];
     if (session.continuation_of) {
         statements.push(
@@ -292,9 +383,9 @@ async function startSession(env, id) {
              started_at = COALESCE(started_at, ?),
              expires_at = ?,
              resolved_models_json = COALESCE(resolved_models_json, ?)
-         WHERE id = ? AND status = 'paid'`
+         WHERE id = ? AND status IN ('paid', 'active')`
     )
-        .bind(now, now + ACTIVE_TTL_MS, resolvedJson, id)
+        .bind(now, now + CREDIT_TTL_MS, resolvedJson, id)
         .run();
     const session = await selectSession(env, id);
     if (!session) throw httpError(404, "Play session not found.");
@@ -462,7 +553,7 @@ async function proxyGroqTranscribe(request, env) {
             headers: { "Content-Type": upstream.headers.get("Content-Type") || "application/json" }
         });
     }
-    const charge = Math.max(1, Number(env.GROQ_TRANSCRIBE_CENTS) || 1);
+    const charge = applyArcadeMarkup(Number(env.GROQ_TRANSCRIBE_CENTS) || 1, env);
     await debitAiBudget(env, id, charge);
     return new Response(raw, {
         status: 200,
@@ -506,7 +597,7 @@ async function proxyGroqSpeech(request, env) {
             headers: { "Content-Type": upstream.headers.get("Content-Type") || "application/json" }
         });
     }
-    const charge = Math.max(1, Number(env.GROQ_SPEECH_CENTS) || 1);
+    const charge = applyArcadeMarkup(Number(env.GROQ_SPEECH_CENTS) || 1, env);
     await debitAiBudget(env, id, charge);
     const audio = await upstream.arrayBuffer();
     return new Response(audio, {
@@ -662,7 +753,7 @@ async function proxyGroqVoiceTurn(request, env) {
             const type = speechResponse.headers.get("Content-Type") || "audio/wav";
             const base64 = arrayBufferToBase64(audio);
             audioChunks.push({ base64, type });
-            speechCharge += Math.max(1, Number(env.GROQ_SPEECH_CENTS) || 1);
+            speechCharge += applyArcadeMarkup(Number(env.GROQ_SPEECH_CENTS) || 1, env);
         }
         speechMs = Date.now() - speechStartedAt;
         if (audioChunks.length) {
@@ -671,7 +762,7 @@ async function proxyGroqVoiceTurn(request, env) {
         }
     }
 
-    const transcribeCharge = Math.max(1, Number(env.GROQ_TRANSCRIBE_CENTS) || 1);
+    const transcribeCharge = applyArcadeMarkup(Number(env.GROQ_TRANSCRIBE_CENTS) || 1, env);
     const chatCharge = calculateChatCharge(chatPayload.usage, chatBody.model, env, session);
     const totalCharge = transcribeCharge + chatCharge + speechCharge;
     await debitAiBudget(env, id, totalCharge);
@@ -816,13 +907,15 @@ async function requireActiveAiSession(request, env) {
 }
 
 async function debitAiBudget(env, id, charge) {
+    const expiresAt = Date.now() + CREDIT_TTL_MS;
     await env.DB.prepare(
         `UPDATE play_sessions
          SET ai_spent_cents = MIN(ai_budget_cents, ai_spent_cents + ?),
-             status = CASE WHEN ai_spent_cents + ? >= ai_budget_cents THEN 'paused_for_payment' ELSE status END
+             status = CASE WHEN ai_spent_cents + ? >= ai_budget_cents THEN 'paused_for_payment' ELSE status END,
+             expires_at = ?
          WHERE id = ? AND status = 'active'`
     )
-        .bind(charge, charge, id)
+        .bind(charge, charge, expiresAt, id)
         .run();
 }
 
@@ -853,7 +946,7 @@ function calculateChatCharge(usage, model, env, session = null) {
         (input * (Number(rate.inputCentsPerMillion) || 0) +
             output * (Number(rate.outputCentsPerMillion) || 0)) /
         1_000_000;
-    return Math.max(1, Math.ceil(cents));
+    return applyArcadeMarkup(cents, env);
 }
 
 async function pauseForPayment(env, id) {

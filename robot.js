@@ -520,7 +520,6 @@ class Robot {
             return true;
         }
         const previousMode = this.mode;
-        const previousSession = window.playBilling?.getActiveSession?.() || null;
         const generation = ++this._modeActivationGeneration;
         this._modeReady = false;
         this._stopLocalGame();
@@ -546,14 +545,7 @@ class Robot {
             this._applyModeBehavior();
             return false;
         }
-        const currentSession = window.playBilling?.getActiveSession?.() || null;
-        if (previousSession?.id) {
-            if (previousSession.id === currentSession?.id) {
-                void window.playBilling.completeActiveSession("mode_changed");
-            } else {
-                void window.playBilling.completeSession(previousSession, "mode_changed");
-            }
-        }
+        // Keep the shared arcade AI session when switching games; credit lasts until spent.
         const wasEnabled = this.mixEnabled;
         this._rebuildActuatorMixes({ restoreEnabled: wasEnabled });
         this._modeReady = true;
@@ -710,8 +702,15 @@ class Robot {
 
     onLocalGameEnded(reason = "game_finished") {
         this._modeReady = false;
-        if (window.playBilling?.requiresPayment?.(this._getActiveModeConfig(), this._billingOptions())) {
-            void window.playBilling.completeActiveSession(reason);
+        // Arcade AI credit is shared across games — finishing one game does not consume remaining budget.
+        // Paid non-AI modes (no token budget) still consume the entry session when the round ends.
+        const modeConfig = this._getActiveModeConfig();
+        const billing = window.playBilling;
+        if (
+            billing?.requiresPayment?.(modeConfig, this._billingOptions()) &&
+            !billing?.isArcadeAiMode?.(modeConfig)
+        ) {
+            void billing.completeActiveSession(reason);
         }
         if (String(this.name || "").toLowerCase() === "talking head" && this.mode !== "menu") {
             void this.setMode("menu");
@@ -1010,6 +1009,16 @@ class Robot {
         const camHost = document.createElement("div");
         camHost.className = "robot-dashboard-camera";
         root.appendChild(camHost);
+
+        const chatHost = document.createElement("div");
+        chatHost.className = "robot-dashboard-chat-host";
+        root.appendChild(chatHost);
+
+        const footer = document.createElement("div");
+        footer.className = "robot-dashboard-footer";
+        footer.setAttribute("aria-hidden", "true");
+        root.appendChild(footer);
+
         container.appendChild(root);
 
         const camera =
@@ -1021,6 +1030,10 @@ class Robot {
             missing.className = "muted";
             missing.textContent = "No camera configured for this robot.";
             camHost.appendChild(missing);
+        }
+
+        if (this.agentInterface && typeof this.agentInterface.buildDashboardChat === "function") {
+            this.agentInterface.buildDashboardChat(chatHost);
         }
 
         this._mountStartFlowOverlay(camHost);

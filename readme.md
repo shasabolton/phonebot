@@ -156,9 +156,14 @@ POST /config
 
 ## Arcade billing (Stripe Checkout)
 
-Paid talking-head modes are configured in `robots.js`. The Worker repeats the paid-mode
-catalog as a server-authoritative allowlist so a browser cannot lower `priceCents`.
-Keep both catalogs in sync when changing a product price.
+Paid talking-head modes share one arcade checkout in `robots.js` / the Worker catalog.
+`priceCents` is the default suggestion (A$2); players can pick any whole-dollar amount from
+A$1–A$10 with ±$1 controls. The full payment becomes hosted AI credit (bottom bar; A$10 =
+full width). Top-up uses the same paywall; the Worker silently charges only what fits under
+the A$10 cap when they already have credit. Credit expires after 7 days without use (keeps
+D1 session rows from growing forever). Margin comes from `ARCADE_AI_MARKUP` (default `2`,
+overridable via `GROQ_RATE_MARKUP`) on Groq costs. The bar reads a local credit cache so
+menu/free use does not call the Worker; the cache updates after payment and hosted AI calls.
 
 The browser defaults to `/api` on the same origin. If the Worker is on another hostname,
 change the `phonebot-billing-api` meta tag in `index.html`. Set `ALLOWED_ORIGINS` in
@@ -235,9 +240,14 @@ verified webhook marks it paid.
 Useful checks:
 
 - `priceCents: 0` or `free: true`: mode starts without billing.
-- `priceCents: 200`: Checkout asks for A$2.00.
-- Finishing Simon Says consumes the session; selecting/rematching requires another payment.
-- When hosted chat spends the AI budget, the session becomes `paused_for_payment`; paying
+- AI modes: paywall lets the player choose A$1–A$10 (default A$2). Credit equals the
+  payment; costs are marked up by `ARCADE_AI_MARKUP` (default 2×). Bottom bar + top-up
+  dock always visible; top-up uses the same paywall and the Worker clamps to the A$10 cap.
+- Switching AI games (or finishing one and picking another) keeps the same play session
+  until the AI budget is spent or the session expires (~7 days idle; refreshed on use).
+- Closing and reopening the PWA on the same browser restores credit via `localStorage` +
+  the Worker session, until expiry.
+- When hosted AI spends the budget, the session becomes `paused_for_payment`; paying
   again creates a continuation session while browser conversation/game state stays intact.
 
 ---
@@ -278,15 +288,15 @@ USB 5V (after Schottky)
 
 Put the fuse **before** the servo bulk caps, **not** on the shared ESP branch.
 
-**Choose:** **~2 A hold** PPTC (SMD, e.g. 1206/1812 class).
+**Choose:** **~2.5 A hold** PPTC (SMD, e.g. 1206/1812 class).
 
 | Spec | Why |
 | --- | --- |
-| Hold ≈ **2 A** | Allows free-running 8 micros (~1–1.7 A) without nuisance trips; stays under a **3 A** charger |
-| Trip ≈ **3.5–4 A** (typical ~2× hold) | Opens on sustained stall; brief ~4 A blips often pass (thermal mass) |
-| Servo rail only | ESP keeps running if the fuse opens |
+| Hold ≈ **2.5 A** | Max useful headroom on a **3 A** USB supply: 8 micros at moderate load, or ~5 standards lightly; ESP (~0.1 A) is extra on the unfused branch |
+| Trip ≈ **4–5 A** (typical ~2× hold) | Opens on sustained stall; brief higher spikes often pass (thermal mass). Fuse must **cool** (seconds) before servos recover |
+| Servo rail only | ESP and charger stay up if the fuse opens; all servos lose 5 V together |
 
-Do **not** use a 1 A hold part — free motion can nuisance-trip. Do **not** size the fuse to the charger’s full 3 A (that allows damaging stall current through thin traces).
+Do **not** use a 1 A hold part — free motion can nuisance-trip. Do **not** use **3 A hold** — that sits at the charger ceiling and trips too late to protect traces. **2.5 A** is the balance for maximum functionality without compromising a typical 5 V / 3 A USB supply.
 
 ### Related layout notes (same power pass)
 
