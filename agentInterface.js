@@ -1876,6 +1876,23 @@ class AgentInterface {
         return content;
     }
 
+    /**
+     * User-turn body for chat/voice. Only includes Current state when there is real state JSON —
+     * talking head has no stateMachine, so we must not inject a fake `[]` (models echo it; TTS
+     * then voices the brackets).
+     * @param {unknown} stateBlock
+     * @param {string} label e.g. "User", "User said"
+     * @param {string} body
+     * @returns {string}
+     */
+    _buildUserTurnContent(stateBlock, label, body) {
+        const state = String(stateBlock || "").trim();
+        const text = String(body ?? "");
+        const tag = String(label || "User");
+        if (state) return `Current state (json):\n${state}\n\n${tag}:\n${text}`;
+        return `${tag}:\n${text}`;
+    }
+
     _resolveMaxTokens(agent, messages) {
         const base = Number.isFinite(agent?.maxTokens) ? Math.round(agent.maxTokens) : 1024;
         if (typeof window.GroqChatRecover?.ensureVisionMaxTokens === "function") {
@@ -2149,7 +2166,7 @@ class AgentInterface {
         if (!selected) throw new Error("Select a prompt template.");
         if (selected === AgentInterface.TEMPLATE_VALUE_STATE) {
             const block = this._buildCurrentStateForIntroductionPrompt();
-            return `Current state (json):\n${block || "[]"}`;
+            return block ? `Current state (json):\n${block}` : "Current state (json):\n(none)";
         }
         const res = await fetch(selected, { cache: "no-store" });
         if (!res.ok) throw new Error(`Failed to load template: ${selected}`);
@@ -2229,7 +2246,7 @@ class AgentInterface {
         const bodyNorm = this._normalizePromptText(body);
         if (!bodyNorm) return body;
 
-        const userMatch = body.match(/\n(?:User said|User|Robot notice):\n([\s\S]*)$/i);
+        const userMatch = body.match(/(?:^|\n)(?:User said|User|Robot notice):\n([\s\S]*)$/i);
         const userPart = userMatch ? this._normalizePromptText(userMatch[1]) : "";
         // Exact template-only send (textarea still holds the start prompt).
         if (userPart && userPart === head) {
@@ -2874,7 +2891,7 @@ class AgentInterface {
                 return false;
             }
             if (finaleDue) userTranscript = this._joinFortuneTellerFinale(userTranscript);
-            const fullUserContent = `Current state (json):\n${stateBlock || "[]"}\n\nUser said:\n${userTranscript}`;
+            const fullUserContent = this._buildUserTurnContent(stateBlock, "User said", userTranscript);
             const outboundUser = await this._mergeIntroductionIntoFirstUserMessage(fullUserContent, prior.length);
             this.messageHistory.push({
                 role: "user",
@@ -2977,7 +2994,7 @@ class AgentInterface {
         try {
             const stateBlock = this._buildCurrentStateForIntroductionPrompt();
             const userText = this._withFortuneTellerFinaleIfDue(text);
-            const fullUserContent = `Current state (json):\n${stateBlock || "[]"}\n\nUser said:\n${userText}`;
+            const fullUserContent = this._buildUserTurnContent(stateBlock, "User said", userText);
             const prior = this._buildPriorConversationMessages();
             const outboundUser = await this._mergeIntroductionIntoFirstUserMessage(fullUserContent, prior.length);
             const conversationMessages = [...prior, { role: "user", content: outboundUser }];
@@ -3060,7 +3077,7 @@ class AgentInterface {
             const marker = `__PHONEBOT_TRANSCRIPT_${crypto.randomUUID()}__`;
             const stateBlock = this._buildCurrentStateForIntroductionPrompt();
             const spokenSlot = this._withFortuneTellerFinaleIfDue(marker);
-            const userTemplate = `Current state (json):\n${stateBlock || "[]"}\n\nUser said:\n${spokenSlot}`;
+            const userTemplate = this._buildUserTurnContent(stateBlock, "User said", spokenSlot);
             const prior = this._buildPriorConversationMessages();
             const outboundTemplate = await this._mergeIntroductionIntoFirstUserMessage(
                 userTemplate,
@@ -3278,7 +3295,7 @@ class AgentInterface {
             if (!modeStillCurrent()) return;
             const stateBlock = this._buildCurrentStateForIntroductionPrompt();
             const userText = this._withFortuneTellerFinaleIfDue(text);
-            const fullUserContent = `Current state (json):\n${stateBlock || "[]"}\n\nUser:\n${userText}`;
+            const fullUserContent = this._buildUserTurnContent(stateBlock, "User", userText);
             const prior = this._buildPriorConversationMessages();
             const outboundUser = await this._mergeIntroductionIntoFirstUserMessage(fullUserContent, prior.length);
             if (!modeStillCurrent()) return;
@@ -3422,7 +3439,7 @@ class AgentInterface {
         let ok = false;
         try {
             const stateBlock = this._buildCurrentStateForIntroductionPrompt();
-            const fullUserContent = `Current state (json):\n${stateBlock || "[]"}\n\n${label}:\n${transcript}`;
+            const fullUserContent = this._buildUserTurnContent(stateBlock, label, transcript);
             const prior = this._buildPriorConversationMessages();
             const outboundUser = await this._mergeIntroductionIntoFirstUserMessage(fullUserContent, prior.length);
             const conversationMessages = [...prior, { role: "user", content: outboundUser }];
@@ -3484,7 +3501,7 @@ class AgentInterface {
     _renderHistory() {
         this._renderHistoryInto(this._historyEl, { includeKickoff: true, includeSystem: true });
         this._renderHistoryInto(this._dashboardHistoryEl, {
-            includeKickoff: false,
+            includeKickoff: true,
             includeSystem: false,
             compact: true
         });
