@@ -371,6 +371,14 @@ window.ROBOTS_DATA = {
                     currency: "aud",
                     free: true,
                     computervisionModel: "blazeface"
+                },
+                custom: {
+                    label: "Custom",
+                    game: "customMessages",
+                    priceCents: 0,
+                    currency: "aud",
+                    free: true,
+                    computervisionModel: "blazeface"
                 }
             },
             agentInterface: {

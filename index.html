@@ -227,6 +227,168 @@
       flex: 0 0 auto;
       min-height: 0;
     }
+    .custom-messages-chrome {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: stretch;
+      gap: 8px;
+      padding: 8px 4px 10px;
+      border-top: 1px solid #e8e8e8;
+    }
+    .custom-messages-tiles {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      flex: 1 1 auto;
+      min-width: 0;
+    }
+    .custom-messages-tile {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      max-width: 100%;
+      padding: 4px 6px 4px 10px;
+      border: 1px solid #d9d9e3;
+      border-radius: 10px;
+      background: #f7f7f8;
+      font-size: 0.82rem;
+      line-height: 1.2;
+    }
+    .custom-messages-tile-label {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      max-width: 9rem;
+      color: #222;
+    }
+    .custom-messages-tile-edit,
+    .custom-messages-add {
+      width: auto;
+      margin-top: 0;
+      padding: 4px 10px;
+      font-size: 0.78rem;
+      font-weight: 600;
+      border-radius: 8px;
+    }
+    .custom-messages-add {
+      flex: 0 0 auto;
+      align-self: center;
+      background: #111;
+      color: #fff;
+      border: none;
+    }
+    .custom-messages-tile-edit {
+      background: #fff;
+      border: 1px solid #ccc;
+      color: #333;
+    }
+    .custom-messages-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 10002;
+      display: flex;
+      align-items: flex-start;
+      justify-content: center;
+      padding: 16px;
+      box-sizing: border-box;
+      background: rgba(0, 0, 0, 0.62);
+      overflow: auto;
+    }
+    .custom-messages-card {
+      width: min(100%, 24rem);
+      margin-top: 8vh;
+      padding: 18px 16px 16px;
+      box-sizing: border-box;
+      border-radius: 14px;
+      background: #fff;
+      box-shadow: 0 14px 44px rgba(0, 0, 0, 0.32);
+      text-align: left;
+    }
+    .custom-messages-title {
+      margin: 0 0 12px;
+      font-size: 1.2rem;
+      text-align: center;
+    }
+    .custom-messages-kind-row,
+    .custom-messages-media-row,
+    .custom-messages-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .custom-messages-kind-row {
+      margin-bottom: 12px;
+    }
+    .custom-messages-kind-btn,
+    .custom-messages-media-row button,
+    .custom-messages-actions button {
+      flex: 1 1 0;
+      min-width: 0;
+      width: auto;
+      max-width: none;
+      margin-top: 0;
+      box-sizing: border-box;
+      font-weight: 600;
+    }
+    .custom-messages-kind-btn.is-active {
+      outline: 2px solid #111;
+      outline-offset: 1px;
+    }
+    .custom-messages-body {
+      margin-bottom: 10px;
+    }
+    .custom-messages-hint {
+      margin: 4px 0 8px;
+      text-align: center;
+    }
+    .custom-messages-text {
+      width: 100%;
+      box-sizing: border-box;
+      min-height: 5.5rem;
+      margin: 0 0 8px;
+      padding: 10px;
+      border: 1px solid #ccc;
+      border-radius: 8px;
+      font: inherit;
+      resize: vertical;
+    }
+    .custom-messages-status {
+      margin: 8px 0 0;
+      font-size: 0.88rem;
+      line-height: 1.35;
+    }
+    .custom-messages-options {
+      display: grid;
+      gap: 8px;
+      margin: 12px 0;
+    }
+    .custom-messages-options[hidden] {
+      display: none !important;
+    }
+    .custom-messages-options label {
+      display: block;
+      margin: 0;
+      font-size: 0.88rem;
+      font-weight: 600;
+      color: #444;
+    }
+    .custom-messages-options select {
+      display: block;
+      width: 100%;
+      margin: 4px 0 0;
+      box-sizing: border-box;
+    }
+    .custom-messages-actions {
+      margin-top: 4px;
+    }
+    .custom-messages-actions button.secondary,
+    .custom-messages-media-row button.secondary {
+      background: #f0f0f0;
+      font-weight: 500;
+    }
+    .custom-messages-delete {
+      color: #a11;
+    }
     .robot-dashboard-chat {
       flex: 1 1 auto;
       min-height: 0;
@@ -1303,6 +1465,7 @@
     "games/menuMode/menuMode.js",
     "games/parrot/parrot.js",
     "games/escapeTheWall/escapeTheWall.js",
+    "games/custom/customMessages.js",
     "playBilling.js",
     "groqModelSelect.js",
     "groqChatRecover.js",
