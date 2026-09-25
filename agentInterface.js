@@ -113,14 +113,15 @@ class AgentInterface {
     static PTT_RELEASE_TAIL_MS = 500;
     static PTT_MAX_RECORD_MS = 20000;
 
-    /** True when a hold-to-talk game is active (Chat, Philosophy, 20 Questions, Fortune Teller). */
+    /** True when a hold-to-talk game is active (Chat, Philosophy, 20 Questions, Fortune Teller, Custom). */
     _isConversationMode() {
         const mode = String(this.robot?.mode || "").trim().toLowerCase();
         return (
             mode === "chat" ||
             mode === "philosophy" ||
             mode === "twentyquestions" ||
-            mode === "fortuneteller"
+            mode === "fortuneteller" ||
+            mode === "custom"
         );
     }
 

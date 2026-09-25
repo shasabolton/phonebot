@@ -59,11 +59,20 @@ class CustomMessagesGame {
         this.messages = CustomMessagesGame._loadMessages();
         this._showChatHistory();
         this._mountChrome();
+        this._armHoldToTalk();
         if (!this.messages.length) {
             this.openActionsList();
         }
         void this._runGameLoad(this._generation);
         this._startFacePoll(this._generation);
+    }
+
+    /** Show the camera-frame hold-to-talk mic while Custom is active. */
+    _armHoldToTalk() {
+        const agent = this._getAgent();
+        if (agent && typeof agent._armConversationPtt === "function") {
+            agent._armConversationPtt();
+        }
     }
 
     stop() {
