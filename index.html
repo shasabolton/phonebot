@@ -8,6 +8,7 @@
   <style>
     :root {
       --app-header-height: 48px;
+      --play-credit-dock-height: 0px;
     }
     html, body {
       height: 100%;
@@ -25,8 +26,8 @@
       position: relative;
       display: flex;
       flex-direction: column;
-      height: 100dvh;
-      max-height: 100dvh;
+      height: calc(100dvh - var(--play-credit-dock-height));
+      max-height: calc(100dvh - var(--play-credit-dock-height));
       width: 100%;
       max-width: 560px;
       margin: 0 auto;
@@ -1254,7 +1255,7 @@
       color: #102418;
     }
     body.play-credit-dock-visible {
-      padding-bottom: calc(108px + env(safe-area-inset-bottom, 0px));
+      --play-credit-dock-height: calc(112px + env(safe-area-inset-bottom, 0px));
     }
     @keyframes app-boot-spin {
       to { transform: rotate(360deg); }
