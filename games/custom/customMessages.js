@@ -38,6 +38,8 @@ class CustomMessagesGame {
         this._playNextQueue = [];
         this._uiRoot = null;
         this._tileListEl = null;
+        this._voiceSelectEl = null;
+        this._actionsOverlay = null;
         this._overlay = null;
         this._draft = null;
         this._recording = false;
@@ -55,10 +57,10 @@ class CustomMessagesGame {
         this._lastFacePresent = null;
         this._faceSince = 0;
         this.messages = CustomMessagesGame._loadMessages();
+        this._showChatHistory();
         this._mountChrome();
-        this._renderTiles();
         if (!this.messages.length) {
-            this.openEditor(null);
+            this.openActionsList();
         }
         void this._runGameLoad(this._generation);
         this._startFacePoll(this._generation);
@@ -72,11 +74,44 @@ class CustomMessagesGame {
         this._cancelSpeech();
         this._stopRecording(true);
         this._closeEditor();
+        this._closeActionsList();
         this._unmountChrome();
+        this._hideChatHistoryEmphasis();
         const agent = this._getAgent();
         if (agent && typeof agent._stopSpeaking === "function") {
             agent._stopSpeaking();
         }
+    }
+
+    /** Keep the talking-head chat transcript visible while Custom is active. */
+    _showChatHistory() {
+        const root =
+            this.robot?.dashboardContainer?.querySelector?.(".robot-dashboard--talking-head") ||
+            document.querySelector(".robot-dashboard--talking-head");
+        if (root) root.classList.add("robot-dashboard--custom-messages");
+        const agent = this._getAgent();
+        if (agent && typeof agent._renderHistory === "function") {
+            agent._renderHistory();
+        }
+        const chatHost = root?.querySelector?.(".robot-dashboard-chat-host");
+        if (chatHost) {
+            chatHost.hidden = false;
+            chatHost.removeAttribute("hidden");
+            chatHost.style.display = "";
+        }
+        const historyEl =
+            agent?._dashboardHistoryEl ||
+            root?.querySelector?.(".robot-dashboard-chat-log");
+        if (historyEl) {
+            historyEl.scrollTop = historyEl.scrollHeight;
+        }
+    }
+
+    _hideChatHistoryEmphasis() {
+        const root =
+            this.robot?.dashboardContainer?.querySelector?.(".robot-dashboard--talking-head") ||
+            document.querySelector(".robot-dashboard--talking-head");
+        if (root) root.classList.remove("robot-dashboard--custom-messages");
     }
 
     /**
@@ -277,7 +312,7 @@ class CustomMessagesGame {
         return msg.kind === "prompt" ? "Prompt" : "Text";
     }
 
-    // —— Chrome (tiles) ————————————————————————————————————————————
+    // —— Chrome (voice + edit) ——————————————————————————————————————
 
     _footerHost() {
         const root =
@@ -302,22 +337,69 @@ class CustomMessagesGame {
         const wrap = document.createElement("div");
         wrap.className = "custom-messages-chrome";
 
-        const list = document.createElement("div");
-        list.className = "custom-messages-tiles";
-        list.setAttribute("role", "list");
+        const voiceRow = document.createElement("div");
+        voiceRow.className = "custom-messages-voice-row";
 
-        const addBtn = document.createElement("button");
-        addBtn.type = "button";
-        addBtn.className = "custom-messages-add";
-        addBtn.textContent = "+ Add";
-        addBtn.addEventListener("click", () => this.openEditor(null));
+        const voiceLabel = document.createElement("label");
+        voiceLabel.className = "custom-messages-voice-label";
+        voiceLabel.textContent = "Voice";
 
-        wrap.appendChild(list);
-        wrap.appendChild(addBtn);
+        const voiceSelect = document.createElement("select");
+        voiceSelect.className = "custom-messages-voice";
+        voiceSelect.setAttribute("aria-label", "TTS voice");
+        const voices =
+            typeof window.GroqTts?.pickerVoices === "function"
+                ? window.GroqTts.pickerVoices()
+                : [
+                      { id: "browser", label: "Web TTS (free)" },
+                      ...(Array.isArray(window.GroqTts?.VOICES) ? window.GroqTts.VOICES : [])
+                  ];
+        for (const v of voices) {
+            const opt = document.createElement("option");
+            opt.value = v.id;
+            opt.textContent = v.label || v.id;
+            voiceSelect.appendChild(opt);
+        }
+        const agent = this._getAgent();
+        const saved =
+            agent?._ttsVoice ||
+            (typeof window.GroqTts?.loadSavedVoice === "function"
+                ? window.GroqTts.loadSavedVoice()
+                : "browser");
+        if ([...voiceSelect.options].some((o) => o.value === saved)) {
+            voiceSelect.value = saved;
+        } else if (typeof window.GroqTts?.WEB_VOICE_ID === "string") {
+            voiceSelect.value = window.GroqTts.WEB_VOICE_ID;
+        }
+        voiceSelect.addEventListener("change", () => {
+            const id = voiceSelect.value;
+            if (agent && typeof agent.setTtsVoice === "function") {
+                agent.setTtsVoice(id);
+            } else if (typeof window.GroqTts?.saveVoice === "function") {
+                window.GroqTts.saveVoice(id);
+            }
+        });
+        // Apply current selection to the agent so TTS uses it immediately.
+        if (agent && typeof agent.setTtsVoice === "function") {
+            agent.setTtsVoice(voiceSelect.value);
+        }
+
+        const editBtn = document.createElement("button");
+        editBtn.type = "button";
+        editBtn.className = "custom-messages-edit-actions";
+        editBtn.textContent = "Messages";
+        editBtn.setAttribute("aria-label", "Custom messages");
+        editBtn.addEventListener("click", () => this.openActionsList());
+
+        voiceLabel.appendChild(voiceSelect);
+        voiceRow.appendChild(voiceLabel);
+        voiceRow.appendChild(editBtn);
+
+        wrap.appendChild(voiceRow);
         footer.appendChild(wrap);
 
         this._uiRoot = wrap;
-        this._tileListEl = list;
+        this._voiceSelectEl = voiceSelect;
     }
 
     _unmountChrome() {
@@ -327,12 +409,82 @@ class CustomMessagesGame {
         }
         this._uiRoot = null;
         this._tileListEl = null;
+        this._voiceSelectEl = null;
+    }
+
+    // —— Actions list popup ————————————————————————————————————————
+
+    openActionsList() {
+        this._closeActionsList();
+
+        const overlay = document.createElement("div");
+        overlay.className = "custom-messages-overlay custom-messages-actions-overlay";
+        overlay.setAttribute("role", "dialog");
+        overlay.setAttribute("aria-modal", "true");
+        overlay.setAttribute("aria-label", "Custom messages");
+
+        const card = document.createElement("div");
+        card.className = "custom-messages-card custom-messages-actions-card";
+
+        const title = document.createElement("h2");
+        title.className = "custom-messages-title";
+        title.textContent = "Custom messages";
+        card.appendChild(title);
+
+        const list = document.createElement("div");
+        list.className = "custom-messages-tiles";
+        list.setAttribute("role", "list");
+        card.appendChild(list);
+
+        const actions = document.createElement("div");
+        actions.className = "custom-messages-actions";
+
+        const addBtn = document.createElement("button");
+        addBtn.type = "button";
+        addBtn.className = "custom-messages-add";
+        addBtn.textContent = "+ Add";
+        addBtn.addEventListener("click", () => this.openEditor(null));
+
+        const doneBtn = document.createElement("button");
+        doneBtn.type = "button";
+        doneBtn.className = "custom-messages-cancel secondary";
+        doneBtn.textContent = "Done";
+        doneBtn.addEventListener("click", () => this._closeActionsList());
+
+        actions.appendChild(addBtn);
+        actions.appendChild(doneBtn);
+        card.appendChild(actions);
+
+        overlay.appendChild(card);
+        overlay.addEventListener("click", (e) => {
+            if (e.target === overlay) this._closeActionsList();
+        });
+        document.body.appendChild(overlay);
+
+        this._actionsOverlay = overlay;
+        this._tileListEl = list;
+        this._renderTiles();
+    }
+
+    _closeActionsList() {
+        if (this._actionsOverlay?.parentElement) {
+            this._actionsOverlay.parentElement.removeChild(this._actionsOverlay);
+        }
+        this._actionsOverlay = null;
+        this._tileListEl = null;
     }
 
     _renderTiles() {
         const list = this._tileListEl;
         if (!list) return;
         list.innerHTML = "";
+        if (!this.messages.length) {
+            const empty = document.createElement("p");
+            empty.className = "custom-messages-hint muted";
+            empty.textContent = "No actions yet. Tap + Add to create one.";
+            list.appendChild(empty);
+            return;
+        }
         for (const msg of this.messages) {
             const tile = document.createElement("div");
             tile.className = "custom-messages-tile";
@@ -369,6 +521,7 @@ class CustomMessagesGame {
         }
         this._overlay = null;
         this._draft = null;
+        if (this._actionsOverlay) this._renderTiles();
     }
 
     _mountEditor() {
@@ -376,7 +529,7 @@ class CustomMessagesGame {
         if (!draft) return;
 
         const overlay = document.createElement("div");
-        overlay.className = "custom-messages-overlay";
+        overlay.className = "custom-messages-overlay custom-messages-editor-overlay";
         overlay.setAttribute("role", "dialog");
         overlay.setAttribute("aria-modal", "true");
         overlay.setAttribute("aria-label", "Custom message");

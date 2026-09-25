@@ -545,17 +545,10 @@ class PlayBilling {
         const dock = document.createElement("div");
         dock.className = "play-credit-dock";
         dock.innerHTML = `
-            <div class="play-credit-bar" role="status" aria-live="polite">
-                <div class="play-credit-bar-track">
-                    <div class="play-credit-bar-fill"></div>
-                </div>
-                <div class="play-credit-bar-label"></div>
-            </div>
-            <div class="play-credit-actions">
-                <button type="button" class="play-credit-btn" data-action="mp3" disabled title="Coming soon">mp3</button>
-                <button type="button" class="play-credit-btn" data-action="speak-txt" disabled title="Coming soon">speak txt</button>
-                <button type="button" class="play-credit-btn play-credit-btn-primary" data-action="top-up">top up</button>
-            </div>`;
+            <button type="button" class="play-credit-bar" data-action="top-up" aria-live="polite" aria-label="Top up AI credit">
+                <span class="play-credit-bar-fill" aria-hidden="true"></span>
+                <span class="play-credit-bar-label"></span>
+            </button>`;
         dock.querySelector('[data-action="top-up"]').addEventListener("click", () => {
             void this.topUpCredit().catch((err) => {
                 console.error("Top up failed:", err);
@@ -580,10 +573,7 @@ class PlayBilling {
         const label = this._creditBar.querySelector(".play-credit-bar-label");
         if (fill) fill.style.width = `${percent}%`;
         if (label) {
-            label.textContent =
-                remaining > 0
-                    ? `${this.formatPrice(remaining, currency)} AI credit left`
-                    : `${this.formatPrice(0, currency)} AI credit — top up to play hosted AI`;
+            label.textContent = `${this.formatPrice(remaining, currency)} AI credit`;
         }
         this._creditBar.hidden = false;
     }

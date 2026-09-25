@@ -8,6 +8,9 @@ class GroqTts {
     /** Preferred default; falls back to first catalog entry if missing. */
     static PREFERRED_VOICE = "austin";
     static DEFAULT_VOICE = "austin";
+    /** Free browser speechSynthesis — not an Orpheus voice id. */
+    static WEB_VOICE_ID = "browser";
+    static WEB_VOICE_LABEL = "Web TTS (free)";
     /** Orpheus on Groq rejects inputs longer than this. */
     static MAX_INPUT_CHARS = 200;
 
@@ -20,6 +23,21 @@ class GroqTts {
         { id: "troy", label: "Troy — ♂" }
     ];
 
+    /** Web TTS + Groq Orpheus catalog for pickers that offer both. */
+    static pickerVoices() {
+        return [
+            { id: GroqTts.WEB_VOICE_ID, label: GroqTts.WEB_VOICE_LABEL, provider: "browser" },
+            ...GroqTts.VOICES.map((v) => ({ ...v, provider: "groq" }))
+        ];
+    }
+
+    static isWebVoice(voiceId) {
+        const id = String(voiceId || "")
+            .trim()
+            .toLowerCase();
+        return id === GroqTts.WEB_VOICE_ID || id === "web";
+    }
+
     /** First voice id in the catalog (fallback when preferred is gone). */
     static firstVoiceId(voices = GroqTts.VOICES) {
         const list = Array.isArray(voices) ? voices : [];
@@ -30,20 +48,22 @@ class GroqTts {
 
     /**
      * Prefer Austin when present; otherwise first catalog voice.
+     * Passes through Web TTS id unchanged.
      * @param {string} [requested]
      * @param {{ id: string }[]|string[]} [voices]
      */
     static resolveVoice(requested, voices = GroqTts.VOICES) {
+        if (GroqTts.isWebVoice(requested)) return GroqTts.WEB_VOICE_ID;
         if (typeof window.GroqModelSelect?.resolveOrpheusVoice === "function") {
             const ids = (Array.isArray(voices) ? voices : GroqTts.VOICES)
                 .map((v) => (typeof v === "string" ? v : String(v?.id || "").trim()))
-                .filter(Boolean);
+                .filter((id) => id && !GroqTts.isWebVoice(id));
             return window.GroqModelSelect.resolveOrpheusVoice(requested, ids);
         }
         const list = Array.isArray(voices) ? voices : GroqTts.VOICES;
         const ids = list
             .map((v) => (typeof v === "string" ? v : String(v?.id || "").trim()))
-            .filter(Boolean);
+            .filter((id) => id && !GroqTts.isWebVoice(id));
         const want = String(requested || "").trim();
         if (want && ids.includes(want)) return want;
         if (ids.includes(GroqTts.PREFERRED_VOICE)) return GroqTts.PREFERRED_VOICE;
@@ -67,6 +87,7 @@ class GroqTts {
     }
 
     static isKnownVoice(voiceId) {
+        if (GroqTts.isWebVoice(voiceId)) return true;
         return GroqTts.VOICES.some((v) => v.id === voiceId);
     }
 

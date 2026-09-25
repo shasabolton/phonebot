@@ -182,10 +182,13 @@ class AgentInterface {
         this._modeStartGeneration += 1;
         this._sessionModels = null;
         this._sessionModelsPromise = null;
+        // Fresh transcript per game (Custom included — re-selecting Custom after leaving wipes prior chat).
+        this.messageHistory = [];
+        this._renderHistory();
         const generation = this._modeStartGeneration;
         if (this._isSimonSaysPoseMatchMode()) return;
         if (this._modeHasPromptTemplate()) {
-            void this._kickOffPromptTemplateGame({ generation, clearHistory: true });
+            void this._kickOffPromptTemplateGame({ generation, clearHistory: false });
             return;
         }
         if (this._agentEnabled && this._usesPttInput()) {
@@ -769,6 +772,9 @@ class AgentInterface {
      * @returns {Promise<Blob>}
      */
     async synthesizeSpeechBlob(text, options = {}) {
+        if (this._isBrowserTtsVoice(options.voice ?? this._ttsVoice)) {
+            throw new Error("Web TTS does not return an audio blob.");
+        }
         await this._ensureArcadeAiBudget();
         await this.ensureSessionGroqModels();
         const agent = this.getSelectedAgent();
@@ -795,6 +801,9 @@ class AgentInterface {
             : window.GroqTts?.isKnownVoice?.(options.voice)
               ? options.voice
               : window.GroqTts?.DEFAULT_VOICE || "austin";
+        if (this._isBrowserTtsVoice(voice)) {
+            throw new Error("Web TTS does not return an audio blob.");
+        }
         const input =
             typeof window.GroqTts?.clampInput === "function"
                 ? window.GroqTts.clampInput(text)
@@ -883,8 +892,19 @@ class AgentInterface {
         }
     }
 
-    _onTtsVoiceChange() {
-        const id = this._voiceSelect ? this._voiceSelect.value : "";
+    _isBrowserTtsVoice(voiceId = this._ttsVoice) {
+        return typeof window.GroqTts?.isWebVoice === "function"
+            ? window.GroqTts.isWebVoice(voiceId)
+            : String(voiceId || "").trim().toLowerCase() === "browser";
+    }
+
+    /**
+     * Persist / apply a TTS voice id (Web TTS or provider catalog).
+     * @param {string} voiceId
+     * @returns {string}
+     */
+    setTtsVoice(voiceId) {
+        const id = String(voiceId || "").trim();
         if (this._isGeminiProvider()) {
             this._ttsVoice =
                 typeof window.GeminiAudioTurn?.saveVoice === "function"
@@ -896,6 +916,12 @@ class AgentInterface {
             this._ttsVoice = id || window.GroqTts?.resolveVoice?.() || "austin";
         }
         if (this._voiceSelect) this._voiceSelect.value = this._ttsVoice;
+        return this._ttsVoice;
+    }
+
+    _onTtsVoiceChange() {
+        const id = this._voiceSelect ? this._voiceSelect.value : "";
+        this.setTtsVoice(id);
     }
 
     _syncVoiceUiForSelectedAgent() {
@@ -904,25 +930,37 @@ class AgentInterface {
             ? Array.isArray(window.GeminiAudioTurn?.VOICES) && window.GeminiAudioTurn.VOICES.length
                 ? window.GeminiAudioTurn.VOICES
                 : [{ id: "Kore", label: "Kore — firm" }]
-            : Array.isArray(window.GroqTts?.VOICES) && window.GroqTts.VOICES.length
-              ? window.GroqTts.VOICES
-              : [{ id: "austin", label: "Austin — ♂" }];
+            : typeof window.GroqTts?.pickerVoices === "function"
+              ? window.GroqTts.pickerVoices()
+              : Array.isArray(window.GroqTts?.VOICES) && window.GroqTts.VOICES.length
+                ? [
+                      {
+                          id: window.GroqTts.WEB_VOICE_ID || "browser",
+                          label: window.GroqTts.WEB_VOICE_LABEL || "Web TTS (free)"
+                      },
+                      ...window.GroqTts.VOICES
+                  ]
+                : [
+                      { id: "browser", label: "Web TTS (free)" },
+                      { id: "austin", label: "Austin — ♂" }
+                  ];
         this._ttsVoice = gemini
             ? typeof window.GeminiAudioTurn?.loadSavedVoice === "function"
                 ? window.GeminiAudioTurn.loadSavedVoice()
                 : "Kore"
-            : typeof window.GroqTts?.resolveVoice === "function"
-              ? window.GroqTts.resolveVoice(
-                    typeof window.GroqTts?.loadSavedVoice === "function"
-                        ? window.GroqTts.loadSavedVoice()
-                        : "austin",
-                    voiceList
-                )
+            : typeof window.GroqTts?.loadSavedVoice === "function"
+              ? window.GroqTts.loadSavedVoice()
               : "austin";
+        if (gemini && this._isBrowserTtsVoice(this._ttsVoice)) {
+            this._ttsVoice =
+                typeof window.GeminiAudioTurn?.DEFAULT_VOICE === "string"
+                    ? window.GeminiAudioTurn.DEFAULT_VOICE
+                    : "Kore";
+        }
         if (this._voiceSelectLabel) {
             this._voiceSelectLabel.textContent = gemini
                 ? "Voice (Gemini TTS)"
-                : "Voice (Groq Orpheus TTS)";
+                : "Voice (Web TTS or Groq Orpheus)";
         }
         if (this._keyInput) {
             this._keyInput.placeholder = gemini ? "AIza… (Google AI Studio)" : "sk-… or gsk_…";
@@ -936,16 +974,21 @@ class AgentInterface {
                 this._voiceSelect.appendChild(opt);
             }
             if (![...this._voiceSelect.options].some((o) => o.value === this._ttsVoice)) {
-                this._ttsVoice = window.GroqTts?.resolveVoice?.(null, voiceList) || voiceList[0].id;
+                this._ttsVoice =
+                    window.GroqTts?.resolveVoice?.(null, window.GroqTts?.VOICES) ||
+                    voiceList.find((v) => v.id !== (window.GroqTts?.WEB_VOICE_ID || "browser"))?.id ||
+                    voiceList[0].id;
             }
             this._voiceSelect.value = this._ttsVoice;
         }
         this._setVoiceStatus(
-            this._useHostedAi()
-                ? "Arcade session active. Chat, Whisper, and TTS use the hosted metered Groq key (clear key field = hosted)."
-                : gemini
-                ? "Gemini audio turn + TTS (AI Studio). Text history only — no Groq Whisper/Orpheus."
-                : "Groq Orpheus TTS (uses API credits). Long replies play in sequence (200 chars per chunk)."
+            this._isBrowserTtsVoice()
+                ? "Web TTS (free browser speech). No API credits used for speech."
+                : this._useHostedAi()
+                  ? "Arcade session active. Chat, Whisper, and TTS use the hosted metered Groq key (clear key field = hosted)."
+                  : gemini
+                    ? "Gemini audio turn + TTS (AI Studio). Text history only — no Groq Whisper/Orpheus."
+                    : "Groq Orpheus TTS (uses API credits). Long replies play in sequence (200 chars per chunk)."
         );
     }
 
@@ -979,6 +1022,14 @@ class AgentInterface {
     }
 
     async _speakSynthesizedAsync(content, generation) {
+        if (this._isBrowserTtsVoice()) {
+            this._setVoiceStatus("Speaking (Web TTS)…");
+            await this._speakBrowserFallback(content);
+            if (generation === this._speakGeneration) {
+                this._setVoiceStatus("Web TTS (free browser speech). No API credits used for speech.");
+            }
+            return;
+        }
         const player = this._getAudioPlayer();
         const canPlay = player && typeof player.playBlob === "function";
         if (!canPlay) {
@@ -3127,9 +3178,9 @@ class AgentInterface {
             form.append("transcribeModel", this._resolveTranscriptionModel(agent));
             form.append("chatBody", JSON.stringify(chatBody));
             form.append("transcriptMarker", marker);
-            form.append("synthesizeSpeech", this._voiceOn ? "true" : "false");
+            form.append("synthesizeSpeech", this._voiceOn && !this._isBrowserTtsVoice() ? "true" : "false");
             form.append("speechModel", this._resolveSpeechModel(agent));
-            form.append("voice", this._ttsVoice);
+            form.append("voice", this._isBrowserTtsVoice() ? (window.GroqTts?.PREFERRED_VOICE || "austin") : this._ttsVoice);
 
             const controller = typeof AbortController === "function" ? new AbortController() : null;
             const timeoutMs = 90000;
@@ -3209,7 +3260,9 @@ class AgentInterface {
             const generation = this._speakGeneration;
             const hostedChunks = Array.isArray(result?.audioChunks) ? result.audioChunks : [];
             try {
-                if (hostedChunks.length) {
+                if (this._isBrowserTtsVoice()) {
+                    await this._speakBrowserFallback(spokenText);
+                } else if (hostedChunks.length) {
                     for (let i = 0; i < hostedChunks.length; i++) {
                         if (generation !== this._speakGeneration) break;
                         const entry = hostedChunks[i];
@@ -3777,7 +3830,7 @@ class AgentInterface {
         voiceWrap.appendChild(document.createTextNode("Speak agent replies"));
 
         const voiceSelectLabel = document.createElement("label");
-        voiceSelectLabel.textContent = "Voice (Groq Orpheus TTS)";
+        voiceSelectLabel.textContent = "Voice (Web TTS or Groq Orpheus)";
         const voiceSelect = document.createElement("select");
         voiceSelect.id = "robotAgentTtsVoice";
         voiceSelect.addEventListener("change", () => this._onTtsVoiceChange());
@@ -3786,7 +3839,7 @@ class AgentInterface {
         voiceStatus.className = "muted";
         voiceStatus.style.margin = "4px 0 0";
         voiceStatus.textContent =
-            "Groq Orpheus TTS (uses API credits). Long replies play in sequence (200 chars per chunk).";
+            "Web TTS is free. Groq Orpheus TTS uses API credits (200 chars per chunk).";
 
         const agentPowerBtn = document.createElement("button");
         agentPowerBtn.type = "button";

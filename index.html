@@ -229,40 +229,41 @@
     }
     .custom-messages-chrome {
       display: flex;
-      flex-wrap: wrap;
-      align-items: stretch;
+      align-items: center;
       gap: 8px;
       padding: 8px 4px 10px;
       border-top: 1px solid #e8e8e8;
     }
     .custom-messages-tiles {
       display: flex;
-      flex-wrap: wrap;
-      gap: 6px;
-      flex: 1 1 auto;
+      flex-direction: column;
+      gap: 8px;
+      margin: 0 0 12px;
       min-width: 0;
     }
     .custom-messages-tile {
-      display: inline-flex;
+      display: flex;
       align-items: center;
-      gap: 6px;
+      gap: 8px;
       max-width: 100%;
-      padding: 4px 6px 4px 10px;
+      padding: 8px 8px 8px 12px;
       border: 1px solid #d9d9e3;
       border-radius: 10px;
       background: #f7f7f8;
-      font-size: 0.82rem;
+      font-size: 0.88rem;
       line-height: 1.2;
     }
     .custom-messages-tile-label {
+      flex: 1 1 auto;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
-      max-width: 9rem;
+      min-width: 0;
       color: #222;
     }
     .custom-messages-tile-edit,
-    .custom-messages-add {
+    .custom-messages-add,
+    .custom-messages-edit-actions {
       width: auto;
       margin-top: 0;
       padding: 4px 10px;
@@ -271,16 +272,55 @@
       border-radius: 8px;
     }
     .custom-messages-add {
-      flex: 0 0 auto;
-      align-self: center;
+      flex: 1 1 0;
       background: #111;
       color: #fff;
       border: none;
     }
-    .custom-messages-tile-edit {
+    .custom-messages-tile-edit,
+    .custom-messages-edit-actions {
+      flex: 0 0 auto;
       background: #fff;
       border: 1px solid #ccc;
       color: #333;
+    }
+    .custom-messages-edit-actions {
+      padding: 6px 12px;
+      font-size: 0.82rem;
+    }
+    .custom-messages-voice-row {
+      flex: 1 1 auto;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+    }
+    .custom-messages-voice-label {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex: 1 1 auto;
+      min-width: 0;
+      margin: 0;
+      font-size: 0.82rem;
+      font-weight: 600;
+      color: #444;
+    }
+    .custom-messages-voice {
+      flex: 1 1 auto;
+      min-width: 0;
+      max-width: 100%;
+      margin: 0;
+      box-sizing: border-box;
+      font: inherit;
+      font-weight: 500;
+    }
+    .robot-dashboard--custom-messages .robot-dashboard-chat-host {
+      flex: 1 1 auto;
+      min-height: 5.5rem;
+    }
+    .robot-dashboard--custom-messages .robot-dashboard-chat-log {
+      min-height: 4rem;
     }
     .custom-messages-overlay {
       position: fixed;
@@ -294,6 +334,9 @@
       background: rgba(0, 0, 0, 0.62);
       overflow: auto;
     }
+    .custom-messages-editor-overlay {
+      z-index: 10003;
+    }
     .custom-messages-card {
       width: min(100%, 24rem);
       margin-top: 8vh;
@@ -303,6 +346,12 @@
       background: #fff;
       box-shadow: 0 14px 44px rgba(0, 0, 0, 0.32);
       text-align: left;
+    }
+    .custom-messages-actions-card .custom-messages-tiles {
+      max-height: min(50vh, 22rem);
+      overflow-x: hidden;
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
     }
     .custom-messages-title {
       margin: 0 0 12px;
@@ -1365,59 +1414,44 @@
       border-top: 1px solid rgba(255, 255, 255, 0.08);
     }
     .play-credit-bar {
+      position: relative;
       display: flex;
-      flex-direction: column;
-      gap: 4px;
-      pointer-events: none;
-    }
-    .play-credit-bar-track {
+      align-items: center;
+      justify-content: center;
       width: 100%;
-      height: 10px;
+      height: 20px;
+      margin: 0;
+      padding: 0 10px;
+      box-sizing: border-box;
+      border: none;
       border-radius: 999px;
       background: rgba(255, 255, 255, 0.18);
+      color: #102418;
+      font-size: 0.78rem;
+      font-weight: 600;
+      line-height: 1;
+      letter-spacing: 0.01em;
+      cursor: pointer;
       overflow: hidden;
     }
     .play-credit-bar-fill {
-      height: 100%;
+      position: absolute;
+      top: 0;
+      left: 0;
+      bottom: 0;
       width: 0%;
       border-radius: inherit;
       background: #6fcf97;
       transition: width 0.25s ease;
+      pointer-events: none;
     }
     .play-credit-bar-label {
-      font-size: 0.82rem;
-      line-height: 1.2;
-      text-align: center;
-      letter-spacing: 0.01em;
-      opacity: 0.92;
-    }
-    .play-credit-actions {
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 8px;
-    }
-    .play-credit-btn {
-      margin: 0;
-      padding: 10px 8px;
-      border: 1px solid rgba(255, 255, 255, 0.18);
-      border-radius: 10px;
-      background: rgba(255, 255, 255, 0.08);
-      color: #f4f4f4;
-      font-size: 0.92rem;
-      font-weight: 600;
-      cursor: pointer;
-    }
-    .play-credit-btn:disabled {
-      opacity: 0.45;
-      cursor: not-allowed;
-    }
-    .play-credit-btn-primary {
-      background: #6fcf97;
-      border-color: #6fcf97;
-      color: #102418;
+      position: relative;
+      z-index: 1;
+      white-space: nowrap;
     }
     body.play-credit-dock-visible {
-      --play-credit-dock-height: calc(112px + env(safe-area-inset-bottom, 0px));
+      --play-credit-dock-height: calc(48px + env(safe-area-inset-bottom, 0px));
     }
     @keyframes app-boot-spin {
       to { transform: rotate(360deg); }
