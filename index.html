@@ -399,7 +399,9 @@
     .custom-messages-options[hidden] {
       display: none !important;
     }
-    .custom-messages-options label {
+    /* :not([hidden]) so display:block does not override the hidden attribute
+       (common on mobile WebViews where UA [hidden] loses to author CSS). */
+    .custom-messages-options label:not([hidden]) {
       display: block;
       margin: 0;
       font-size: 0.88rem;

@@ -1288,8 +1288,11 @@ class CustomMessagesGame {
     _syncGameNameField() {
         const draft = this._draft;
         const show = !!draft && draft.trigger === "selected";
-        if (this._editorGameNameLabel) {
-            this._editorGameNameLabel.hidden = !show;
+        const label = this._editorGameNameLabel;
+        if (label) {
+            label.hidden = !show;
+            // Inline display beats author `label { display:block }` on mobile WebViews.
+            label.style.display = show ? "" : "none";
         }
         this._fillGameConstraintSelect();
     }
