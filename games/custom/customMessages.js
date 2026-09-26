@@ -64,6 +64,8 @@ class CustomMessagesGame {
         this._speechTickBusy = false;
         this._lastSpeechSpeaking = null;
         this._speechFinishedPending = false;
+        /** Bumps on each speak→silence edge so in-flight plays can detect nested finishes. */
+        this._speechFinishEpoch = 0;
         this._firedOnceIds = new Set();
         this._playNextQueue = [];
         this._tileListEl = null;
@@ -93,6 +95,7 @@ class CustomMessagesGame {
         this._faceSince = 0;
         this._lastSpeechSpeaking = null;
         this._speechFinishedPending = false;
+        this._speechFinishEpoch = 0;
         const active = CustomMessagesGame.loadActiveWorkspace();
         this.messages = active.messages;
         this._activeCharacterId = active.characterId;
@@ -398,6 +401,7 @@ class CustomMessagesGame {
         this._stopFacePoll();
         this._stopSpeechPoll();
         this._speechFinishedPending = false;
+        this._speechFinishEpoch = 0;
         this._lastSpeechSpeaking = null;
         this._cancelSpeech();
         this._stopRecording(true);
@@ -1869,6 +1873,7 @@ class CustomMessagesGame {
         this._stopSpeechPoll();
         this._lastSpeechSpeaking = this._isSpeechSpeaking();
         this._speechFinishedPending = false;
+        this._speechFinishEpoch = 0;
         this._speechTimer = setInterval(() => {
             if (!this._isActive(generation)) {
                 this._stopSpeechPoll();
@@ -1883,6 +1888,19 @@ class CustomMessagesGame {
             clearInterval(this._speechTimer);
             this._speechTimer = null;
         }
+    }
+
+    /**
+     * Messages whose own speech (agent reply / repeat loop) should be allowed to
+     * re-trigger speechFinished after the in-flight play completes.
+     * Once-only text/audio clips do not — that would self-chain forever.
+     * @param {CustomMessage} msg
+     */
+    static _speechFinishedMayRetriggerFromOwnSpeech(msg) {
+        if (!msg) return false;
+        if (msg.kind === "prompt") return true;
+        if (msg.loop === "repeat") return true;
+        return false;
     }
 
     async _onSpeechTick(generation) {
@@ -1903,6 +1921,7 @@ class CustomMessagesGame {
 
         if (this._lastSpeechSpeaking && !speaking) {
             this._speechFinishedPending = true;
+            this._speechFinishEpoch += 1;
         }
         this._lastSpeechSpeaking = speaking;
 
@@ -1931,6 +1950,13 @@ class CustomMessagesGame {
             return;
         }
 
+        // Consume this finish; a nested speak→silence during play bumps the epoch
+        // and sets pending again so the next idle tick can run.
+        this._speechFinishedPending = false;
+        const epochAtStart = this._speechFinishEpoch;
+        /** @type {CustomMessage[]} */
+        const mayRetrigger = [];
+
         this._speechTickBusy = true;
         try {
             for (const msg of runnable) {
@@ -1938,8 +1964,26 @@ class CustomMessagesGame {
                 if (!this._constraintsMet(msg)) continue;
                 const played = await this._playMessage(msg, generation);
                 if (played && msg.loop === "once") this._firedOnceIds.add(msg.id);
+                if (played && CustomMessagesGame._speechFinishedMayRetriggerFromOwnSpeech(msg)) {
+                    mayRetrigger.push(msg);
+                }
             }
-            if (!waitingOnConstraints) this._speechFinishedPending = false;
+            if (this._speechFinishEpoch !== epochAtStart) {
+                // Speech finished while we were awaiting play (e.g. agent reply after a
+                // camera prompt). Re-arm retriggerable messages and keep pending so the
+                // next idle tick can fire. Once-only text/audio clips are not re-armed —
+                // their own TTS would otherwise self-chain forever.
+                if (mayRetrigger.length) {
+                    for (const msg of mayRetrigger) {
+                        if (msg.loop === "once") this._firedOnceIds.delete(msg.id);
+                    }
+                    // pending already true from the nested falling edge; leave it set.
+                } else if (!waitingOnConstraints) {
+                    this._speechFinishedPending = false;
+                }
+            } else if (!waitingOnConstraints) {
+                this._speechFinishedPending = false;
+            }
         } finally {
             this._speechTickBusy = false;
         }
