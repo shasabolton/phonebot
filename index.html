@@ -127,7 +127,7 @@
       padding: 8px 12px 10px 12px;
       box-sizing: border-box;
     }
-    /* Talking head: video + chat fill the screen (footer slot reserved below chat). */
+    /* Talking head: video + chat fill the screen. */
     .app-dashboard:has(.robot-dashboard--talking-head) {
       max-height: none;
       padding-bottom: 0;
@@ -223,17 +223,6 @@
       display: flex;
       flex-direction: column;
     }
-    .robot-dashboard--talking-head .robot-dashboard-footer {
-      flex: 0 0 auto;
-      min-height: 0;
-    }
-    .custom-messages-chrome {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      padding: 8px 4px 10px;
-      border-top: 1px solid #e8e8e8;
-    }
     .custom-messages-tiles {
       display: flex;
       flex-direction: column;
@@ -262,8 +251,7 @@
       color: #222;
     }
     .custom-messages-tile-edit,
-    .custom-messages-add,
-    .custom-messages-edit-actions {
+    .custom-messages-add {
       width: auto;
       margin-top: 0;
       padding: 4px 10px;
@@ -277,43 +265,11 @@
       color: #fff;
       border: none;
     }
-    .custom-messages-tile-edit,
-    .custom-messages-edit-actions {
+    .custom-messages-tile-edit {
       flex: 0 0 auto;
       background: #fff;
       border: 1px solid #ccc;
       color: #333;
-    }
-    .custom-messages-edit-actions {
-      padding: 6px 12px;
-      font-size: 0.82rem;
-    }
-    .custom-messages-voice-row {
-      flex: 1 1 auto;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      min-width: 0;
-    }
-    .custom-messages-voice-label {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      flex: 1 1 auto;
-      min-width: 0;
-      margin: 0;
-      font-size: 0.82rem;
-      font-weight: 600;
-      color: #444;
-    }
-    .custom-messages-voice {
-      flex: 1 1 auto;
-      min-width: 0;
-      max-width: 100%;
-      margin: 0;
-      box-sizing: border-box;
-      font: inherit;
-      font-weight: 500;
     }
     .robot-dashboard--custom-messages .robot-dashboard-chat-host {
       flex: 1 1 auto;
@@ -352,6 +308,35 @@
       overflow-x: hidden;
       overflow-y: auto;
       -webkit-overflow-scrolling: touch;
+    }
+    .custom-messages-character-meta {
+      display: grid;
+      gap: 10px;
+      margin: 0 0 14px;
+    }
+    .custom-messages-character-meta-label {
+      display: block;
+      margin: 0;
+      font-size: 0.88rem;
+      font-weight: 600;
+      color: #444;
+    }
+    .custom-messages-character-name-input,
+    .custom-messages-character-voice-input {
+      display: block;
+      width: 100%;
+      margin: 4px 0 0;
+      box-sizing: border-box;
+      font: inherit;
+      padding: 8px 10px;
+      border: 1px solid #ccc;
+      border-radius: 8px;
+      background: #fff;
+      color: #111;
+    }
+    .custom-messages-character-name-input:disabled,
+    .custom-messages-character-voice-input:disabled {
+      opacity: 0.55;
     }
     .custom-messages-title {
       margin: 0 0 12px;
@@ -427,6 +412,57 @@
       margin: 4px 0 0;
       box-sizing: border-box;
     }
+    .custom-messages-game-name {
+      display: block;
+      width: 100%;
+      margin: 4px 0 0;
+      box-sizing: border-box;
+      font: inherit;
+      padding: 8px 10px;
+      border: 1px solid #ccc;
+      border-radius: 8px;
+      background: #fff;
+      color: #111;
+    }
+    .custom-messages-game-name-label[hidden] {
+      display: none !important;
+    }
+    .custom-messages-delay {
+      display: block;
+      width: 100%;
+      margin: 4px 0 0;
+      box-sizing: border-box;
+      font: inherit;
+      padding: 8px 10px;
+      border: 1px solid #ccc;
+      border-radius: 8px;
+      background: #fff;
+      color: #111;
+    }
+    .custom-messages-constraints-heading {
+      margin: 10px 0 0;
+      font-size: 0.82rem;
+      font-weight: 600;
+      color: #666;
+      letter-spacing: 0.01em;
+    }
+    .custom-messages-camera-label {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin: 8px 0 0;
+      font-size: 0.92rem;
+      font-weight: 600;
+      color: #333;
+      cursor: pointer;
+      user-select: none;
+    }
+    .custom-messages-camera-label input {
+      width: 1.05rem;
+      height: 1.05rem;
+      margin: 0;
+      accent-color: #2a6;
+    }
     .custom-messages-actions {
       margin-top: 4px;
     }
@@ -437,6 +473,46 @@
     }
     .custom-messages-delete {
       color: #a11;
+    }
+    .custom-messages-character-row {
+      width: 100%;
+      box-sizing: border-box;
+      min-width: 0;
+    }
+    .custom-messages-character-name {
+      flex: 1 1 auto;
+      width: auto;
+      min-width: 0;
+      max-width: 100%;
+      margin: 0;
+      padding: 4px 0;
+      border: none;
+      background: transparent;
+      font: inherit;
+      font-weight: 600;
+      color: #111;
+      text-align: left;
+      cursor: pointer;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .custom-messages-character-name:hover,
+    .custom-messages-character-name:focus-visible {
+      text-decoration: underline;
+    }
+    .custom-messages-character-row .custom-messages-tile-edit {
+      flex: 0 0 auto;
+      width: auto;
+      margin-top: 0;
+      white-space: nowrap;
+    }
+    .custom-messages-character-delete {
+      color: #a11;
+    }
+    .custom-messages-name-overlay,
+    .custom-messages-characters-overlay {
+      z-index: 10004;
     }
     .robot-dashboard-chat {
       flex: 1 1 auto;
@@ -906,6 +982,18 @@
       font-weight: 600;
       letter-spacing: 0.04em;
       text-transform: uppercase;
+    }
+    .sensor-camera-shutter-overlay {
+      position: absolute;
+      inset: 0;
+      z-index: 9;
+      pointer-events: none;
+      background: #fff;
+      opacity: 0;
+      transition: opacity 30ms linear;
+    }
+    .sensor-camera-shutter-overlay.is-flash {
+      opacity: 0.92;
     }
     /* Hold-to-talk button on the camera frame. */
     .sensor-camera-ptt-overlay {

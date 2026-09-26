@@ -372,6 +372,14 @@ window.ROBOTS_DATA = {
                     free: true,
                     computervisionModel: "blazeface"
                 },
+                characters: {
+                    label: "Characters",
+                    game: "customCharacters",
+                    priceCents: 0,
+                    currency: "aud",
+                    free: true,
+                    computervisionModel: "blazeface"
+                },
                 custom: {
                     label: "Custom",
                     game: "customMessages",

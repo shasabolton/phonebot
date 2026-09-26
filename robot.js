@@ -450,16 +450,93 @@ class Robot {
         const modes = this.config?.modes;
         if (!modes || typeof modes !== "object" || Array.isArray(modes)) return null;
         const keys = Object.keys(modes);
-        return keys.length ? modes : null;
+        if (!keys.length) return null;
+
+        /** @type {Record<string, object>} */
+        const merged = { ...modes };
+        const listFn = window.CustomMessagesGame?.listMenuGames;
+        if (typeof listFn === "function") {
+            try {
+                for (const game of listFn() || []) {
+                    const modeId = String(game?.modeId || "").trim();
+                    const label = String(game?.label || "").trim();
+                    const messageId = String(game?.messageId || "").trim();
+                    if (!modeId || !label || !messageId) continue;
+                    if (merged[modeId] && !String(modeId).startsWith("customSelected:")) continue;
+                    merged[modeId] = {
+                        label,
+                        game: "customMessages",
+                        customSelectedMessageId: messageId,
+                        priceCents: 0,
+                        currency: "aud",
+                        free: true,
+                        computervisionModel: "blazeface"
+                    };
+                }
+            } catch (err) {
+                console.warn("Custom menu games failed:", err);
+            }
+        }
+        return merged;
     }
 
+    /**
+     * Rebuild the Game dropdown after custom "selected" messages change.
+     */
+    refreshModesSelect() {
+        const select = this._modeSelect;
+        if (!select) return;
+        const modes = this.getModeList();
+        const previous = this.mode;
+        select.innerHTML = "";
+        for (const { id, label: text } of modes) {
+            const opt = document.createElement("option");
+            opt.value = id;
+            opt.textContent = text;
+            select.appendChild(opt);
+        }
+        const prefix =
+            window.CustomMessagesGame?.SELECTED_MODE_PREFIX || "customSelected:";
+        if (previous && String(previous).startsWith(prefix) && !modes.some((m) => m.id === previous)) {
+            void this.setMode("custom");
+            return;
+        }
+        this._syncModeSelectValue();
+    }
+
+    /**
+     * Modes shown in the Game dropdown. `custom` stays in config for Characters → New
+     * but is hidden here — use Characters to open that workspace.
+     */
     getModeList() {
         const modes = this._getModesMap();
         if (!modes) return [];
-        return Object.entries(modes).map(([id, cfg]) => ({
-            id,
-            label: String(cfg?.label || id)
-        }));
+        return Object.entries(modes)
+            .filter(([id]) => id !== "custom")
+            .map(([id, cfg]) => ({
+                id,
+                label: String(cfg?.label || id)
+            }));
+    }
+
+    /** Map internal mode id to the dropdown option to highlight. */
+    _displayModeIdForSelect(modeId = this.mode) {
+        const id = String(modeId || "");
+        if (id === "custom") return "characters";
+        return id;
+    }
+
+    _syncModeSelectValue() {
+        const select = this._modeSelect;
+        if (!select) return;
+        const want = this._displayModeIdForSelect(this.mode);
+        if ([...select.options].some((o) => o.value === want)) {
+            select.value = want;
+            return;
+        }
+        if (this.mode && [...select.options].some((o) => o.value === this.mode)) {
+            select.value = this.mode;
+        }
     }
 
     _getActiveModeConfig() {
@@ -515,8 +592,14 @@ class Robot {
         const want = String(id || "").trim();
         if (!want || !modes[want]) return false;
         if (this.mode === want) {
-            if (this._modeSelect) this._modeSelect.value = this.mode;
+            this._syncModeSelectValue();
             if (!this._modeReady) return this._activateCurrentMode();
+            // Re-open Characters picker if already on that mode (e.g. after Cancel stayed put).
+            if (want === "characters") {
+                this._stopLocalGame();
+                this._modeReady = true;
+                this._syncLocalGameForMode();
+            }
             return true;
         }
         const previousMode = this.mode;
@@ -527,7 +610,7 @@ class Robot {
             this.agentInterface._stopSpeaking();
         }
         this.mode = want;
-        if (this._modeSelect) this._modeSelect.value = this.mode;
+        this._syncModeSelectValue();
         if (typeof this._onModeChange === "function") {
             try {
                 this._onModeChange(this.mode);
@@ -539,7 +622,7 @@ class Robot {
         if (generation !== this._modeActivationGeneration) return false;
         if (!paid) {
             this.mode = previousMode;
-            if (this._modeSelect) this._modeSelect.value = this.mode;
+            this._syncModeSelectValue();
             if (typeof this._onModeChange === "function") this._onModeChange(this.mode);
             this._modeReady = true;
             this._applyModeBehavior();
@@ -699,13 +782,31 @@ class Robot {
             this._localGame.start();
             return;
         }
+        if (gameId === "customCharacters") {
+            const PickerClass = window.CustomCharactersPicker;
+            if (typeof PickerClass !== "function") {
+                console.error(
+                    "CustomCharactersPicker is unavailable. Check games/custom/customMessages.js loading."
+                );
+                return;
+            }
+            this._localGame = new PickerClass(this);
+            this._localGame.start();
+            return;
+        }
         if (gameId === "customMessages") {
             const GameClass = window.CustomMessagesGame;
             if (typeof GameClass !== "function") {
                 console.error("CustomMessagesGame is unavailable. Check games/custom/customMessages.js loading.");
                 return;
             }
-            this._localGame = new GameClass(this);
+            const modeConfig = this._getActiveModeConfig();
+            const selectedMessageId =
+                String(modeConfig?.customSelectedMessageId || "").trim() ||
+                (typeof GameClass.messageIdFromModeId === "function"
+                    ? GameClass.messageIdFromModeId(this.mode)
+                    : null);
+            this._localGame = new GameClass(this, { selectedMessageId });
             this._localGame.start();
         }
     }
@@ -1023,11 +1124,6 @@ class Robot {
         const chatHost = document.createElement("div");
         chatHost.className = "robot-dashboard-chat-host";
         root.appendChild(chatHost);
-
-        const footer = document.createElement("div");
-        footer.className = "robot-dashboard-footer";
-        footer.setAttribute("aria-hidden", "true");
-        root.appendChild(footer);
 
         container.appendChild(root);
 
@@ -1383,11 +1479,24 @@ class Robot {
         }
         if (this.mode && modes.some((m) => m.id === this.mode)) {
             select.value = this.mode;
+        } else {
+            this._syncModeSelectValue();
         }
+        // While editing a custom workspace, the dropdown shows Characters. Clearing on focus
+        // lets choosing Characters again fire `change` and reopen the picker.
+        select.addEventListener("focus", () => {
+            if (this.mode === "custom" && select.value === "characters") {
+                select.selectedIndex = -1;
+            }
+        });
+        select.addEventListener("blur", () => {
+            if (!select.value) this._syncModeSelectValue();
+        });
         select.addEventListener("change", () => {
             select.disabled = true;
             void this.setMode(select.value).finally(() => {
                 select.disabled = false;
+                this._syncModeSelectValue();
             });
         });
 
@@ -1395,6 +1504,7 @@ class Robot {
         wrap.appendChild(select);
         container.appendChild(wrap);
         this._modeSelect = select;
+        this._syncModeSelectValue();
     }
 
     buildGUI() {

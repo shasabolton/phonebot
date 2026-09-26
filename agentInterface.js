@@ -83,10 +83,14 @@ class AgentInterface {
         /** When true, attach current camera JPEG to the last user message on send. */
         this._sendCameraImage = this.config.sendCameraImage !== false;
         this._sendCameraImageInput = null;
-        /** DOM overlay for camera countdown (Simon pose). */
+        /** DOM overlay for camera countdown (Simon pose / photo send). */
         this._countdownOverlayEl = null;
         this._countdownNumberEl = null;
         this._countdownLabelEl = null;
+        /** White shutter flash on the camera frame when a photo is taken. */
+        this._shutterOverlayEl = null;
+        /** Bumps to cancel an in-flight photo countdown/flicker. */
+        this._photoOverlayGeneration = 0;
         /** Hold-to-talk overlay on the camera frame (conversation + Parrot). */
         this._pttOverlayEl = null;
         this._pttBtnEl = null;
@@ -121,7 +125,8 @@ class AgentInterface {
             mode === "philosophy" ||
             mode === "twentyquestions" ||
             mode === "fortuneteller" ||
-            mode === "custom"
+            mode === "custom" ||
+            mode.startsWith("customselected:")
         );
     }
 
@@ -863,7 +868,7 @@ class AgentInterface {
     _stopSpeaking() {
         this._speakGeneration += 1;
         window.__phonebotTtsSpeaking = false;
-        this._clearCameraCountdownOverlay();
+        this._clearCameraPhotoOverlays();
         this._abortPttRecording();
         this._cancelPttWait();
         if (window.speechSynthesis) {
@@ -1198,6 +1203,75 @@ class AgentInterface {
         this._countdownOverlayEl = null;
         this._countdownNumberEl = null;
         this._countdownLabelEl = null;
+    }
+
+    _clearCameraShutterOverlay() {
+        if (this._shutterOverlayEl && this._shutterOverlayEl.parentNode) {
+            this._shutterOverlayEl.parentNode.removeChild(this._shutterOverlayEl);
+        }
+        this._shutterOverlayEl = null;
+    }
+
+    _clearCameraPhotoOverlays() {
+        this._photoOverlayGeneration += 1;
+        this._clearCameraCountdownOverlay();
+        this._clearCameraShutterOverlay();
+    }
+
+    /**
+     * @returns {HTMLElement|null}
+     */
+    _ensureCameraShutterOverlay() {
+        if (this._shutterOverlayEl && this._shutterOverlayEl.isConnected) {
+            return this._shutterOverlayEl;
+        }
+        this._clearCameraShutterOverlay();
+        const camera = this._getCameraSensor();
+        const frameEl = camera?.getFrameElement?.();
+        if (!frameEl) return null;
+        const overlay = document.createElement("div");
+        overlay.className = "sensor-camera-shutter-overlay";
+        overlay.setAttribute("aria-hidden", "true");
+        frameEl.appendChild(overlay);
+        this._shutterOverlayEl = overlay;
+        return overlay;
+    }
+
+    /**
+     * Brief white flash so a photo capture is obvious even with no countdown.
+     * @param {{ generation?: number, isActive?: () => boolean }} [options]
+     * @returns {Promise<boolean>}
+     */
+    async _runCameraShutterFlicker(options = {}) {
+        const generation =
+            options.generation != null ? options.generation : this._photoOverlayGeneration;
+        const isActive =
+            typeof options.isActive === "function"
+                ? options.isActive
+                : () => generation === this._photoOverlayGeneration;
+        const sleep = (ms) =>
+            new Promise((resolve) => {
+                setTimeout(resolve, ms);
+            });
+        const overlay = this._ensureCameraShutterOverlay();
+        if (!overlay) {
+            await sleep(120);
+            return isActive();
+        }
+        try {
+            // Double flash reads clearly even when the capture itself is instant.
+            for (let i = 0; i < 2; i++) {
+                if (!isActive()) return false;
+                overlay.classList.add("is-flash");
+                await sleep(85);
+                overlay.classList.remove("is-flash");
+                if (!isActive()) return false;
+                if (i === 0) await sleep(45);
+            }
+            return isActive();
+        } finally {
+            this._clearCameraShutterOverlay();
+        }
     }
 
     _clearPttOverlay() {
@@ -1719,8 +1793,8 @@ class AgentInterface {
     /**
      * @param {string} [label]
      */
-    _ensureCameraCountdownOverlay(label = "Pose!") {
-        const labelText = String(label || "Pose!").trim() || "Pose!";
+    _ensureCameraCountdownOverlay(label = "Photo!") {
+        const labelText = String(label || "Photo!").trim() || "Photo!";
         if (this._countdownOverlayEl && this._countdownOverlayEl.isConnected) {
             if (this._countdownLabelEl) this._countdownLabelEl.textContent = labelText;
             return this._countdownOverlayEl;
@@ -1749,26 +1823,32 @@ class AgentInterface {
     /**
      * Show a full-frame countdown on the camera (N…1), then clear.
      * @param {number} seconds
-     * @param {number} generation Cancel if `_speakGeneration` changes
-     * @param {{ label?: string, statusPrefix?: string }} [options]
+     * @param {number} [generation] Cancel if `_speakGeneration` changes (Simon Says). Ignored when `options.isActive` is set.
+     * @param {{ label?: string, statusPrefix?: string, isActive?: () => boolean }} [options]
      * @returns {Promise<boolean>} true if countdown completed for this generation
      */
     async _runCameraCountdown(seconds, generation, options = {}) {
-        const total = Math.max(1, Math.round(Number(seconds) || 5));
-        const label = String(options.label || "Pose!").trim() || "Pose!";
-        const statusPrefix = String(options.statusPrefix || "Pose photo in").trim() || "Pose photo in";
+        const raw = Number(seconds);
+        if (!Number.isFinite(raw) || raw <= 0) return true;
+        const total = Math.max(1, Math.ceil(raw));
+        const label = String(options.label || "Photo!").trim() || "Photo!";
+        const statusPrefix = String(options.statusPrefix || "Photo in").trim() || "Photo in";
+        const isActive =
+            typeof options.isActive === "function"
+                ? options.isActive
+                : () => generation == null || generation === this._speakGeneration;
         const overlay = this._ensureCameraCountdownOverlay(label);
         if (!overlay) {
             // No camera UI — still wait so pose timing stays consistent.
             for (let n = total; n >= 1; n--) {
-                if (generation !== this._speakGeneration) return false;
+                if (!isActive()) return false;
                 await new Promise((r) => setTimeout(r, 1000));
             }
-            return generation === this._speakGeneration;
+            return isActive();
         }
         try {
             for (let n = total; n >= 1; n--) {
-                if (generation !== this._speakGeneration) return false;
+                if (!isActive()) return false;
                 if (this._countdownNumberEl) this._countdownNumberEl.textContent = String(n);
                 if (this._statusEl) {
                     this._statusEl.textContent = `${statusPrefix} ${n}…`;
@@ -1776,10 +1856,61 @@ class AgentInterface {
                 }
                 await new Promise((r) => setTimeout(r, 1000));
             }
-            return generation === this._speakGeneration;
+            return isActive();
         } finally {
             this._clearCameraCountdownOverlay();
         }
+    }
+
+    /**
+     * Countdown (optional) → capture frame → shutter flicker → attach to last user message.
+     * Used by every photo-send path so overlays stay consistent.
+     * @param {Array<{role:string, content: unknown}>} messages
+     * @param {{
+     *   cameraCountdownSeconds?: number,
+     *   skipCameraCountdown?: boolean,
+     *   cameraCountdownLabel?: string,
+     *   cameraStatusPrefix?: string,
+     *   isActive?: () => boolean
+     * }} [options]
+     * @returns {Promise<boolean>} true if a data-image was attached
+     */
+    async _attachCameraPhotoWithOverlays(messages, options = {}) {
+        const overlayGen = ++this._photoOverlayGeneration;
+        const isActive =
+            typeof options.isActive === "function"
+                ? () => options.isActive() && overlayGen === this._photoOverlayGeneration
+                : () => overlayGen === this._photoOverlayGeneration;
+
+        const skipCountdown = options.skipCameraCountdown === true;
+        let countdownSec = skipCountdown
+            ? 0
+            : Math.max(0, Number(options.cameraCountdownSeconds) || 0);
+        // Custom / callers can pass fractional delay; show at least 1s of timer when > 0.
+        if (countdownSec > 0 && countdownSec < 1) countdownSec = 1;
+
+        if (countdownSec > 0) {
+            const ok = await this._runCameraCountdown(countdownSec, null, {
+                label: options.cameraCountdownLabel || "Photo!",
+                statusPrefix: options.cameraStatusPrefix || "Photo in",
+                isActive
+            });
+            if (!ok) return false;
+        }
+
+        if (!isActive()) return false;
+        this._refreshCurrentCameraImageUrl();
+        const hasImage = String(this.currentCameraImageUrl || "").startsWith("data:image");
+
+        // Always flicker when we intended to send a photo, so capture is visible with no delay.
+        await this._runCameraShutterFlicker({ generation: overlayGen, isActive });
+        if (!isActive()) return false;
+
+        if (hasImage) {
+            this._attachCurrentCameraToLastUserMessage(messages);
+            return true;
+        }
+        return false;
     }
 
     _pickRecorderMimeType() {
@@ -1859,11 +1990,9 @@ class AgentInterface {
                 this._statusEl.textContent = "Get ready — pose photo in 5…";
                 this._statusEl.className = "muted";
             }
-            const countdownOk = await this._runCameraCountdown(5, generation);
-            if (!countdownOk || generation !== this._speakGeneration || !this._agentEnabled) return;
-
-            this._refreshCurrentCameraImageUrl();
-            if (!String(this.currentCameraImageUrl || "").startsWith("data:image")) {
+            const camera = this._getCameraSensor();
+            const videoEl = camera?.getVideoElement?.();
+            if (!videoEl || videoEl.readyState < 2) {
                 if (this._statusEl) {
                     this._statusEl.textContent = "Pose photo failed — start the camera first.";
                     this._statusEl.className = "warn";
@@ -1884,12 +2013,17 @@ class AgentInterface {
             await this.submitPromptWithRobotState("here is the pose image", {
                 contextLabel: "User",
                 speechTranscriber: "simon pose",
-                forceCameraImage: true
+                forceCameraImage: true,
+                cameraCountdownSeconds: 5,
+                cameraCountdownLabel: "Pose!",
+                cameraStatusPrefix: "Pose photo in",
+                cameraOverlayIsActive: () =>
+                    generation === this._speakGeneration && !!this._agentEnabled
             });
         } catch (err) {
             console.error("Simon Says pose capture error:", err);
             if (this._statusEl) {
-                this._statusEl.textContent = err?.message || "Pose capture failed";
+                this._statusEl.textContent = err?.message || "Pose photo failed";
                 this._statusEl.className = "error";
             }
         } finally {
@@ -2104,6 +2238,30 @@ class AgentInterface {
             return this._sanitizeStateJsonForPrompt(sm.getStateAsJson());
         }
         return "";
+    }
+
+    /**
+     * Copy camera overlay / force-attach options onto a sendPrompt options object.
+     * @param {object} target
+     * @param {object} source
+     */
+    _assignCameraSendOptions(target, source = {}) {
+        if (!target || !source) return target;
+        if (source.forceCameraImage === true) target.forceCameraImage = true;
+        if (source.skipCameraCountdown === true) target.skipCameraCountdown = true;
+        if (source.cameraCountdownSeconds != null) {
+            target.cameraCountdownSeconds = source.cameraCountdownSeconds;
+        }
+        if (source.cameraCountdownLabel != null) {
+            target.cameraCountdownLabel = source.cameraCountdownLabel;
+        }
+        if (source.cameraStatusPrefix != null) {
+            target.cameraStatusPrefix = source.cameraStatusPrefix;
+        }
+        if (typeof source.cameraOverlayIsActive === "function") {
+            target.cameraOverlayIsActive = source.cameraOverlayIsActive;
+        }
+        return target;
     }
 
     /**
@@ -2396,7 +2554,13 @@ class AgentInterface {
             sendCameraImage = !!this._sendCameraImage;
         }
         if (sendCameraImage) {
-            this._attachCurrentCameraToLastUserMessage(conversationMessages);
+            await this._attachCameraPhotoWithOverlays(conversationMessages, {
+                cameraCountdownSeconds: options.cameraCountdownSeconds,
+                skipCameraCountdown: options.skipCameraCountdown === true,
+                cameraCountdownLabel: options.cameraCountdownLabel,
+                cameraStatusPrefix: options.cameraStatusPrefix,
+                isActive: options.cameraOverlayIsActive
+            });
         }
 
         const model = this._resolveModel(agent, {
@@ -3140,7 +3304,9 @@ class AgentInterface {
                 this._sendCameraImage = !!this._sendCameraImageInput.checked;
             }
             if (this._sendCameraImage) {
-                this._attachCurrentCameraToLastUserMessage(conversationMessages);
+                await this._attachCameraPhotoWithOverlays(conversationMessages, {
+                    isActive: () => this._agentEnabled && this._sendInProgress
+                });
             }
 
             const model = this._resolveModel(agent, {
@@ -3339,7 +3505,7 @@ class AgentInterface {
         let spokenForFollowUp = "";
         let ok = false;
         try {
-            if (!text) {
+            if (!text && !options.allowEmpty) {
                 if (this._statusEl) {
                     this._statusEl.textContent = "Enter a prompt.";
                     this._statusEl.className = "warn";
@@ -3362,8 +3528,11 @@ class AgentInterface {
             });
             this._renderHistory();
             const conversationMessages = [...prior, { role: "user", content: outboundUser }];
-            const reply = await this.sendPrompt("", { messages: conversationMessages });
+            const sendOpts = { messages: conversationMessages };
+            this._assignCameraSendOptions(sendOpts, options);
+            const reply = await this.sendPrompt("", sendOpts);
             if (!modeStillCurrent()) {
+                this._clearCameraPhotoOverlays();
                 if (this.messageHistory.length && this.messageHistory[this.messageHistory.length - 1]?.role === "user") {
                     this.messageHistory.pop();
                     this._renderHistory();
@@ -3415,12 +3584,12 @@ class AgentInterface {
     /**
      * Used by external modules (e.g. SpeechToText model) to submit a prompt.
      * @param {string} text
-     * @param {{ fromSpeech?: boolean, speechTranscriber?: string }} [options] If fromSpeech, sends full user/assistant history plus current state and transcript; the introduction template is merged into the first user message only and stored in history. speechTranscriber labels the STT path for status/TTS hints.
+     * @param {{ fromSpeech?: boolean, speechTranscriber?: string, allowEmpty?: boolean, forceCameraImage?: boolean, cameraCountdownSeconds?: number, skipCameraCountdown?: boolean, cameraCountdownLabel?: string, cameraStatusPrefix?: string, cameraOverlayIsActive?: () => boolean }} [options] If fromSpeech, sends full user/assistant history plus current state and transcript; the introduction template is merged into the first user message only and stored in history. speechTranscriber labels the STT path for status/TTS hints. allowEmpty permits an empty prompt body. forceCameraImage attaches the current camera frame even if the checkbox is off. Camera countdown/flicker overlays run on every photo attach.
      * @returns {Promise<boolean>}
      */
     async submitPrompt(text, options = {}) {
         const next = String(text || "").trim();
-        if (!next) return false;
+        if (!next && options.allowEmpty !== true) return false;
         if (options.fromSpeech) {
             return await this._submitSpeechPrompt(next, options);
         }
@@ -3430,7 +3599,12 @@ class AgentInterface {
         if (!this._promptInput && !this._dashboardPromptInput) return false;
         if (this._promptInput) this._promptInput.value = next;
         if (this._dashboardPromptInput) this._dashboardPromptInput.value = next;
-        await this._onSend();
+        const sendOpts = {
+            allowEmpty: options.allowEmpty === true,
+            forceCameraImage: options.forceCameraImage === true
+        };
+        this._assignCameraSendOptions(sendOpts, options);
+        await this._onSend(sendOpts);
         return true;
     }
 
@@ -3438,7 +3612,7 @@ class AgentInterface {
      * Same request shape as voice prompts: prior user/assistant history plus one user message that starts with state machine JSON.
      * For proactive robot notices (e.g. strategies) so the model sees current state and conversation context.
      * @param {string} text Short text shown in the history bubble after the first turn (first turn may include merged introduction in the bubble).
-     * @param {{ contextLabel?: string, speechTranscriber?: string, forceCameraImage?: boolean }} [options] contextLabel prefixes the payload block (default "Robot notice"). speechTranscriber labels status/TTS hints. forceCameraImage attaches the current camera frame even if the checkbox is off.
+     * @param {{ contextLabel?: string, speechTranscriber?: string, forceCameraImage?: boolean, cameraCountdownSeconds?: number, skipCameraCountdown?: boolean, cameraCountdownLabel?: string, cameraStatusPrefix?: string, cameraOverlayIsActive?: () => boolean }} [options] contextLabel prefixes the payload block (default "Robot notice"). speechTranscriber labels status/TTS hints. forceCameraImage attaches the current camera frame even if the checkbox is off.
      * @returns {Promise<boolean>} false if agent off, empty text, send already in progress, or missing API key / agent
      */
     async submitPromptWithRobotState(text, options = {}) {
@@ -3505,7 +3679,7 @@ class AgentInterface {
             });
             this._renderHistory();
             const sendOpts = { messages: conversationMessages };
-            if (options.forceCameraImage === true) sendOpts.forceCameraImage = true;
+            this._assignCameraSendOptions(sendOpts, options);
             const reply = await this.sendPrompt("", sendOpts);
             this.messageHistory.push({
                 role: "assistant",
