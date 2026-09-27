@@ -13,6 +13,8 @@ class CustomMessagesGame {
     static REPEAT_GAP_MS = 1200;
     static FACE_STABLE_MS = 400;
     static _pendingOpenActionsList = false;
+    /** Debug: confirm popup before each triggered action runs, plus speech-edge console logs. */
+    static DEBUG_CONFIRM_TRIGGERS = true;
 
     static TRIGGERS = Object.freeze([
         { id: "gameLoad", label: "Game load" },
@@ -83,6 +85,9 @@ class CustomMessagesGame {
         this._actionsVoiceSelect = null;
         this._actionsNameInput = null;
         this._actionsTitleEl = null;
+        this._debugConfirmOverlay = null;
+        /** @type {((ok: boolean) => void)|null} */
+        this._debugConfirmResolve = null;
     }
 
     start() {
@@ -407,6 +412,7 @@ class CustomMessagesGame {
         this._stopRecording(true);
         this._closeEditor();
         this._closeActionsList();
+        this._closeDebugConfirm(false);
         this._hideChatHistoryEmphasis();
         const agent = this._getAgent();
         if (agent && typeof agent._stopSpeaking === "function") {
@@ -1913,6 +1919,10 @@ class CustomMessagesGame {
         }
 
         if (speaking && !this._lastSpeechSpeaking) {
+            this._debugLog("Speech started", {
+                speechTickBusy: this._speechTickBusy,
+                audioBusy: this._audioBusy
+            });
             for (const msg of this.messages) {
                 if (msg.loop !== "once") continue;
                 if (msg.trigger === "speechFinished") this._firedOnceIds.delete(msg.id);
@@ -1922,6 +1932,11 @@ class CustomMessagesGame {
         if (this._lastSpeechSpeaking && !speaking) {
             this._speechFinishedPending = true;
             this._speechFinishEpoch += 1;
+            this._debugLog("Speech finished", {
+                epoch: this._speechFinishEpoch,
+                speechTickBusy: this._speechTickBusy,
+                audioBusy: this._audioBusy
+            });
         }
         this._lastSpeechSpeaking = speaking;
 
@@ -1945,6 +1960,16 @@ class CustomMessagesGame {
         );
 
         if (!runnable.length) {
+            this._debugLog(
+                "Speech finished but nothing runnable",
+                candidates.map((m) => ({
+                    action: CustomMessagesGame.tileLabel(m),
+                    firedOnce: m.loop === "once" && this._firedOnceIds.has(m.id),
+                    constraintsMet: this._constraintsMet(m),
+                    constraints: CustomMessagesGame._constraintsSummary(m.constraints) || "none"
+                })),
+                { activeGame: this._activeSelectedGameName() || "(none)" }
+            );
             // Trigger already fired; keep pending while constraints may still become true.
             if (!waitingOnConstraints) this._speechFinishedPending = false;
             return;
@@ -1968,6 +1993,12 @@ class CustomMessagesGame {
                     mayRetrigger.push(msg);
                 }
             }
+            this._debugLog("Speech-finished play done", {
+                epochAtStart,
+                epochNow: this._speechFinishEpoch,
+                nestedFinish: this._speechFinishEpoch !== epochAtStart,
+                reArm: mayRetrigger.map((m) => CustomMessagesGame.tileLabel(m))
+            });
             if (this._speechFinishEpoch !== epochAtStart) {
                 // Speech finished while we were awaiting play (e.g. agent reply after a
                 // camera prompt). Re-arm retriggerable messages and keep pending so the
@@ -2005,6 +2036,11 @@ class CustomMessagesGame {
         if (!this._isActive(generation)) return false;
         if (!this._constraintsMet(msg)) return false;
 
+        if (CustomMessagesGame.DEBUG_CONFIRM_TRIGGERS) {
+            const confirmed = await this._debugConfirmTrigger(msg, generation);
+            if (!confirmed || !this._isActive(generation)) return false;
+        }
+
         const delayMs = CustomMessagesGame._normalizeDelaySec(msg.delaySec) * 1000;
         // Photo prompts own the delay as the on-camera countdown timer.
         const cameraOwnsDelay = msg.kind === "prompt" && !!msg.sendCamera;
@@ -2032,6 +2068,119 @@ class CustomMessagesGame {
         if (!this._isActive(generation)) return false;
         await this._playFollowingNext(msg, generation);
         return this._isActive(generation);
+    }
+
+    // —— Debug trigger confirm ———————————————————————————————————————
+
+    _debugLog(...args) {
+        if (!CustomMessagesGame.DEBUG_CONFIRM_TRIGGERS) return;
+        console.info("[Custom debug]", ...args);
+    }
+
+    static _triggerLabel(triggerId) {
+        const t = CustomMessagesGame.TRIGGERS.find((x) => x.id === triggerId);
+        return t ? t.label : String(triggerId || "Unknown");
+    }
+
+    /**
+     * Show a modal describing the fired trigger and its action; resolves true on Confirm.
+     * Serialized so overlapping triggers queue instead of stacking popups.
+     * @param {CustomMessage} msg
+     * @param {number} generation
+     * @returns {Promise<boolean>}
+     */
+    async _debugConfirmTrigger(msg, generation) {
+        while (this._debugConfirmOverlay) {
+            const waited = await this._sleep(40, generation);
+            if (!waited) return false;
+        }
+        if (!this._isActive(generation)) return false;
+
+        const triggerLabel = CustomMessagesGame._triggerLabel(msg.trigger);
+        const kindLabel =
+            msg.kind === "prompt"
+                ? msg.sendCamera
+                    ? "Prompt + camera photo"
+                    : "Prompt"
+                : msg.kind === "audio"
+                  ? "Audio clip"
+                  : "Text (TTS)";
+        const text = String(msg.text || "").trim();
+        const delaySec = CustomMessagesGame._normalizeDelaySec(msg.delaySec);
+        const constraints = CustomMessagesGame._constraintsSummary(msg.constraints) || "none";
+        const rows = [
+            ["Trigger", triggerLabel],
+            ["Action", `${kindLabel} — ${CustomMessagesGame.tileLabel(msg)}`],
+            ["Loop", msg.loop === "repeat" ? "Repeat" : "Play once"],
+            ["Delay", `${delaySec}s`],
+            ["Constraints", constraints],
+            ["Active game", this._activeSelectedGameName() || "(none)"]
+        ];
+        if (text) rows.push(["Text", text.length > 160 ? `${text.slice(0, 160)}…` : text]);
+
+        this._debugLog("Trigger fired:", triggerLabel, "→", kindLabel, CustomMessagesGame.tileLabel(msg));
+
+        return await new Promise((resolve) => {
+            const overlay = document.createElement("div");
+            overlay.className = "custom-messages-overlay custom-messages-debug-overlay";
+            overlay.setAttribute("role", "dialog");
+            overlay.setAttribute("aria-modal", "true");
+            overlay.setAttribute("aria-label", "Trigger fired");
+
+            const card = document.createElement("div");
+            card.className = "custom-messages-card";
+
+            const title = document.createElement("h2");
+            title.className = "custom-messages-title";
+            title.textContent = "Trigger fired (debug)";
+            card.appendChild(title);
+
+            for (const [label, value] of rows) {
+                const row = document.createElement("div");
+                row.className = "custom-messages-debug-row";
+                row.style.margin = "4px 0";
+                const strong = document.createElement("strong");
+                strong.textContent = `${label}: `;
+                row.appendChild(strong);
+                row.appendChild(document.createTextNode(value));
+                card.appendChild(row);
+            }
+
+            const actions = document.createElement("div");
+            actions.className = "custom-messages-actions";
+
+            const confirmBtn = document.createElement("button");
+            confirmBtn.type = "button";
+            confirmBtn.className = "custom-messages-submit";
+            confirmBtn.textContent = "Confirm";
+            confirmBtn.addEventListener("click", () => this._closeDebugConfirm(true));
+
+            const skipBtn = document.createElement("button");
+            skipBtn.type = "button";
+            skipBtn.className = "custom-messages-cancel secondary";
+            skipBtn.textContent = "Skip";
+            skipBtn.addEventListener("click", () => this._closeDebugConfirm(false));
+
+            actions.appendChild(confirmBtn);
+            actions.appendChild(skipBtn);
+            card.appendChild(actions);
+            overlay.appendChild(card);
+            document.body.appendChild(overlay);
+
+            this._debugConfirmOverlay = overlay;
+            this._debugConfirmResolve = resolve;
+            confirmBtn.focus();
+        });
+    }
+
+    /** @param {boolean} ok */
+    _closeDebugConfirm(ok) {
+        const overlay = this._debugConfirmOverlay;
+        const resolve = this._debugConfirmResolve;
+        this._debugConfirmOverlay = null;
+        this._debugConfirmResolve = null;
+        if (overlay) overlay.remove();
+        if (resolve) resolve(!!ok);
     }
 
     async _playFollowingNext(afterMsg, generation) {
