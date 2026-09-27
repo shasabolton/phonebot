@@ -66,7 +66,8 @@ class CustomMessagesGame {
         this._speechTickBusy = false;
         this._lastSpeechSpeaking = null;
         this._speechFinishedPending = false;
-        /** Bumps on each speak→silence edge so in-flight plays can detect nested finishes. */
+        /** Bump on each silence→speak / speak→silence edge so in-flight plays can detect nested speech. */
+        this._speechStartEpoch = 0;
         this._speechFinishEpoch = 0;
         this._firedOnceIds = new Set();
         this._playNextQueue = [];
@@ -100,6 +101,7 @@ class CustomMessagesGame {
         this._faceSince = 0;
         this._lastSpeechSpeaking = null;
         this._speechFinishedPending = false;
+        this._speechStartEpoch = 0;
         this._speechFinishEpoch = 0;
         const active = CustomMessagesGame.loadActiveWorkspace();
         this.messages = active.messages;
@@ -406,6 +408,7 @@ class CustomMessagesGame {
         this._stopFacePoll();
         this._stopSpeechPoll();
         this._speechFinishedPending = false;
+        this._speechStartEpoch = 0;
         this._speechFinishEpoch = 0;
         this._lastSpeechSpeaking = null;
         this._cancelSpeech();
@@ -1879,6 +1882,7 @@ class CustomMessagesGame {
         this._stopSpeechPoll();
         this._lastSpeechSpeaking = this._isSpeechSpeaking();
         this._speechFinishedPending = false;
+        this._speechStartEpoch = 0;
         this._speechFinishEpoch = 0;
         this._speechTimer = setInterval(() => {
             if (!this._isActive(generation)) {
@@ -1919,6 +1923,7 @@ class CustomMessagesGame {
         }
 
         if (speaking && !this._lastSpeechSpeaking) {
+            this._speechStartEpoch += 1;
             this._debugLog("Speech started", {
                 speechTickBusy: this._speechTickBusy,
                 audioBusy: this._audioBusy
@@ -1975,10 +1980,11 @@ class CustomMessagesGame {
             return;
         }
 
-        // Consume this finish; a nested speak→silence during play bumps the epoch
+        // Consume this finish; a nested speak→silence during play bumps the epochs
         // and sets pending again so the next idle tick can run.
         this._speechFinishedPending = false;
         const epochAtStart = this._speechFinishEpoch;
+        const startEpochAtStart = this._speechStartEpoch;
         /** @type {CustomMessage[]} */
         const mayRetrigger = [];
 
@@ -1993,24 +1999,23 @@ class CustomMessagesGame {
                     mayRetrigger.push(msg);
                 }
             }
+            // The play promise often resolves before the poller sees the falling edge
+            // of the reply TTS, so a speech *start* during play also counts as nested.
+            const nestedStart = this._speechStartEpoch !== startEpochAtStart;
+            const nestedFinish = this._speechFinishEpoch !== epochAtStart;
             this._debugLog("Speech-finished play done", {
-                epochAtStart,
-                epochNow: this._speechFinishEpoch,
-                nestedFinish: this._speechFinishEpoch !== epochAtStart,
+                nestedStart,
+                nestedFinish,
+                speakingNow: this._lastSpeechSpeaking,
                 reArm: mayRetrigger.map((m) => CustomMessagesGame.tileLabel(m))
             });
-            if (this._speechFinishEpoch !== epochAtStart) {
-                // Speech finished while we were awaiting play (e.g. agent reply after a
-                // camera prompt). Re-arm retriggerable messages and keep pending so the
-                // next idle tick can fire. Once-only text/audio clips are not re-armed —
+            if ((nestedStart || nestedFinish) && mayRetrigger.length) {
+                // Re-arm retriggerable messages (prompt replies / repeat loops). If the
+                // finish edge was already seen, pending is still true; otherwise the next
+                // falling edge sets it. Once-only text/audio clips are not re-armed —
                 // their own TTS would otherwise self-chain forever.
-                if (mayRetrigger.length) {
-                    for (const msg of mayRetrigger) {
-                        if (msg.loop === "once") this._firedOnceIds.delete(msg.id);
-                    }
-                    // pending already true from the nested falling edge; leave it set.
-                } else if (!waitingOnConstraints) {
-                    this._speechFinishedPending = false;
+                for (const msg of mayRetrigger) {
+                    if (msg.loop === "once") this._firedOnceIds.delete(msg.id);
                 }
             } else if (!waitingOnConstraints) {
                 this._speechFinishedPending = false;
