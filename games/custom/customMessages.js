@@ -14,7 +14,7 @@ class CustomMessagesGame {
     static FACE_STABLE_MS = 400;
     static _pendingOpenActionsList = false;
     /** Debug: confirm popup before each triggered action runs, plus speech-edge console logs. */
-    static DEBUG_CONFIRM_TRIGGERS = true;
+    static DEBUG_CONFIRM_TRIGGERS = false;
 
     static TRIGGERS = Object.freeze([
         { id: "gameLoad", label: "Game load" },
