@@ -20,14 +20,17 @@ class App {
         this._settingsOpen = false;
         this._settingsPages = null;
         this._applyingUrl = false;
+        /** Replaced on each URL restore so a stale async restore can tell it was superseded. */
+        this._urlRestoreToken = null;
         this._refreshDeviceFilterFromUrl();
         this.buildGUI();
     }
 
-    /** Stable query value for a robot name (`talking head` → `talking-head`). */
-    robotSlug(name) {
+    /** Stable query value for a name or id (`talking head` → `talking-head`, `madameZora` → `madame-zora`). */
+    urlSlug(name) {
         return String(name || "")
             .trim()
+            .replace(/([a-z0-9])([A-Z])/g, "$1-$2")
             .toLowerCase()
             .replace(/[^a-z0-9]+/g, "-")
             .replace(/^-+|-+$/g, "");
@@ -42,25 +45,72 @@ class App {
             const idx = Number(raw);
             return idx >= 0 && idx < robots.length ? idx : -1;
         }
-        const wantSlug = this.robotSlug(raw);
+        const wantSlug = this.urlSlug(raw);
         const wantName = raw.toLowerCase();
         for (let i = 0; i < robots.length; i++) {
             const name = String(robots[i]?.name || "");
             if (name.toLowerCase() === wantName) return i;
-            if (this.robotSlug(name) === wantSlug) return i;
+            if (this.urlSlug(name) === wantSlug) return i;
         }
         return -1;
     }
 
+    _robotUsesCharacters() {
+        return !!this.robot?.config?.characters && typeof window.PhonebotCharacters === "function";
+    }
+
+    /** Character matching ?character= by id or name slug (`madame-zora`). */
+    findCharacterByParam(param) {
+        const want = this.urlSlug(param);
+        if (!want || typeof window.PhonebotCharacters !== "function") return null;
+        const list = window.PhonebotCharacters.list();
+        return (
+            list.find((c) => this.urlSlug(c.id) === want) ||
+            list.find((c) => this.urlSlug(c.name) === want) ||
+            null
+        );
+    }
+
+    /**
+     * ?game= value for a dashboard catalog entry: mode ids and games/index.json ids by id
+     * (`parrot`, `fortune-teller`), browser-saved games by name.
+     */
+    gameUrlValue(entry) {
+        const id = String(entry?.id || "");
+        if (id.startsWith("custom:")) return this.urlSlug(entry.label);
+        return this.urlSlug(id.slice(id.indexOf(":") + 1));
+    }
+
+    /** Dashboard game matching ?game= by URL value or label slug. */
+    findGameByParam(param) {
+        const want = this.urlSlug(param);
+        const games = this.robot?.getDashboardGames?.() || [];
+        if (!want) return null;
+        return (
+            games.find((g) => this.gameUrlValue(g) === want) ||
+            games.find((g) => this.urlSlug(g.label) === want) ||
+            null
+        );
+    }
+
+    _currentGameUrlValue() {
+        const id = this.robot?.dashboardGameId?.() || "";
+        if (!id) return "";
+        const entry = this.robot.getGameCatalog().find((g) => g.id === id);
+        return this.gameUrlValue(entry || { id });
+    }
+
     readUrlSelection() {
         const params = new URLSearchParams(window.location.search);
-        const robot = params.get("robot");
-        const mode = params.get("mode");
-        const device = params.get("device");
+        const read = (name) => {
+            const value = params.get(name);
+            return value != null && String(value).trim() ? String(value).trim() : null;
+        };
         return {
-            robot: robot != null && String(robot).trim() ? String(robot).trim() : null,
-            mode: mode != null && String(mode).trim() ? String(mode).trim() : null,
-            device: device != null && String(device).trim() ? String(device).trim() : null
+            robot: read("robot"),
+            character: read("character"),
+            game: read("game"),
+            device: read("device")
         };
     }
 
@@ -88,16 +138,20 @@ class App {
         tx.setDeviceFilter(filter);
     }
 
+    /** Writes `robot`, `character`, `game` (in that order, after any other params). */
     syncUrlParams() {
-        if (this._applyingUrl) return;
+        if (this._applyingUrl || this._urlRestoreToken) return;
         const url = new URL(window.location.href);
+        const params = url.searchParams;
+        for (const key of ["mode", "robot", "character", "game"]) params.delete(key);
         if (this.robot?.name) {
-            url.searchParams.set("robot", this.robotSlug(this.robot.name));
-            if (this.robot.mode) url.searchParams.set("mode", String(this.robot.mode));
-            else url.searchParams.delete("mode");
-        } else {
-            url.searchParams.delete("robot");
-            url.searchParams.delete("mode");
+            params.set("robot", this.urlSlug(this.robot.name));
+            const character = this._robotUsesCharacters()
+                ? window.PhonebotCharacters.activeCharacter()
+                : null;
+            if (character) params.set("character", this.urlSlug(character.id));
+            const game = this._currentGameUrlValue();
+            if (game) params.set("game", game);
         }
         const next = `${url.pathname}${url.search}${url.hash}`;
         const cur = `${window.location.pathname}${window.location.search}${window.location.hash}`;
@@ -110,35 +164,68 @@ class App {
         if (!this.robotsData?.robots?.length || !this.robotListEl) return;
         if (this._applyingUrl) return;
         this._applyingUrl = true;
+        const selection = this.readUrlSelection();
+        let restore = false;
         try {
             this._refreshDeviceFilterFromUrl();
-            const { robot: robotParam, mode: modeParam } = this.readUrlSelection();
-            if (!robotParam) {
+            if (!selection.robot) {
                 if (this.robotListEl.value !== "") {
                     this.robotListEl.value = "";
                     this.setRobot(null, { skipUrlSync: true });
                 }
                 return;
             }
-            const idx = this.findRobotIndexByParam(robotParam);
+            const idx = this.findRobotIndexByParam(selection.robot);
             if (idx < 0) {
-                console.warn("URL robot not found:", robotParam);
+                console.warn("URL robot not found:", selection.robot);
                 return;
             }
             const config = this.robotsData.robots[idx];
             const sameRobot =
                 this.robot &&
-                this.robotSlug(this.robot.name) === this.robotSlug(config?.name);
+                this.urlSlug(this.robot.name) === this.urlSlug(config?.name);
             if (!sameRobot) {
                 this.robotListEl.value = String(idx);
-                this.setRobot(config, { mode: modeParam, skipUrlSync: true });
-            } else if (modeParam && this.robot && this.robot.mode !== modeParam) {
-                this.robot.setMode(modeParam);
+                this.setRobot(config, { skipUrlSync: true });
             }
-            this.syncUrlParams();
             this._applyDeviceFilterToTransmitter();
+            restore = true;
         } finally {
             this._applyingUrl = false;
+        }
+        if (restore) void this._restoreUrlCharacterAndGame(selection);
+    }
+
+    /** Character first: it decides which games the dashboard (and ?game=) may pick. */
+    async _restoreUrlCharacterAndGame({ character: characterParam, game: gameParam }) {
+        const token = {};
+        this._urlRestoreToken = token;
+        const robot = this.robot;
+        const stale = () => token !== this._urlRestoreToken || robot !== this.robot;
+        try {
+            if (characterParam && this._robotUsesCharacters()) {
+                await window.PhonebotCharacters.loadBuiltins();
+                if (stale()) return;
+                const character = this.findCharacterByParam(characterParam);
+                if (!character) console.warn("URL character not found:", characterParam);
+                else if (character.id !== window.PhonebotCharacters.activeId()) {
+                    window.PhonebotCharacters.setActive(character.id);
+                }
+            }
+            if (gameParam && robot) {
+                await robot.gamesIndexReady;
+                if (stale()) return;
+                const game = this.findGameByParam(gameParam);
+                if (!game) console.warn("URL game not found:", gameParam);
+                else if (game.id !== robot.dashboardGameId()) await robot.selectGame(game.id);
+            }
+        } catch (err) {
+            console.error("URL character/game restore failed:", err);
+        } finally {
+            if (token === this._urlRestoreToken) {
+                this._urlRestoreToken = null;
+                this.syncUrlParams();
+            }
         }
     }
 
@@ -161,11 +248,11 @@ class App {
         this.robotGuiMount.style.display = '';
         this.robot = new Robot(this.robotGuiMount, robotConfig, {
             dashboardContainer: this.dashboardMount,
-            initialMode: options.mode,
             onModeChange: () => {
                 if (!this._applyingUrl) this.syncUrlParams();
             },
             onRequestStart: () => this.requestStartFromFlow(),
+            onShowDashboard: () => this.closeSettings(),
             onStartFlowAction: (action, step) => this.handleStartFlowAction(action, step),
             startFlowShouldSkipStep: (step) => this.startFlowShouldSkipStep(step),
             resolveStartFlowStepText: (step) => this.resolveStartFlowStepText(step)
@@ -574,11 +661,11 @@ class App {
         }
     }
 
-    /** Header reads "Phone Robot", plus the active custom game's name when one is chosen. */
+    /** Header reads the active character's name, or "Phone Robot" when none is chosen. */
     updateTitle() {
         if (!this.titleEl) return;
-        const gameName = window.CustomMessagesGame?.activeGameName?.() || '';
-        this.titleEl.textContent = gameName ? `Phone Robot - ${gameName}` : 'Phone Robot';
+        const characterName = window.PhonebotCharacters?.activeCharacter?.()?.name || '';
+        this.titleEl.textContent = characterName || 'Phone Robot';
     }
 
     buildGUI() {
@@ -597,9 +684,16 @@ class App {
         title.className = 'app-title';
         this.titleEl = title;
         this.updateTitle();
+        const characterEvent = window.PhonebotCharacters?.CHANGE_EVENT;
+        if (characterEvent) {
+            window.addEventListener(characterEvent, () => {
+                this.updateTitle();
+                this.syncUrlParams();
+            });
+        }
         const gameEvent = window.CustomMessagesGame?.GAME_CHANGE_EVENT;
         if (gameEvent) {
-            window.addEventListener(gameEvent, () => this.updateTitle());
+            window.addEventListener(gameEvent, () => this.syncUrlParams());
         }
 
         const headerActions = document.createElement('div');

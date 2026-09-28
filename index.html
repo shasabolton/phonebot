@@ -541,6 +541,25 @@
     .custom-messages-games-overlay {
       z-index: 10004;
     }
+    .characters-row.is-active {
+      border-color: #111;
+      background: #fff;
+    }
+    .characters-bio {
+      margin: 4px 0 0;
+      font-weight: normal;
+    }
+    .characters-games-hint {
+      margin: 2px 0 0;
+    }
+    .characters-games {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0 8px;
+    }
+    .characters-games .custom-messages-camera-label {
+      font-weight: 500;
+    }
     .robot-dashboard-chat {
       flex: 1 1 auto;
       min-height: 0;
@@ -1637,14 +1656,13 @@
     "objectFilter.js",
     "pid.js",
     "games/simonSays.js",
-    "games/menuMode/menuMode.js",
     "games/parrot/parrot.js",
-    "games/escapeTheWall/escapeTheWall.js",
     "games/custom/customMessages.js",
     "playBilling.js",
     "groqModelSelect.js",
     "groqChatRecover.js",
     "agentInterface.js",
+    "characters/characters.js",
     "robots.js",
     "robot.js",
     "app.js"

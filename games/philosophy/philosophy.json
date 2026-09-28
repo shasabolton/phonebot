@@ -1,0 +1,25 @@
+{
+  "format": "phonebot.game.v1",
+  "exportedAt": "2026-09-28T00:00:00.000Z",
+  "name": "Philosophy",
+  "messages": [
+    {
+      "id": "philosophy-open",
+      "kind": "prompt",
+      "trigger": "gameLoad",
+      "loop": "once",
+      "delaySec": 0,
+      "constraints": { "face": "any" },
+      "text": "Have a short conversation with me about metaphysics.\nAsk whatever you like.",
+      "fileName": "",
+      "sendCamera": false,
+      "clearHistory": true,
+      "audioUrl": "",
+      "audioKey": "",
+      "audioBase64": null,
+      "audioMime": "",
+      "maxWords": 20,
+      "reasoningEffort": "low"
+    }
+  ]
+}

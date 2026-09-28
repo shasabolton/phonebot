@@ -126,6 +126,10 @@ class CustomMessagesGame {
     static LEGACY_EXPORT_FORMATS = Object.freeze(["phonebot.character.v1"]);
     /** Fired on window whenever the game store is saved. */
     static GAME_CHANGE_EVENT = "phonebot:gamechange";
+    /** Lists every game in the games folder; `type: "json"` entries show in Custom Games. */
+    static GAMES_INDEX_URL = "games/index.json";
+    /** @type {Promise<GamesIndexEntry[]>|null} */
+    static _builtinIndexPromise = null;
     static FACE_POLL_MS = 200;
     static SPEECH_POLL_MS = 150;
     static REPEAT_GAP_MS = 1200;
@@ -240,14 +244,13 @@ class CustomMessagesGame {
             ? CustomMessagesGame.loadGameWorkspace(editGameId)
             : CustomMessagesGame.loadActiveWorkspace();
         if (!active.gameId) {
-            // Actions only exist inside a saved game — send the player to the picker.
-            this._running = false;
-            const robot = this.robot;
-            setTimeout(() => {
-                if (robot?.mode === "custom" && typeof robot.setMode === "function") {
-                    void robot.setMode("customGames");
-                }
-            }, 0);
+            // No game selected: plain hold-to-talk chat with no actions or prompts.
+            this._editOnly = false;
+            this.messages = [];
+            this._activeGameId = null;
+            this._activeGameName = "";
+            this._showChatHistory();
+            this._armHoldToTalk();
             return;
         }
         this.messages = active.messages;
@@ -281,16 +284,79 @@ class CustomMessagesGame {
     }
 
     /**
-     * @returns {{ id: string, name: string }[]}
+     * `builtinId` is set on local copies of JSON games listed in games/index.json.
+     * @returns {{ id: string, name: string, builtinId: string }[]}
      */
     static listGames() {
         const store = CustomMessagesGame._loadStore();
         return (store.games || [])
             .map((c) => ({
                 id: String(c.id || ""),
-                name: String(c.name || "").trim() || "Untitled"
+                name: String(c.name || "").trim() || "Untitled",
+                builtinId: String(c.builtinId || "")
             }))
             .filter((c) => c.id);
+    }
+
+    /**
+     * Every games/index.json entry, JS and JSON. Resolves to [] when the index can't be
+     * fetched (e.g. opened from file://).
+     * @returns {Promise<GamesIndexEntry[]>}
+     */
+    static loadGamesIndex() {
+        if (!CustomMessagesGame._builtinIndexPromise) {
+            CustomMessagesGame._builtinIndexPromise = fetch(CustomMessagesGame.GAMES_INDEX_URL, {
+                cache: "no-cache"
+            })
+                .then((res) => {
+                    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                    return res.json();
+                })
+                .then((index) =>
+                    (Array.isArray(index?.games) ? index.games : [])
+                        .filter((g) => g && g.id && g.path)
+                        .map((g) => ({
+                            id: String(g.id),
+                            name: String(g.name || "").trim() || String(g.id),
+                            type: g.type === "js" ? "js" : "json",
+                            path: String(g.path),
+                            className: String(g.className || ""),
+                            computervisionModel: String(g.computervisionModel || "")
+                        }))
+                )
+                .catch((err) => {
+                    console.warn("Games index load failed:", err);
+                    CustomMessagesGame._builtinIndexPromise = null;
+                    return [];
+                });
+        }
+        return CustomMessagesGame._builtinIndexPromise;
+    }
+
+    /**
+     * JSON games shipped in the repo (games/index.json entries with `type: "json"`).
+     * @returns {Promise<GamesIndexEntry[]>}
+     */
+    static async listBuiltinGames() {
+        return (await CustomMessagesGame.loadGamesIndex()).filter((g) => g.type === "json");
+    }
+
+    /**
+     * Local copy of a built-in JSON game, imported from the repo on first use.
+     * @param {string} builtinId
+     * @returns {Promise<{ id: string, name: string }|null>}
+     */
+    static async ensureBuiltinGame(builtinId) {
+        const want = String(builtinId || "").trim();
+        if (!want) return null;
+        const existing = CustomMessagesGame.listGames().find((g) => g.builtinId === want);
+        if (existing) return { id: existing.id, name: existing.name };
+        const entry = (await CustomMessagesGame.listBuiltinGames()).find((g) => g.id === want);
+        if (!entry) return null;
+        const res = await fetch(entry.path, { cache: "no-cache" });
+        if (!res.ok) throw new Error(`HTTP ${res.status} loading ${entry.path}`);
+        const payload = await res.json();
+        return CustomMessagesGame.importGameFromExport(payload, { builtinId: want });
     }
 
     /**
@@ -329,11 +395,15 @@ class CustomMessagesGame {
 
     /** Name of the active saved game, or "" when none is chosen. */
     static activeGameName() {
+        return CustomMessagesGame.activeGame()?.name || "";
+    }
+
+    /** @returns {{ id: string, name: string, builtinId: string }|null} */
+    static activeGame() {
         const store = CustomMessagesGame._loadStore();
         const activeId = store.activeGameId ? String(store.activeGameId) : null;
-        if (!activeId) return "";
-        const game = (store.games || []).find((c) => c && c.id === activeId);
-        return game ? String(game.name || "").trim() || "Untitled" : "";
+        if (!activeId) return null;
+        return CustomMessagesGame.listGames().find((g) => g.id === activeId) || null;
     }
 
     /**
@@ -370,6 +440,14 @@ class CustomMessagesGame {
         store.activeGameId = want;
         CustomMessagesGame._saveStore(store);
         return true;
+    }
+
+    /** Clear the active game so Custom runs as plain chat. */
+    static deactivateGame() {
+        const store = CustomMessagesGame._loadStore();
+        if (!store.activeGameId) return;
+        store.activeGameId = null;
+        CustomMessagesGame._saveStore(store);
     }
 
     /**
@@ -463,9 +541,10 @@ class CustomMessagesGame {
     /**
      * Import a game backup file into the local store (new id; does not replace others).
      * @param {object} payload
+     * @param {{ builtinId?: string }} [options] links the copy to a games/index.json entry
      * @returns {Promise<{ id: string, name: string }|null>}
      */
-    static async importGameFromExport(payload) {
+    static async importGameFromExport(payload, { builtinId = "" } = {}) {
         if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
         const format = String(payload.format || "").trim();
         if (
@@ -484,7 +563,8 @@ class CustomMessagesGame {
         const game = {
             id: CustomMessagesGame._newGameId(),
             name,
-            messages: messages.map((m) => CustomMessagesGame._serializeMessage(m))
+            messages: messages.map((m) => CustomMessagesGame._serializeMessage(m)),
+            ...(builtinId ? { builtinId: String(builtinId) } : {})
         };
         if (!Array.isArray(store.games)) store.games = [];
         store.games.push(game);
@@ -710,7 +790,8 @@ class CustomMessagesGame {
                                   .map((c) => ({
                                       id: String(c.id || CustomMessagesGame._newGameId()),
                                       name: String(c.name || "").trim() || "Untitled",
-                                      messages: Array.isArray(c.messages) ? c.messages : []
+                                      messages: Array.isArray(c.messages) ? c.messages : [],
+                                      ...(c.builtinId ? { builtinId: String(c.builtinId) } : {})
                                   }))
                             : []
                     };
@@ -1176,7 +1257,7 @@ class CustomMessagesGame {
         this._renderTiles();
     }
 
-    /** Done / backdrop: offer a backup, then edit-only sessions return to the Custom Games picker. */
+    /** Done / backdrop: offer a backup, then edit-only sessions reopen the Custom Games picker. */
     _finishActionsList() {
         this._closeActionsList();
         if (this._activeGameId && this.messages.length) {
@@ -1187,9 +1268,10 @@ class CustomMessagesGame {
     }
 
     _leaveActionsList() {
-        if (this._editOnly && typeof this.robot?.setMode === "function") {
-            void this.robot.setMode("customGames");
-        }
+        if (!this._editOnly) return;
+        const robot = this.robot;
+        if (typeof robot?.restartCustomGame === "function") robot.restartCustomGame();
+        if (typeof robot?.openCustomGames === "function") robot.openCustomGames();
     }
 
     /** Games live only in browser storage; nudge the player to keep a backup file. */
@@ -2716,6 +2798,16 @@ class CustomMessagesGame {
 }
 
 /**
+ * @typedef {object} GamesIndexEntry
+ * @property {string} id
+ * @property {string} name
+ * @property {"js"|"json"} type JSON games play in the Custom engine; JS games are their own class.
+ * @property {string} path
+ * @property {string} className Global class for JS games.
+ * @property {string} computervisionModel Vision model a JS game needs ("" = robot default).
+ */
+
+/**
  * @typedef {object} CustomMessageConstraints
  * @property {"any"|"present"|"absent"} face
  */
@@ -2743,7 +2835,7 @@ class CustomMessagesGame {
  */
 
 /**
- * Custom Games mode — pick a saved custom-messages collection or start a new empty one.
+ * Custom Games picker — overlay to pick a saved custom-messages collection or start a new one.
  */
 class CustomGamesPicker {
     /**
@@ -2755,16 +2847,24 @@ class CustomGamesPicker {
         this._nameOverlay = null;
         this._listEl = null;
         this._closing = false;
+        /** @type {{ id: string, name: string, path: string }[]} */
+        this._builtinGames = [];
+        this._builtinBusy = false;
     }
 
-    start() {
-        this.stop();
+    open() {
+        this.close();
         this._closing = false;
         this._mount();
         void CustomMessagesGame.sweepOrphanAudio();
+        void CustomMessagesGame.listBuiltinGames().then((list) => {
+            if (this._closing) return;
+            this._builtinGames = list;
+            this._renderGameList();
+        });
     }
 
-    stop() {
+    close() {
         this._closing = true;
         this._closeNamePrompt();
         this._unmount();
@@ -2783,22 +2883,6 @@ class CustomGamesPicker {
             this._nameOverlay.parentElement.removeChild(this._nameOverlay);
         }
         this._nameOverlay = null;
-    }
-
-    _goCustom() {
-        if (this._closing) return;
-        const robot = this.robot;
-        if (robot && typeof robot.setMode === "function") {
-            void robot.setMode("custom");
-        }
-    }
-
-    _goMenu() {
-        if (this._closing) return;
-        const robot = this.robot;
-        if (robot && typeof robot.setMode === "function") {
-            void robot.setMode("menu");
-        }
     }
 
     _onNew() {
@@ -2843,22 +2927,48 @@ class CustomGamesPicker {
 
     /** Play / load this game (name control). */
     _onSelect(gameId) {
-        if (!CustomMessagesGame.activateGame(gameId)) return;
-        this._goCustom();
+        if (this._closing) return;
+        this.close();
+        void this.robot?.selectGame?.(`custom:${gameId}`);
     }
 
     /** Open the messages dialog without selecting (playing) the game. */
     _onEdit(gameId) {
-        CustomMessagesGame.requestEditGame(gameId);
-        this._goCustom();
+        if (this._closing) return;
+        this.close();
+        this.robot?.editCustomGame?.(gameId);
     }
 
-    _onDelete(gameId, gameName) {
+    /**
+     * Copy a built-in JSON game into the local store, then play or edit that copy.
+     * @param {string} builtinId
+     * @param {"play"|"edit"} action
+     */
+    async _onBuiltin(builtinId, action) {
+        if (this._builtinBusy) return;
+        this._builtinBusy = true;
+        try {
+            const saved = await CustomMessagesGame.ensureBuiltinGame(builtinId);
+            if (this._closing) return;
+            if (!saved) throw new Error(`Built-in game not found: ${builtinId}`);
+            if (action === "edit") this._onEdit(saved.id);
+            else this._onSelect(saved.id);
+        } catch (err) {
+            console.warn("Built-in game load failed:", err);
+            if (typeof window.alert === "function") {
+                window.alert("Could not load that game.");
+            }
+        } finally {
+            this._builtinBusy = false;
+        }
+    }
+
+    _onDelete(gameId, gameName, isBuiltinCopy = false) {
         const label = String(gameName || "this game").trim() || "this game";
-        const ok =
-            typeof window.confirm === "function"
-                ? window.confirm(`Delete “${label}”? This cannot be undone.`)
-                : true;
+        const question = isBuiltinCopy
+            ? `Reset “${label}” to the built-in version? Your edits will be lost.`
+            : `Delete “${label}”? This cannot be undone.`;
+        const ok = typeof window.confirm === "function" ? window.confirm(question) : true;
         if (!ok) return;
         if (!CustomMessagesGame.deleteGame(gameId)) return;
         this._renderGameList();
@@ -2920,9 +3030,7 @@ class CustomGamesPicker {
             if (!name) return;
             const saved = CustomMessagesGame.createNamedGame(name);
             if (!saved) return;
-            this._closeNamePrompt();
-            CustomMessagesGame.requestEditGame(saved.id);
-            this._goCustom();
+            this._onEdit(saved.id);
         });
 
         const cancelBtn = document.createElement("button");
@@ -2949,7 +3057,9 @@ class CustomGamesPicker {
         list.innerHTML = "";
 
         const games = CustomMessagesGame.listGames();
-        if (!games.length) {
+        const copied = new Set(games.map((g) => g.builtinId).filter(Boolean));
+        const builtins = this._builtinGames.filter((b) => !copied.has(b.id));
+        if (!games.length && !builtins.length) {
             const empty = document.createElement("p");
             empty.className = "custom-messages-hint muted";
             empty.textContent = "No games yet. Tap New to create one.";
@@ -2958,42 +3068,68 @@ class CustomGamesPicker {
         }
 
         for (const game of games) {
-            const tile = document.createElement("div");
-            tile.className = "custom-messages-tile custom-messages-game-row";
-            tile.setAttribute("role", "listitem");
-
-            const nameBtn = document.createElement("button");
-            nameBtn.type = "button";
-            nameBtn.className = "custom-messages-game-row-name";
-            nameBtn.textContent = game.name;
-            nameBtn.title = `Play ${game.name}`;
-            nameBtn.addEventListener("click", () => this._onSelect(game.id));
-
-            const editBtn = document.createElement("button");
-            editBtn.type = "button";
-            editBtn.className = "custom-messages-tile-edit";
-            editBtn.textContent = "Edit";
-            editBtn.setAttribute("aria-label", `Edit ${game.name}`);
-            editBtn.addEventListener("click", (e) => {
-                e.stopPropagation();
-                this._onEdit(game.id);
-            });
-
-            const deleteBtn = document.createElement("button");
-            deleteBtn.type = "button";
-            deleteBtn.className = "custom-messages-tile-edit custom-messages-game-delete";
-            deleteBtn.textContent = "Delete";
-            deleteBtn.setAttribute("aria-label", `Delete ${game.name}`);
-            deleteBtn.addEventListener("click", (e) => {
-                e.stopPropagation();
-                this._onDelete(game.id, game.name);
-            });
-
-            tile.appendChild(nameBtn);
-            tile.appendChild(editBtn);
-            tile.appendChild(deleteBtn);
-            list.appendChild(tile);
+            const isBuiltinCopy = !!game.builtinId;
+            list.appendChild(
+                this._buildGameRow(game.name, {
+                    onPlay: () => this._onSelect(game.id),
+                    onEdit: () => this._onEdit(game.id),
+                    removeLabel: isBuiltinCopy ? "Reset" : "Delete",
+                    onRemove: () => this._onDelete(game.id, game.name, isBuiltinCopy)
+                })
+            );
         }
+        // Built-ins stay repo-only until first Play/Edit copies them into the local store.
+        for (const builtin of builtins) {
+            list.appendChild(
+                this._buildGameRow(builtin.name, {
+                    onPlay: () => void this._onBuiltin(builtin.id, "play"),
+                    onEdit: () => void this._onBuiltin(builtin.id, "edit")
+                })
+            );
+        }
+    }
+
+    /**
+     * @param {string} name
+     * @param {{ onPlay: () => void, onEdit: () => void, removeLabel?: string, onRemove?: () => void }} handlers
+     */
+    _buildGameRow(name, { onPlay, onEdit, removeLabel = "", onRemove = null }) {
+        const tile = document.createElement("div");
+        tile.className = "custom-messages-tile custom-messages-game-row";
+        tile.setAttribute("role", "listitem");
+
+        const nameBtn = document.createElement("button");
+        nameBtn.type = "button";
+        nameBtn.className = "custom-messages-game-row-name";
+        nameBtn.textContent = name;
+        nameBtn.title = `Play ${name}`;
+        nameBtn.addEventListener("click", onPlay);
+        tile.appendChild(nameBtn);
+
+        const editBtn = document.createElement("button");
+        editBtn.type = "button";
+        editBtn.className = "custom-messages-tile-edit";
+        editBtn.textContent = "Edit";
+        editBtn.setAttribute("aria-label", `Edit ${name}`);
+        editBtn.addEventListener("click", (e) => {
+            e.stopPropagation();
+            onEdit();
+        });
+        tile.appendChild(editBtn);
+
+        if (onRemove) {
+            const removeBtn = document.createElement("button");
+            removeBtn.type = "button";
+            removeBtn.className = "custom-messages-tile-edit custom-messages-game-delete";
+            removeBtn.textContent = removeLabel;
+            removeBtn.setAttribute("aria-label", `${removeLabel} ${name}`);
+            removeBtn.addEventListener("click", (e) => {
+                e.stopPropagation();
+                onRemove();
+            });
+            tile.appendChild(removeBtn);
+        }
+        return tile;
     }
 
     _mount() {
@@ -3042,7 +3178,7 @@ class CustomGamesPicker {
         cancelBtn.type = "button";
         cancelBtn.className = "custom-messages-cancel secondary";
         cancelBtn.textContent = "Cancel";
-        cancelBtn.addEventListener("click", () => this._goMenu());
+        cancelBtn.addEventListener("click", () => this.close());
 
         actions.appendChild(newBtn);
         actions.appendChild(uploadBtn);
@@ -3051,7 +3187,7 @@ class CustomGamesPicker {
 
         overlay.appendChild(card);
         overlay.addEventListener("click", (e) => {
-            if (e.target === overlay) this._goMenu();
+            if (e.target === overlay) this.close();
         });
         document.body.appendChild(overlay);
         this._overlay = overlay;

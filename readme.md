@@ -241,7 +241,7 @@ verified webhook marks it paid.
 Useful checks:
 
 - Every mode starts without billing; only hosted AI requests at A$0 credit open the popup.
-  Non-AI games (Parrot, Menu, Escape the Wall) never prompt.
+  Non-AI games (Parrot) never prompt.
 - The popup lets the player choose A$1–A$10 (default A$2). Credit equals the payment;
   costs are marked up by `ARCADE_AI_MARKUP` (default 2×). Bottom bar + top-up dock always
   visible; the Worker clamps top-ups to the A$10 cap.

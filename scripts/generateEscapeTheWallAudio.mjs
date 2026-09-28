@@ -1,6 +1,6 @@
 /**
  * Generate "Escape the Wall" story WAVs via Groq Orpheus (Austin).
- * Chunks stay ≤200 chars (Orpheus limit). Output goes to audio/.
+ * Chunks stay ≤200 chars (Orpheus limit). Output goes to games/escapeTheWall/audio/.
  *
  * Usage (PowerShell — key stays in the terminal, not chat):
  *   $env:GROQ_API_KEY = Read-Host "Paste Groq key"
@@ -17,7 +17,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const OUT_DIR = path.join(__dirname, "..", "audio");
+const OUT_DIR = path.join(__dirname, "..", "games", "escapeTheWall", "audio");
 const STORY_PATH = path.join(__dirname, "..", "stories", "escape the wall.md");
 const API_URL = "https://api.groq.com/openai/v1/audio/speech";
 const MODEL = "canopylabs/orpheus-v1-english";
@@ -211,28 +211,10 @@ async function synthesize(apiKey, text, attempt = 1) {
 }
 
 function writeManifest() {
-    const manifestPath = path.join(OUT_DIR, "files.json");
-    let existing = [];
-    try {
-        const raw = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
-        if (Array.isArray(raw?.files)) existing = raw.files.map(String);
-        else if (Array.isArray(raw)) existing = raw.map(String);
-    } catch (_) {}
-
     const storyFiles = CLIPS.filter((c) => {
         const p = path.join(OUT_DIR, c.file);
         return fs.existsSync(p) && fs.statSync(p).size >= 44;
     }).map((c) => c.file);
-
-    const merged = [];
-    const seen = new Set();
-    for (const name of [...existing, ...storyFiles]) {
-        if (!name || seen.has(name)) continue;
-        seen.add(name);
-        merged.push(name);
-    }
-
-    fs.writeFileSync(manifestPath, JSON.stringify({ files: merged }, null, 2) + "\n");
 
     const storyManifest = {
         voice: VOICE,
@@ -302,7 +284,7 @@ async function main() {
     }
 
     const have = writeManifest();
-    console.log(`Done. ${have}/${CLIPS.length} story clips in audio/.`);
+    console.log(`Done. ${have}/${CLIPS.length} story clips in games/escapeTheWall/audio/.`);
 }
 
 const isDirectRun =

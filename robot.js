@@ -1,4 +1,9 @@
 class Robot {
+    /** Runs JSON and browser-saved games; picked through those games, not the dashboard dropdown. */
+    static CUSTOM_MODE = "custom";
+    static GAMES_GROUP = "Games";
+    static CUSTOM_GROUP = "Custom games";
+
     constructor(container, config, options = {}) {
         this.config = typeof config === 'string' ? JSON.parse(config) : config;
         this.container = container;
@@ -48,6 +53,21 @@ class Robot {
         this._startFlowStep = 0;
         this._startFlowBusy = false;
         this._startFlowBrowserSwitchWired = false;
+        this._charactersPanel = null;
+        this._charactersBtn = null;
+        /** `id|voice` of the character whose voice was last applied ("" = none). */
+        this._appliedCharacterKey = "";
+        /** Stored active character id; the event also fires for edits and repo loads. */
+        this._activeCharacterId = window.PhonebotCharacters?.activeId?.() || null;
+        this._onCharacterChange = () => this._onActiveCharacterChanged();
+        this._onShowDashboard =
+            typeof options.onShowDashboard === "function" ? options.onShowDashboard : null;
+        this._destroyed = false;
+        /** @type {GamesIndexEntry[]} */
+        this._gamesIndex = [];
+        /** Config modes merged with JS index games once games/index.json loads. */
+        this._modesMap = null;
+        this._onCustomGamesChange = () => this._populateModeSelect();
 
         this.stateMachine = null;
         this.strategies = null;
@@ -55,15 +75,35 @@ class Robot {
         // Mix clock rematches control inputs + processing → actuators at mixFrequencyHz.
         // Modes sparsely override actuator mixes (and later, behaviors).
 
+        // Each page load starts with no game selected.
+        if (this._usesGamesIndex()) window.CustomMessagesGame.deactivateGame();
         this._initModeFromConfig(options.initialMode);
         this.buildRobot();
         if (options.dashboardContainer) {
             this.attachDashboard(options.dashboardContainer);
         }
         this.buildGUI();
+        if (this._charactersEnabled()) {
+            window.addEventListener(this._characterChangeEvent(), this._onCharacterChange);
+            this._applyCharacterVoice();
+        }
+        if (this._usesGamesIndex()) {
+            window.addEventListener(window.CustomMessagesGame.GAME_CHANGE_EVENT, this._onCustomGamesChange);
+        }
+        /** Resolves once games/index.json is merged into the game catalog. */
+        this.gamesIndexReady = this._loadGamesIndex();
     }
 
     destroy() {
+        this._destroyed = true;
+        window.removeEventListener(this._characterChangeEvent(), this._onCharacterChange);
+        if (window.CustomMessagesGame?.GAME_CHANGE_EVENT) {
+            window.removeEventListener(window.CustomMessagesGame.GAME_CHANGE_EVENT, this._onCustomGamesChange);
+        }
+        this._charactersPanel?.close();
+        this._charactersPanel = null;
+        this._customGamesPicker?.close();
+        this._customGamesPicker = null;
         this._dismissStartFlowOverlay();
         this._stopLocalGame();
         this.teardownJoysticks();
@@ -430,7 +470,7 @@ class Robot {
             return;
         }
         const preferred = String(preferredMode || "").trim();
-        if (preferred && modes[preferred]) {
+        if (preferred && modes[preferred] && this._isModeAllowed(preferred)) {
             this.mode = preferred;
             return;
         }
@@ -443,45 +483,231 @@ class Robot {
         this.mode = first || null;
     }
 
+    /** Config modes plus modes added for JS games in games/index.json. */
     _getModesMap() {
+        if (this._modesMap) return this._modesMap;
         const modes = this.config?.modes;
         if (!modes || typeof modes !== "object" || Array.isArray(modes)) return null;
         if (!Object.keys(modes).length) return null;
         return modes;
     }
 
-    /**
-     * Modes shown in the Game dropdown. `custom` stays in config for Custom Games → New
-     * but is hidden here — use Custom Games to open that workspace.
-     */
-    getModeList() {
-        const modes = this._getModesMap();
-        if (!modes) return [];
-        return Object.entries(modes)
-            .filter(([id]) => id !== "custom")
-            .map(([id, cfg]) => ({
-                id,
-                label: String(cfg?.label || id)
-            }));
+    /** Robots with a Custom mode list games/index.json and browser-saved games. */
+    _usesGamesIndex() {
+        return !!this.config?.modes?.custom && typeof window.CustomMessagesGame === "function";
     }
 
-    /** Map internal mode id to the dropdown option to highlight. */
-    _displayModeIdForSelect(modeId = this.mode) {
-        const id = String(modeId || "");
-        if (id === "custom") return "customGames";
-        return id;
+    _loadGamesIndex() {
+        if (!this._usesGamesIndex()) return Promise.resolve();
+        return window.CustomMessagesGame.loadGamesIndex().then((entries) => {
+            if (this._destroyed) return;
+            this._gamesIndex = entries;
+            this._modesMap = { ...this.config.modes, ...this._indexModes(entries) };
+            this._populateModeSelect();
+        });
+    }
+
+    /** A mode for each JS index game that no config mode already runs. */
+    _indexModes(entries) {
+        const claimed = new Set();
+        for (const [id, cfg] of Object.entries(this.config.modes || {})) {
+            claimed.add(id);
+            if (cfg?.game) claimed.add(String(cfg.game));
+        }
+        const extra = {};
+        for (const entry of entries) {
+            if (entry.type !== "js" || claimed.has(entry.id)) continue;
+            extra[entry.id] = { label: entry.name, game: entry.id };
+            if (entry.computervisionModel) extra[entry.id].computervisionModel = entry.computervisionModel;
+        }
+        return extra;
+    }
+
+    /** Dropdown id for a browser-saved game; copies of index JSON games use the index id. */
+    _catalogIdForSavedGame(game) {
+        const builtinId = String(game?.builtinId || "");
+        const inIndex = this._gamesIndex.some((e) => e.type === "json" && e.id === builtinId);
+        return inIndex ? `game:${builtinId}` : `custom:${game.id}`;
+    }
+
+    /**
+     * Every game the dashboard can list: modes (including JS index games), then JSON index
+     * games (`game:<indexId>`) and games saved in this browser (`custom:<gameId>`).
+     * The Custom mode itself is left out; its games are listed instead.
+     * @returns {{ id: string, label: string, group: string }[]}
+     */
+    getGameCatalog() {
+        const modes = this._getModesMap();
+        if (!modes) return [];
+        const catalog = Object.entries(modes)
+            .filter(([id]) => id !== Robot.CUSTOM_MODE)
+            .map(([id, cfg]) => ({ id, label: String(cfg?.label || id), group: Robot.GAMES_GROUP }));
+        if (!this._usesGamesIndex()) return catalog;
+        for (const entry of this._gamesIndex) {
+            if (entry.type !== "json") continue;
+            catalog.push({ id: `game:${entry.id}`, label: entry.name, group: Robot.CUSTOM_GROUP });
+        }
+        for (const game of window.CustomMessagesGame.listGames()) {
+            const id = this._catalogIdForSavedGame(game);
+            if (!id.startsWith("custom:")) continue;
+            catalog.push({ id, label: game.name, group: Robot.CUSTOM_GROUP });
+        }
+        return catalog;
+    }
+
+    /** Games in the dashboard dropdown: the active character's games plus the default mode. */
+    getDashboardGames() {
+        const allowed = this._characterModeFilter();
+        return this.getGameCatalog().filter((g) => !allowed || allowed.has(g.id));
+    }
+
+    /** Games a character can pick from: the whole catalog except the default mode. */
+    getCharacterGameOptions() {
+        const home = String(this.config.defaultMode || "").trim();
+        return this.getGameCatalog().filter((g) => g.id !== home);
+    }
+
+    /**
+     * Play a dropdown entry: a mode id, or a JSON / saved game run by the Custom engine.
+     * @param {string} gameId
+     */
+    async selectGame(gameId) {
+        const id = String(gameId || "");
+        const Game = window.CustomMessagesGame;
+        if (!id.startsWith("game:") && !id.startsWith("custom:")) return this.setMode(id);
+        if (typeof Game !== "function") return false;
+        let savedId = id.slice(id.indexOf(":") + 1);
+        if (id.startsWith("game:")) {
+            try {
+                savedId = (await Game.ensureBuiltinGame(savedId))?.id;
+            } catch (err) {
+                console.warn("Built-in game load failed:", err);
+                return false;
+            }
+        }
+        if (!savedId || !Game.activateGame(savedId)) return false;
+        return this.restartCustomGame();
+    }
+
+    /** Open a saved game's editor; the game is not made active and no triggers run. */
+    editCustomGame(savedId) {
+        const Game = window.CustomMessagesGame;
+        if (typeof Game !== "function" || !savedId) return false;
+        Game.requestEditGame(savedId);
+        return this.restartCustomGame();
+    }
+
+    /** Enter Custom mode, or restart it so it loads the active (or pending-edit) game. */
+    restartCustomGame() {
+        if (this.mode !== Robot.CUSTOM_MODE) return this.setMode(Robot.CUSTOM_MODE);
+        this._stopLocalGame();
+        if (!this.getStartFlowConfig() || !this._startFlowOverlay) {
+            this._syncLocalGameForMode();
+        }
+        return true;
+    }
+
+    /** Custom Games picker overlay; whatever mode is running keeps running underneath. */
+    openCustomGames() {
+        const PickerClass = window.CustomGamesPicker;
+        if (typeof PickerClass !== "function") {
+            console.error("CustomGamesPicker is unavailable. Check games/custom/customMessages.js loading.");
+            return;
+        }
+        if (typeof this._onShowDashboard === "function") this._onShowDashboard();
+        if (!this._customGamesPicker) this._customGamesPicker = new PickerClass(this);
+        this._customGamesPicker.open();
+    }
+
+    /** Robot config opts in with `characters: true` (talking head). */
+    _charactersEnabled() {
+        return !!this.config?.characters && typeof window.PhonebotCharacters === "function";
+    }
+
+    _characterChangeEvent() {
+        return window.PhonebotCharacters?.CHANGE_EVENT || "phonebot:characterchange";
+    }
+
+    _activeCharacter() {
+        return this._charactersEnabled() ? window.PhonebotCharacters.activeCharacter() : null;
+    }
+
+    /** Mode ids the active character plays, plus the default mode; null = show all. */
+    _characterModeFilter() {
+        const character = this._activeCharacter();
+        if (!character) return null;
+        const allowed = new Set(character.games);
+        const home = String(this.config.defaultMode || "").trim();
+        if (home) allowed.add(home);
+        return allowed;
+    }
+
+    /** Custom mode stays reachable for any character; its games are filtered in the dropdown. */
+    _isModeAllowed(modeId) {
+        if (modeId === Robot.CUSTOM_MODE) return true;
+        const allowed = this._characterModeFilter();
+        return !allowed || allowed.has(modeId);
+    }
+
+    openCharacters() {
+        const PanelClass = window.CharactersPanel;
+        if (typeof PanelClass !== "function") {
+            console.error("CharactersPanel is unavailable. Check characters/characters.js loading.");
+            return;
+        }
+        if (!this._charactersPanel) this._charactersPanel = new PanelClass(this);
+        this._charactersPanel.open();
+    }
+
+    _syncCharactersButton() {
+        if (!this._charactersBtn) return;
+        const name = this._activeCharacter()?.name;
+        this._charactersBtn.textContent = name ? `Characters (${name})` : "Characters";
+    }
+
+    _applyCharacterVoice() {
+        const character = this._activeCharacter();
+        const voice = String(character?.voice || "").trim();
+        const key = character ? `${character.id}|${voice}` : "";
+        if (key === this._appliedCharacterKey) return;
+        this._appliedCharacterKey = key;
+        if (voice && typeof this.agentInterface?.setTtsVoice === "function") {
+            this.agentInterface.setTtsVoice(voice);
+        }
+    }
+
+    _onActiveCharacterChanged() {
+        this._populateModeSelect();
+        this._syncCharactersButton();
+        this._applyCharacterVoice();
+        const activeId = window.PhonebotCharacters.activeId() || null;
+        if (activeId !== this._activeCharacterId) {
+            this._activeCharacterId = activeId;
+            this.showNoGame();
+            return;
+        }
+        if (this.mode && !this._isModeAllowed(this.mode)) {
+            const home =
+                String(this.config.defaultMode || "").trim() || this.getDashboardGames()[0]?.id;
+            if (home) void this.setMode(home);
+        }
+    }
+
+    /** Dropdown entry for what's playing: the mode, or the active game in Custom mode. */
+    dashboardGameId() {
+        if (this.mode !== "custom") return String(this.mode || "");
+        const active = window.CustomMessagesGame?.activeGame?.();
+        return active ? this._catalogIdForSavedGame(active) : "";
     }
 
     _syncModeSelectValue() {
         const select = this._modeSelect;
         if (!select) return;
-        const want = this._displayModeIdForSelect(this.mode);
-        if ([...select.options].some((o) => o.value === want)) {
+        const want = this.dashboardGameId();
+        if (want && [...select.options].some((o) => o.value === want)) {
             select.value = want;
-            return;
-        }
-        if (this.mode && [...select.options].some((o) => o.value === this.mode)) {
-            select.value = this.mode;
+        } else {
+            select.selectedIndex = -1;
         }
     }
 
@@ -540,12 +766,6 @@ class Robot {
         if (this.mode === want) {
             this._syncModeSelectValue();
             if (!this._modeReady) return this._activateCurrentMode();
-            // Re-open Custom Games picker if already on that mode (e.g. after Cancel stayed put).
-            if (want === "customGames") {
-                this._stopLocalGame();
-                this._modeReady = true;
-                this._syncLocalGameForMode();
-            }
             return true;
         }
         ++this._modeActivationGeneration;
@@ -667,16 +887,6 @@ class Robot {
             this._localGame.start();
             return;
         }
-        if (gameId === "menuMode") {
-            const GameClass = window.MenuMode;
-            if (typeof GameClass !== "function") {
-                console.error("MenuMode is unavailable. Check games/menuMode/menuMode.js loading.");
-                return;
-            }
-            this._localGame = new GameClass(this);
-            this._localGame.start();
-            return;
-        }
         if (gameId === "parrot") {
             const GameClass = window.ParrotGame;
             if (typeof GameClass !== "function") {
@@ -684,28 +894,6 @@ class Robot {
                 return;
             }
             this._localGame = new GameClass(this);
-            this._localGame.start();
-            return;
-        }
-        if (gameId === "escapeTheWall") {
-            const GameClass = window.EscapeTheWallStory;
-            if (typeof GameClass !== "function") {
-                console.error("EscapeTheWallStory is unavailable. Check games/escapeTheWall/escapeTheWall.js loading.");
-                return;
-            }
-            this._localGame = new GameClass(this);
-            this._localGame.start();
-            return;
-        }
-        if (gameId === "customGames") {
-            const PickerClass = window.CustomGamesPicker;
-            if (typeof PickerClass !== "function") {
-                console.error(
-                    "CustomGamesPicker is unavailable. Check games/custom/customMessages.js loading."
-                );
-                return;
-            }
-            this._localGame = new PickerClass(this);
             this._localGame.start();
             return;
         }
@@ -717,14 +905,60 @@ class Robot {
             }
             this._localGame = new GameClass(this);
             this._localGame.start();
+            return;
         }
+        const entry = this._gamesIndex.find((e) => e.type === "js" && e.id === gameId);
+        if (entry) void this._startIndexJsGame(entry);
+    }
+
+    /** Run a JS game from games/index.json, loading its script first if needed. */
+    async _startIndexJsGame(entry) {
+        const generation = this._modeActivationGeneration;
+        const mode = this.mode;
+        if (typeof window[entry.className] !== "function") {
+            try {
+                await new Promise((resolve, reject) => {
+                    const script = document.createElement("script");
+                    script.src = entry.path;
+                    script.onload = resolve;
+                    script.onerror = () => reject(new Error(`Failed to load ${entry.path}`));
+                    document.body.appendChild(script);
+                });
+            } catch (err) {
+                console.error("Game script load failed:", err);
+                return;
+            }
+        }
+        const GameClass = window[entry.className];
+        if (typeof GameClass !== "function") {
+            console.error(`${entry.className} is unavailable. Check ${entry.path} loading.`);
+            return;
+        }
+        const stillWanted =
+            generation === this._modeActivationGeneration &&
+            this.mode === mode &&
+            this._modeReady &&
+            !this._localGame;
+        if (!stillWanted) return;
+        this._localGame = new GameClass(this);
+        this._localGame.start();
     }
 
     onLocalGameEnded() {
         this._modeReady = false;
-        if (String(this.name || "").toLowerCase() === "talking head" && this.mode !== "menu") {
-            void this.setMode("menu");
+        if (String(this.name || "").toLowerCase() === "talking head") this.showNoGame();
+    }
+
+    /** Default mode with no game selected; Custom with no active game is the plain chat. */
+    showNoGame() {
+        window.CustomMessagesGame?.deactivateGame?.();
+        const home = String(this.config.defaultMode || "").trim();
+        if (!home) return;
+        if (this.mode === home) {
+            this._stopLocalGame();
+            this._modeReady = false;
         }
+        void this.setMode(home);
     }
 
     _rebuildActuatorMixes({ restoreEnabled = null, startFromConfig = false } = {}) {
@@ -1360,8 +1594,7 @@ class Robot {
 
     buildModesGUI(container) {
         if (!container) return;
-        const modes = this.getModeList();
-        if (!modes.length) return;
+        if (!this._getModesMap()) return;
 
         const wrap = document.createElement("div");
         wrap.className = "robot-modes";
@@ -1370,30 +1603,9 @@ class Robot {
         label.textContent = "Game";
         const select = document.createElement("select");
         select.className = "robot-modes-select";
-        for (const { id, label: text } of modes) {
-            const opt = document.createElement("option");
-            opt.value = id;
-            opt.textContent = text;
-            select.appendChild(opt);
-        }
-        if (this.mode && modes.some((m) => m.id === this.mode)) {
-            select.value = this.mode;
-        } else {
-            this._syncModeSelectValue();
-        }
-        // While editing a custom workspace, the dropdown shows Custom Games. Clearing on focus
-        // lets choosing Custom Games again fire `change` and reopen the picker.
-        select.addEventListener("focus", () => {
-            if (this.mode === "custom" && select.value === "customGames") {
-                select.selectedIndex = -1;
-            }
-        });
-        select.addEventListener("blur", () => {
-            if (!select.value) this._syncModeSelectValue();
-        });
         select.addEventListener("change", () => {
             select.disabled = true;
-            void this.setMode(select.value).finally(() => {
+            void this.selectGame(select.value).finally(() => {
                 select.disabled = false;
                 this._syncModeSelectValue();
             });
@@ -1403,6 +1615,32 @@ class Robot {
         wrap.appendChild(select);
         container.appendChild(wrap);
         this._modeSelect = select;
+        this._populateModeSelect();
+    }
+
+    /** Rebuild Game dropdown options (character, games index or saved games changed). */
+    _populateModeSelect() {
+        const select = this._modeSelect;
+        if (!select) return;
+        select.replaceChildren();
+        /** @type {Map<string, HTMLOptGroupElement>} */
+        const groups = new Map();
+        for (const { id, label: text, group } of this.getDashboardGames()) {
+            const opt = document.createElement("option");
+            opt.value = id;
+            opt.textContent = text;
+            if (group === Robot.GAMES_GROUP) {
+                select.appendChild(opt);
+                continue;
+            }
+            if (!groups.has(group)) {
+                const optgroup = document.createElement("optgroup");
+                optgroup.label = group;
+                groups.set(group, optgroup);
+                select.appendChild(optgroup);
+            }
+            groups.get(group).appendChild(opt);
+        }
         this._syncModeSelectValue();
     }
 
@@ -1411,6 +1649,25 @@ class Robot {
         const title = document.createElement('h3');
         title.textContent = this.name || 'Robot';
         this.container.appendChild(title);
+
+        if (this._charactersEnabled()) {
+            const charactersBtn = document.createElement("button");
+            charactersBtn.type = "button";
+            charactersBtn.className = "robot-characters-btn";
+            charactersBtn.addEventListener("click", () => this.openCharacters());
+            this.container.appendChild(charactersBtn);
+            this._charactersBtn = charactersBtn;
+            this._syncCharactersButton();
+        }
+
+        if (this._usesGamesIndex()) {
+            const customGamesBtn = document.createElement("button");
+            customGamesBtn.type = "button";
+            customGamesBtn.className = "robot-custom-games-btn";
+            customGamesBtn.textContent = "Custom Games";
+            customGamesBtn.addEventListener("click", () => this.openCustomGames());
+            this.container.appendChild(customGamesBtn);
+        }
 
         // Modes live on the dashboard when the robot has a custom/default dashboard host.
         if (!this.dashboardContainer) {

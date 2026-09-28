@@ -8,8 +8,6 @@ class AgentInterface {
     static STORAGE_REMEMBER = "phonebot.agent.remember";
     /** Sentinel `<select>` value: insert live state JSON (not a file path). */
     static TEMPLATE_VALUE_STATE = "__robot_state_json__";
-    static FORTUNE_TELLER_FINALE_EVERY = 8;
-    static FORTUNE_TELLER_FINALE_LINE = "Can you please give me my grand finale fortune now";
 
     /**
      * @param {Robot} robot
@@ -68,8 +66,6 @@ class AgentInterface {
         this._fullSpeechPromptInput = null;
         this._agentEnabled = true;
         this._sendInProgress = false;
-        /** True while Simon Says countdown/pose-send cycle is running (blocks overlapping sends). */
-        this._simonPoseCycleRunning = false;
         /** True while conversation-mode timed mic capture / transcribe is running. */
         this._conversationListenRunning = false;
         this._billingPaused = false;
@@ -83,7 +79,7 @@ class AgentInterface {
         /** When true, attach current camera JPEG to the last user message on send. */
         this._sendCameraImage = this.config.sendCameraImage !== false;
         this._sendCameraImageInput = null;
-        /** DOM overlay for camera countdown (Simon pose / photo send). */
+        /** DOM overlay for camera countdown (photo send). */
         this._countdownOverlayEl = null;
         this._countdownNumberEl = null;
         this._countdownLabelEl = null;
@@ -125,69 +121,14 @@ class AgentInterface {
     static PTT_RELEASE_TAIL_MS = 500;
     static PTT_MAX_RECORD_MS = 20000;
 
-    /** True when a hold-to-talk game is active (Chat, Philosophy, 20 Questions, Fortune Teller, Custom). */
+    /** True when a hold-to-talk game is active (Custom runs every JSON game). */
     _isConversationMode() {
-        const mode = String(this.robot?.mode || "").trim().toLowerCase();
-        return (
-            mode === "chat" ||
-            mode === "philosophy" ||
-            mode === "twentyquestions" ||
-            mode === "fortuneteller" ||
-            mode === "custom"
-        );
+        return String(this.robot?.mode || "").trim().toLowerCase() === "custom";
     }
 
     /** Custom Messages game — its prompt actions carry their own instructions. */
     _isCustomMessagesMode() {
         return String(this.robot?.mode || "").trim().toLowerCase() === "custom";
-    }
-
-    _isFortuneTellerMode() {
-        return String(this.robot?.mode || "").trim().toLowerCase() === "fortuneteller";
-    }
-
-    /** True on player turns 8, 16, 24… before this utterance is stored (ignores mode kickoff). */
-    _isFortuneTellerFinaleDue() {
-        if (!this._isFortuneTellerMode()) return false;
-        const userCount = (this.messageHistory || []).filter(
-            (m) => m && m.role === "user" && !m.isKickoff
-        ).length;
-        return (userCount + 1) % AgentInterface.FORTUNE_TELLER_FINALE_EVERY === 0;
-    }
-
-    _joinFortuneTellerFinale(userText) {
-        const finale = AgentInterface.FORTUNE_TELLER_FINALE_LINE;
-        const base = String(userText || "").trim();
-        if (!base) return finale;
-        if (base.includes(finale)) return base;
-        return `${base} ${finale}`;
-    }
-
-    /** Append the finale line to this player utterance when due. Visible in history. */
-    _withFortuneTellerFinaleIfDue(userText) {
-        const base = String(userText || "");
-        if (!this._isFortuneTellerFinaleDue()) return base;
-        return this._joinFortuneTellerFinale(base);
-    }
-
-    /** True when Groq Simon Says AI is active (not the local pose-match game). */
-    _isSimonSaysMode() {
-        const mode = String(this.robot?.mode || "").trim().toLowerCase();
-        if (mode === "simonsaysai") return true;
-        if (mode === "simonsaysposematch") return false;
-        const selected = String(this._templateSelect?.value || "").trim();
-        if (/simonSaysPrompt/i.test(selected)) return true;
-        const list = Array.isArray(this.promptTemplates) ? this.promptTemplates : [];
-        const tpl = list.find((t) => String(t?.path || "").trim() === selected);
-        if (/simon\s*says/i.test(String(tpl?.name || ""))) return true;
-        const marker = /you are simon in a game of simon says/i;
-        if (marker.test(String(this._promptInput?.value || ""))) return true;
-        for (const m of this.messageHistory || []) {
-            if (marker.test(String(m?.fullPrompt || "")) || marker.test(String(m?.text || ""))) {
-                return true;
-            }
-        }
-        return false;
     }
 
     /**
@@ -308,7 +249,7 @@ class AgentInterface {
         return m.chat || null;
     }
 
-    /** Active mode declares an LLM start prompt (not Parrot / menu). */
+    /** Active mode declares an LLM start prompt (not Parrot). */
     _modeHasPromptTemplate() {
         return !!String(this.robot?._getActiveModeConfig?.()?.promptTemplate || "").trim();
     }
@@ -522,7 +463,6 @@ class AgentInterface {
         if (!this._sendBtn) return;
         this._sendBtn.disabled =
             this._sendInProgress ||
-            this._simonPoseCycleRunning ||
             this._conversationListenRunning ||
             !this._agentEnabled;
     }
@@ -1485,7 +1425,6 @@ class AgentInterface {
             this._agentEnabled &&
             !this._pttRecording &&
             !this._sendInProgress &&
-            !this._simonPoseCycleRunning &&
             !this._conversationListenRunning &&
             (this._pttState === "idle" || this._pttState === "hidden") &&
             (this._isConversationMode() || this._isParrotMode() || !!this._pttWaitResolve)
@@ -1979,7 +1918,7 @@ class AgentInterface {
     }
 
     /**
-     * After TTS finishes: conversation mode shows hold-to-talk; Simon Says queues pose capture.
+     * After TTS finishes: conversation mode shows hold-to-talk.
      * @param {string} spoken
      */
     async _afterAgentSpoke(spoken) {
@@ -1987,12 +1926,7 @@ class AgentInterface {
         if (!content || !this._voiceOn) return;
         const finished = await this._speakAsync(content);
         if (!finished || !this._agentEnabled) return;
-        if (this._isConversationMode()) {
-            this._armConversationPtt();
-            return;
-        }
-        if (!this._isSimonSaysMode()) return;
-        this._queueSimonSaysPoseCapture(this._speakGeneration);
+        if (this._isConversationMode()) this._armConversationPtt();
     }
 
     /** Show hold-to-talk when a conversation turn completes without TTS. */
@@ -2006,79 +1940,6 @@ class AgentInterface {
      */
     _queueConversationListen(_generation) {
         this._armConversationPtt();
-    }
-
-    /**
-     * @param {number} generation Cancel if `_speakGeneration` changes
-     */
-    _queueSimonSaysPoseCapture(generation) {
-        setTimeout(() => {
-            void this._runSimonSaysPoseCapture(generation);
-        }, 0);
-    }
-
-    /**
-     * @param {number} generation
-     */
-    async _runSimonSaysPoseCapture(generation) {
-        if (generation !== this._speakGeneration) return;
-        if (!this._isSimonSaysMode() || !this._agentEnabled || !this._voiceOn) return;
-        if (this._simonPoseCycleRunning) return;
-        if (this._sendInProgress) {
-            // Manual/API send in flight — retry once it clears (same generation).
-            setTimeout(() => {
-                void this._runSimonSaysPoseCapture(generation);
-            }, 300);
-            return;
-        }
-
-        this._simonPoseCycleRunning = true;
-        this._syncSendButtonState();
-        try {
-            if (this._statusEl) {
-                this._statusEl.textContent = "Get ready — pose photo in 5…";
-                this._statusEl.className = "muted";
-            }
-            const camera = this._getCameraSensor();
-            const videoEl = camera?.getVideoElement?.();
-            if (!videoEl || videoEl.readyState < 2) {
-                if (this._statusEl) {
-                    this._statusEl.textContent = "Pose photo failed — start the camera first.";
-                    this._statusEl.className = "warn";
-                }
-                return;
-            }
-            if (this._sendInProgress) {
-                if (this._statusEl) {
-                    this._statusEl.textContent = "Pose photo skipped — another send is in progress.";
-                    this._statusEl.className = "warn";
-                }
-                return;
-            }
-            if (this._statusEl) {
-                this._statusEl.textContent = "Sending pose image…";
-                this._statusEl.className = "muted";
-            }
-            await this.submitPromptWithRobotState("here is the pose image", {
-                contextLabel: "User",
-                speechTranscriber: "simon pose",
-                forceCameraImage: true,
-                cameraCountdownSeconds: 5,
-                cameraCountdownLabel: "Pose!",
-                cameraStatusPrefix: "Pose photo in",
-                cameraOverlayIsActive: () =>
-                    generation === this._speakGeneration && !!this._agentEnabled
-            });
-        } catch (err) {
-            console.error("Simon Says pose capture error:", err);
-            if (this._statusEl) {
-                this._statusEl.textContent = err?.message || "Pose photo failed";
-                this._statusEl.className = "error";
-            }
-        } finally {
-            this._simonPoseCycleRunning = false;
-            this._syncSendButtonState();
-        }
     }
 
     _extractSpokenText(contentText, rawText) {
@@ -2126,6 +1987,25 @@ class AgentInterface {
         const tag = String(label || "User");
         if (state) return `Current state (json):\n${state}\n\n${tag}:\n${text}`;
         return `${tag}:\n${text}`;
+    }
+
+    /** Active character's bio for robots with `characters: true`; "" when none. */
+    _characterPrompt() {
+        if (!this.robot?.config?.characters) return "";
+        const character = window.PhonebotCharacters?.activeCharacter?.();
+        if (!character) return "";
+        return [
+            `You are ${character.name}. Stay in character in every reply, including while running games.`,
+            String(character.bio || "").trim()
+        ]
+            .filter(Boolean)
+            .join("\n\n");
+    }
+
+    /** Prepend the character bio as a system message. */
+    _withCharacterPrompt(messages) {
+        const prompt = this._characterPrompt();
+        return prompt ? [{ role: "system", content: prompt }, ...messages] : messages;
     }
 
     _resolveMaxTokens(agent, messages) {
@@ -2592,6 +2472,7 @@ class AgentInterface {
                 conversationMessages.push({ role: "user", content: prompt });
             }
         }
+        conversationMessages = this._withCharacterPrompt(conversationMessages);
 
         let sendCameraImage;
         if (options.forceCameraImage === true) {
@@ -2764,11 +2645,16 @@ class AgentInterface {
         if (responseFormat?.type === "json_object") {
             generationConfig.responseMimeType = "application/json";
         }
+        const systemInstruction = conversationMessages
+            .filter((m) => m?.role === "system" && typeof m.content === "string")
+            .map((m) => m.content)
+            .join("\n\n");
         const result = await window.GeminiAudioTurn.generateContent({
             apiKey,
             baseUrl: window.GeminiAudioTurn.resolveBaseUrl(agent, this.defaultBaseUrl),
             model: model || window.GeminiAudioTurn.DEFAULT_MODEL,
             contents: window.GeminiAudioTurn.chatMessagesToContents(conversationMessages),
+            systemInstruction: systemInstruction || undefined,
             generationConfig
         });
         const contentText = this._stripThinkingBlocks(String(result.text || "").trim());
@@ -3081,7 +2967,9 @@ class AgentInterface {
             audioBlob,
             typedUserText,
             textHistory: Array.isArray(textHistory) ? textHistory : this._buildPriorConversationMessages(),
-            systemOrIntro,
+            systemOrIntro: [this._characterPrompt(), String(systemOrIntro || "").trim()]
+                .filter(Boolean)
+                .join("\n\n"),
             stateJson,
             voice: voice || this._ttsVoice,
             temperature: Number.isFinite(agent.temperature) ? agent.temperature : 0.3,
@@ -3130,16 +3018,14 @@ class AgentInterface {
             const stateBlock = this._buildCurrentStateForIntroductionPrompt();
             const intro = await this._fetchIntroductionPromptContent();
             const prior = this._buildPriorConversationMessages();
-            const finaleDue = this._isFortuneTellerFinaleDue();
             const result = await this.sendGeminiAudioTurn({
                 audioBlob: blob,
                 textHistory: prior,
                 systemOrIntro: intro,
                 stateJson: stateBlock,
-                voice: this._ttsVoice,
-                typedUserText: finaleDue ? AgentInterface.FORTUNE_TELLER_FINALE_LINE : ""
+                voice: this._ttsVoice
             });
-            let userTranscript = String(result?.userTranscript || "").trim();
+            const userTranscript = String(result?.userTranscript || "").trim();
             const assistantTranscript = String(result?.assistantTranscript || "").trim();
             if (!userTranscript) {
                 if (this._statusEl) {
@@ -3157,7 +3043,6 @@ class AgentInterface {
                 this._armConversationPtt();
                 return false;
             }
-            if (finaleDue) userTranscript = this._joinFortuneTellerFinale(userTranscript);
             const fullUserContent = this._buildUserTurnContent(stateBlock, "User said", userTranscript);
             const outboundUser = await this._mergeIntroductionIntoFirstUserMessage(fullUserContent, prior.length);
             this.messageHistory.push({
@@ -3205,8 +3090,6 @@ class AgentInterface {
             if (generation === this._speakGeneration && this._agentEnabled) {
                 if (this._isConversationMode()) {
                     this._queueConversationListen(this._speakGeneration);
-                } else if (this._isSimonSaysMode()) {
-                    this._queueSimonSaysPoseCapture(this._speakGeneration);
                 }
             }
             if (this._statusEl && this._agentEnabled) {
@@ -3240,7 +3123,7 @@ class AgentInterface {
             }
             return false;
         }
-        if (this._simonPoseCycleRunning || this._conversationListenRunning) {
+        if (this._conversationListenRunning) {
             this._stopSpeaking();
         }
 
@@ -3260,14 +3143,13 @@ class AgentInterface {
         let ok = false;
         try {
             const stateBlock = this._buildCurrentStateForIntroductionPrompt();
-            const userText = this._withFortuneTellerFinaleIfDue(text);
-            const fullUserContent = this._buildUserTurnContent(stateBlock, "User said", userText);
+            const fullUserContent = this._buildUserTurnContent(stateBlock, "User said", text);
             const prior = this._buildPriorConversationMessages();
             const outboundUser = await this._mergeIntroductionIntoFirstUserMessage(fullUserContent, prior.length);
             const conversationMessages = [...prior, { role: "user", content: outboundUser }];
             this.messageHistory.push({
                 role: "user",
-                text: prior.length ? userText : outboundUser,
+                text: prior.length ? text : outboundUser,
                 fullPrompt: outboundUser,
                 at: new Date().toISOString()
             });
@@ -3344,14 +3226,16 @@ class AgentInterface {
             await this.ensureSessionGroqModels();
             const marker = `__PHONEBOT_TRANSCRIPT_${crypto.randomUUID()}__`;
             const stateBlock = this._buildCurrentStateForIntroductionPrompt();
-            const spokenSlot = this._withFortuneTellerFinaleIfDue(marker);
-            const userTemplate = this._buildUserTurnContent(stateBlock, "User said", spokenSlot);
+            const userTemplate = this._buildUserTurnContent(stateBlock, "User said", marker);
             const prior = this._buildPriorConversationMessages();
             const outboundTemplate = await this._mergeIntroductionIntoFirstUserMessage(
                 userTemplate,
                 prior.length
             );
-            const conversationMessages = [...prior, { role: "user", content: outboundTemplate }];
+            const conversationMessages = this._withCharacterPrompt([
+                ...prior,
+                { role: "user", content: outboundTemplate }
+            ]);
             if (this._sendCameraImageInput) {
                 this._sendCameraImage = !!this._sendCameraImageInput.checked;
             }
@@ -3431,13 +3315,12 @@ class AgentInterface {
 
             const transcript = String(result?.transcript || "").trim();
             if (!transcript) throw new Error("No speech was detected.");
-            const userText = this._withFortuneTellerFinaleIfDue(transcript);
             const outboundUser = outboundTemplate.replace(marker, transcript);
             const contentText = String(result?.contentText || "").trim();
             const rawText = JSON.stringify(result?.chat || {});
             this.messageHistory.push({
                 role: "user",
-                text: prior.length ? userText : outboundUser,
+                text: prior.length ? transcript : outboundUser,
                 fullPrompt: outboundUser,
                 at: new Date().toISOString()
             });
@@ -3533,8 +3416,8 @@ class AgentInterface {
             }
             return;
         }
-        // Manual send wins over an in-progress Simon pose / conversation listen cycle.
-        if (this._simonPoseCycleRunning || this._conversationListenRunning) {
+        // Manual send wins over an in-progress conversation listen cycle.
+        if (this._conversationListenRunning) {
             this._stopSpeaking();
         }
         const text = this._readPromptText();
@@ -3567,14 +3450,13 @@ class AgentInterface {
             }
             if (!modeStillCurrent()) return;
             const stateBlock = this._buildCurrentStateForIntroductionPrompt();
-            const userText = this._withFortuneTellerFinaleIfDue(text);
-            const fullUserContent = this._buildUserTurnContent(stateBlock, "User", userText);
+            const fullUserContent = this._buildUserTurnContent(stateBlock, "User", text);
             const prior = this._buildPriorConversationMessages();
             const outboundUser = await this._mergeIntroductionIntoFirstUserMessage(fullUserContent, prior.length);
             if (!modeStillCurrent()) return;
             pendingUserTurn = {
                 role: "user",
-                text: prior.length ? userText : outboundUser,
+                text: prior.length ? text : outboundUser,
                 fullPrompt: outboundUser,
                 isKickoff: isKickoff || undefined,
                 at: new Date().toISOString()
@@ -3691,10 +3573,7 @@ class AgentInterface {
             }
             return false;
         }
-        if (
-            (this._simonPoseCycleRunning || this._conversationListenRunning) &&
-            options.speechTranscriber !== "simon pose"
-        ) {
+        if (this._conversationListenRunning) {
             this._stopSpeaking();
         }
 

@@ -1,0 +1,94 @@
+{
+  "format": "phonebot.game.v1",
+  "name": "Menu",
+  "messages": [
+    {
+      "id": "menu-intro",
+      "kind": "audio",
+      "trigger": "gameLoad",
+      "loop": "once",
+      "delaySec": 0,
+      "constraints": { "face": "any" },
+      "text": "Hello there. I am your friendly talking head on the wall. I like to play word games, talk philosophy, and you should know, I am also a pretty good fortune teller. Please choose a game from the menu.",
+      "fileName": "intro.wav",
+      "audioUrl": "games/menuMode/audio/intro.wav"
+    },
+    {
+      "id": "menu-nudge-0",
+      "kind": "audio",
+      "trigger": "playNext",
+      "loop": "once",
+      "delaySec": 5,
+      "constraints": { "face": "any" },
+      "text": "Wanna play Simon says, 20 questions, discuss the nature of reality, just pick a game from the menu.",
+      "fileName": "nudge-0.wav",
+      "audioUrl": "games/menuMode/audio/nudge-0.wav"
+    },
+    {
+      "id": "menu-nudge-1",
+      "kind": "audio",
+      "trigger": "playNext",
+      "loop": "once",
+      "delaySec": 5,
+      "constraints": { "face": "any" },
+      "text": "Hey, did I mention, I can see the future. Just say the word and all will be revealed",
+      "fileName": "nudge-1.wav",
+      "audioUrl": "games/menuMode/audio/nudge-1.wav"
+    },
+    {
+      "id": "menu-nudge-2a",
+      "kind": "audio",
+      "trigger": "playNext",
+      "loop": "once",
+      "delaySec": 5,
+      "constraints": { "face": "any" },
+      "text": "Ok maybe you wanna hear a joke. Wana hear a joke. Ha? No.",
+      "fileName": "nudge-2a.wav",
+      "audioUrl": "games/menuMode/audio/nudge-2a.wav"
+    },
+    {
+      "id": "menu-nudge-2b",
+      "kind": "audio",
+      "trigger": "playNext",
+      "loop": "once",
+      "delaySec": 0,
+      "constraints": { "face": "any" },
+      "text": "You don't like fun and frivality. Come on, just pick something from the menu",
+      "fileName": "nudge-2b.wav",
+      "audioUrl": "games/menuMode/audio/nudge-2b.wav"
+    },
+    {
+      "id": "menu-nudge-3",
+      "kind": "audio",
+      "trigger": "playNext",
+      "loop": "once",
+      "delaySec": 5,
+      "constraints": { "face": "any" },
+      "text": "Okay lets see who can hold their breath the longest. Ready. 1, 2, 3, go",
+      "fileName": "nudge-3.wav",
+      "audioUrl": "games/menuMode/audio/nudge-3.wav"
+    },
+    {
+      "id": "menu-nudge-4",
+      "kind": "audio",
+      "trigger": "playNext",
+      "loop": "once",
+      "delaySec": 5,
+      "constraints": { "face": "any" },
+      "text": "Oh I could do this all day. You are looking at a breath holding champion.",
+      "fileName": "nudge-4.wav",
+      "audioUrl": "games/menuMode/audio/nudge-4.wav"
+    },
+    {
+      "id": "menu-nudge-5",
+      "kind": "audio",
+      "trigger": "playNext",
+      "loop": "once",
+      "delaySec": 5,
+      "constraints": { "face": "any" },
+      "text": "Is anybody out there. Who will play with me",
+      "fileName": "nudge-5.wav",
+      "audioUrl": "games/menuMode/audio/nudge-5.wav"
+    }
+  ]
+}

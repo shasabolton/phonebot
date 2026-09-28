@@ -1,0 +1,43 @@
+{
+  "format": "phonebot.game.v1",
+  "exportedAt": "2026-09-28T06:11:30.196Z",
+  "name": "Simon Says Custom",
+  "messages": [
+    {
+      "id": "cm-mui97kjk-9iathd",
+      "kind": "prompt",
+      "trigger": "gameLoad",
+      "loop": "once",
+      "delaySec": 0,
+      "constraints": {
+        "face": "any"
+      },
+      "text": "You are Simon in a game of Simon says.\nAsk for strictly one particular pose. It must be above the waist.",
+      "fileName": "",
+      "sendCamera": false,
+      "clearHistory": true,
+      "audioBase64": null,
+      "audioMime": "",
+      "maxWords": 20,
+      "reasoningEffort": "low"
+    },
+    {
+      "id": "cm-mui99msj-0se5rz",
+      "kind": "prompt",
+      "trigger": "speechFinished",
+      "loop": "once",
+      "delaySec": 20,
+      "constraints": {
+        "face": "present"
+      },
+      "text": "Here is a photo of my pose. If the previous command started with Simon Says but my pose does not match, then tell me I did it wrong and repeat the same command. If the previous command did not start with Simon says, and the pose matches, tell me you tricked me, then ask for a new pose. Omit Simon says from the start with 50% probability or if 4 Simon says commands have been done in a row",
+      "fileName": "",
+      "sendCamera": true,
+      "clearHistory": false,
+      "audioBase64": null,
+      "audioMime": "",
+      "maxWords": 50,
+      "reasoningEffort": "low"
+    }
+  ]
+}

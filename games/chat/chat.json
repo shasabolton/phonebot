@@ -1,0 +1,25 @@
+{
+  "format": "phonebot.game.v1",
+  "exportedAt": "2026-09-28T00:00:00.000Z",
+  "name": "Chat",
+  "messages": [
+    {
+      "id": "chat-open",
+      "kind": "prompt",
+      "trigger": "gameLoad",
+      "loop": "once",
+      "delaySec": 0,
+      "constraints": { "face": "any" },
+      "text": "Offer to chat with the person in front of you.",
+      "fileName": "",
+      "sendCamera": false,
+      "clearHistory": true,
+      "audioUrl": "",
+      "audioKey": "",
+      "audioBase64": null,
+      "audioMime": "",
+      "maxWords": 50,
+      "reasoningEffort": "low"
+    }
+  ]
+}

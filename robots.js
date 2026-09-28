@@ -107,6 +107,7 @@ window.ROBOTS_DATA = {
         {
             name: "talking head",
             dashboard: "talkingHead",
+            characters: true,
             startFlow: {
                 autoStart: true,
                 steps: [
@@ -130,7 +131,7 @@ window.ROBOTS_DATA = {
             },
             bodyPlan: "A face with one servo for mouth, one for eye yaw, and one for eyebrows",
             controlPlan:
-                "Eyes track BlazeFace/MoveNet nose x ~70% of the time; otherwise random glances with held positions. Eyebrows use the same random hold/jitter mix (no nose tracking). Games: Menu / Chat / Fortune Teller / 20 Questions / Philosophy / Simon Says (Camera) / Parrot / Story: Escape the Wall. Lean in to speak on conversation games. Groq Orpheus or Gemini TTS / Mp3 → audioPlayer → audioMouthFilter → mouth servo.",
+                "Eyes track BlazeFace/MoveNet nose x ~70% of the time; otherwise random glances with held positions. Eyebrows use the same random hold/jitter mix (no nose tracking). Starts with no game selected (plain hold-to-talk chat). Games: Parrot / Custom Games (Menu, Chat, Philosophy, Fortune Teller, 20 Questions, Simon Says Custom, Story: Escape the Wall). Lean in to speak on conversation games. Groq Orpheus or Gemini TTS / Mp3 → audioPlayer → audioMouthFilter → mouth servo.",
             actuators: [
                 {
                     type: "servo",
@@ -296,56 +297,11 @@ window.ROBOTS_DATA = {
                     name: "Computer vision"
                 }
             ],
-            defaultMode: "menu",
+            defaultMode: "custom",
             modes: {
-                menu: {
-                    label: "Menu",
-                    game: "menuMode",
-                    computervisionModel: "blazeface"
-                },
-                escapeTheWall: {
-                    label: "Story: Escape the Wall",
-                    game: "escapeTheWall",
-                    computervisionModel: "blazeface"
-                },
-                chat: {
-                    label: "Chat",
-                    promptTemplate: "promptTemplates/chatPrompt.txt",
-                    endCondition: "manualOrTimeout",
-                    computervisionModel: "blazeface"
-                },
-                fortuneTeller: {
-                    label: "Fortune Teller",
-                    promptTemplate: "promptTemplates/fortuneTellerPrompt.txt",
-                    endCondition: "manualOrTimeout",
-                    computervisionModel: "blazeface"
-                },
-                twentyQuestions: {
-                    label: "20 Questions",
-                    promptTemplate: "promptTemplates/20QuestionsPrompt.txt",
-                    endCondition: "gameFinished",
-                    computervisionModel: "blazeface"
-                },
-                philosophy: {
-                    label: "Philosophy",
-                    promptTemplate: "promptTemplates/philosophyPrompt.txt",
-                    endCondition: "manualOrTimeout",
-                    computervisionModel: "blazeface"
-                },
-                simonSaysAi: {
-                    label: "Simon Says (Camera)",
-                    promptTemplate: "promptTemplates/simonSaysPrompt.txt",
-                    endCondition: "gameFinished",
-                    computervisionModel: "blazeface"
-                },
                 parrot: {
                     label: "Parrot",
                     game: "parrot",
-                    computervisionModel: "blazeface"
-                },
-                customGames: {
-                    label: "Custom Games",
-                    game: "customGames",
                     computervisionModel: "blazeface"
                 },
                 custom: {
@@ -364,13 +320,7 @@ window.ROBOTS_DATA = {
                 speechModel: "canopylabs/orpheus-v1-english",
                 cameraCaptureMaxEdge: 960,
                 cameraCaptureJpegQuality: 0.85,
-                promptTemplates: [
-                    { name: "Chat", path: "promptTemplates/chatPrompt.txt" },
-                    { name: "Fortune Teller", path: "promptTemplates/fortuneTellerPrompt.txt" },
-                    { name: "20 Questions", path: "promptTemplates/20QuestionsPrompt.txt" },
-                    { name: "Philosophy", path: "promptTemplates/philosophyPrompt.txt" },
-                    { name: "Simon Says (Camera)", path: "promptTemplates/simonSaysPrompt.txt" }
-                ],
+                promptTemplates: [],
                 agents: [
                     {
                         name: "Groq",
