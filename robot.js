@@ -66,9 +66,6 @@ class Robot {
     destroy() {
         this._dismissStartFlowOverlay();
         this._stopLocalGame();
-        if (window.playBilling?.getActiveSessionId?.()) {
-            void window.playBilling.completeActiveSession("robot_closed");
-        }
         this.teardownJoysticks();
         this.stopMixClock();
         this.teardownStrategies();
@@ -449,64 +446,13 @@ class Robot {
     _getModesMap() {
         const modes = this.config?.modes;
         if (!modes || typeof modes !== "object" || Array.isArray(modes)) return null;
-        const keys = Object.keys(modes);
-        if (!keys.length) return null;
-
-        /** @type {Record<string, object>} */
-        const merged = { ...modes };
-        const listFn = window.CustomMessagesGame?.listMenuGames;
-        if (typeof listFn === "function") {
-            try {
-                for (const game of listFn() || []) {
-                    const modeId = String(game?.modeId || "").trim();
-                    const label = String(game?.label || "").trim();
-                    const messageId = String(game?.messageId || "").trim();
-                    if (!modeId || !label || !messageId) continue;
-                    if (merged[modeId] && !String(modeId).startsWith("customSelected:")) continue;
-                    merged[modeId] = {
-                        label,
-                        game: "customMessages",
-                        customSelectedMessageId: messageId,
-                        priceCents: 0,
-                        currency: "aud",
-                        free: true,
-                        computervisionModel: "blazeface"
-                    };
-                }
-            } catch (err) {
-                console.warn("Custom menu games failed:", err);
-            }
-        }
-        return merged;
+        if (!Object.keys(modes).length) return null;
+        return modes;
     }
 
     /**
-     * Rebuild the Game dropdown after custom "selected" messages change.
-     */
-    refreshModesSelect() {
-        const select = this._modeSelect;
-        if (!select) return;
-        const modes = this.getModeList();
-        const previous = this.mode;
-        select.innerHTML = "";
-        for (const { id, label: text } of modes) {
-            const opt = document.createElement("option");
-            opt.value = id;
-            opt.textContent = text;
-            select.appendChild(opt);
-        }
-        const prefix =
-            window.CustomMessagesGame?.SELECTED_MODE_PREFIX || "customSelected:";
-        if (previous && String(previous).startsWith(prefix) && !modes.some((m) => m.id === previous)) {
-            void this.setMode("custom");
-            return;
-        }
-        this._syncModeSelectValue();
-    }
-
-    /**
-     * Modes shown in the Game dropdown. `custom` stays in config for Characters → New
-     * but is hidden here — use Characters to open that workspace.
+     * Modes shown in the Game dropdown. `custom` stays in config for Custom Games → New
+     * but is hidden here — use Custom Games to open that workspace.
      */
     getModeList() {
         const modes = this._getModesMap();
@@ -522,7 +468,7 @@ class Robot {
     /** Map internal mode id to the dropdown option to highlight. */
     _displayModeIdForSelect(modeId = this.mode) {
         const id = String(modeId || "");
-        if (id === "custom") return "characters";
+        if (id === "custom") return "customGames";
         return id;
     }
 
@@ -594,16 +540,15 @@ class Robot {
         if (this.mode === want) {
             this._syncModeSelectValue();
             if (!this._modeReady) return this._activateCurrentMode();
-            // Re-open Characters picker if already on that mode (e.g. after Cancel stayed put).
-            if (want === "characters") {
+            // Re-open Custom Games picker if already on that mode (e.g. after Cancel stayed put).
+            if (want === "customGames") {
                 this._stopLocalGame();
                 this._modeReady = true;
                 this._syncLocalGameForMode();
             }
             return true;
         }
-        const previousMode = this.mode;
-        const generation = ++this._modeActivationGeneration;
+        ++this._modeActivationGeneration;
         this._modeReady = false;
         this._stopLocalGame();
         if (this.agentInterface && typeof this.agentInterface._stopSpeaking === "function") {
@@ -618,17 +563,6 @@ class Robot {
                 console.error("onModeChange failed:", err);
             }
         }
-        const paid = await this._ensureCurrentModeSession();
-        if (generation !== this._modeActivationGeneration) return false;
-        if (!paid) {
-            this.mode = previousMode;
-            this._syncModeSelectValue();
-            if (typeof this._onModeChange === "function") this._onModeChange(this.mode);
-            this._modeReady = true;
-            this._applyModeBehavior();
-            return false;
-        }
-        // Keep the shared arcade AI session when switching games; credit lasts until spent.
         const wasEnabled = this.mixEnabled;
         this._rebuildActuatorMixes({ restoreEnabled: wasEnabled });
         this._modeReady = true;
@@ -644,28 +578,9 @@ class Robot {
             .replace(/^-+|-+$/g, "");
     }
 
-    _billingOptions() {
-        return {
-            hasClientApiKey: !!this.agentInterface?.hasClientApiKey?.()
-        };
-    }
-
-    async _ensureCurrentModeSession() {
-        const billing = window.playBilling;
-        const modeConfig = this._getActiveModeConfig();
-        if (!billing?.requiresPayment?.(modeConfig, this._billingOptions())) return true;
-        return billing.ensurePlaySession({
-            modeId: this.mode,
-            modeConfig,
-            robotSlug: this._robotSlug()
-        });
-    }
-
     async _activateCurrentMode() {
         const generation = ++this._modeActivationGeneration;
         this._modeReady = false;
-        const allowed = await this._ensureCurrentModeSession();
-        if (!allowed || generation !== this._modeActivationGeneration) return false;
         if (this.agentInterface && typeof this.agentInterface.ensureSessionGroqModels === "function") {
             await this.agentInterface.ensureSessionGroqModels();
         }
@@ -782,11 +697,11 @@ class Robot {
             this._localGame.start();
             return;
         }
-        if (gameId === "customCharacters") {
-            const PickerClass = window.CustomCharactersPicker;
+        if (gameId === "customGames") {
+            const PickerClass = window.CustomGamesPicker;
             if (typeof PickerClass !== "function") {
                 console.error(
-                    "CustomCharactersPicker is unavailable. Check games/custom/customMessages.js loading."
+                    "CustomGamesPicker is unavailable. Check games/custom/customMessages.js loading."
                 );
                 return;
             }
@@ -800,29 +715,13 @@ class Robot {
                 console.error("CustomMessagesGame is unavailable. Check games/custom/customMessages.js loading.");
                 return;
             }
-            const modeConfig = this._getActiveModeConfig();
-            const selectedMessageId =
-                String(modeConfig?.customSelectedMessageId || "").trim() ||
-                (typeof GameClass.messageIdFromModeId === "function"
-                    ? GameClass.messageIdFromModeId(this.mode)
-                    : null);
-            this._localGame = new GameClass(this, { selectedMessageId });
+            this._localGame = new GameClass(this);
             this._localGame.start();
         }
     }
 
-    onLocalGameEnded(reason = "game_finished") {
+    onLocalGameEnded() {
         this._modeReady = false;
-        // Arcade AI credit is shared across games — finishing one game does not consume remaining budget.
-        // Paid non-AI modes (no token budget) still consume the entry session when the round ends.
-        const modeConfig = this._getActiveModeConfig();
-        const billing = window.playBilling;
-        if (
-            billing?.requiresPayment?.(modeConfig, this._billingOptions()) &&
-            !billing?.isArcadeAiMode?.(modeConfig)
-        ) {
-            void billing.completeActiveSession(reason);
-        }
         if (String(this.name || "").toLowerCase() === "talking head" && this.mode !== "menu") {
             void this.setMode("menu");
         }
@@ -1482,10 +1381,10 @@ class Robot {
         } else {
             this._syncModeSelectValue();
         }
-        // While editing a custom workspace, the dropdown shows Characters. Clearing on focus
-        // lets choosing Characters again fire `change` and reopen the picker.
+        // While editing a custom workspace, the dropdown shows Custom Games. Clearing on focus
+        // lets choosing Custom Games again fire `change` and reopen the picker.
         select.addEventListener("focus", () => {
-            if (this.mode === "custom" && select.value === "characters") {
+            if (this.mode === "custom" && select.value === "customGames") {
                 select.selectedIndex = -1;
             }
         });

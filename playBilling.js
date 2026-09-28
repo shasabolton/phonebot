@@ -11,10 +11,12 @@ class PlayBilling {
     static MAX_PRICE_CENTS = 1000;
     static PRICE_STEP_CENTS = 100;
     static DEFAULT_PRICE_CENTS = 200;
-    static DEFAULT_TOPUP_MODE = "chat";
+    static CREDIT_MODE_ID = "aiCredit";
     static DEFAULT_ROBOT_SLUG = "talking-head";
     static AI_CREDIT_PAYWALL_MESSAGE =
         "Choose how much to pay. That full amount becomes hosted AI credit — switch games freely until it runs out. Credit lasts 7 days without use.";
+    static AI_CREDIT_NEEDED_MESSAGE =
+        "You're out of hosted AI credit. Top up to continue, or enter your own Groq API key. Credit lasts 7 days without use.";
 
     constructor() {
         const configured =
@@ -34,23 +36,13 @@ class PlayBilling {
         this._amountCurrency = "aud";
         this._amountAction = "play";
         this._lastRobotSlug = null;
+        this._creditPromise = null;
         this._dock = null;
         this._ensureDock();
         this._syncCreditBar();
         if (this.returnedSessionId) {
             void this._resumeReturnedCheckout();
         }
-    }
-
-    requiresPayment(modeConfig, { hasClientApiKey = false } = {}) {
-        if (!modeConfig || modeConfig.free === true) return false;
-        if (Math.max(0, Number(modeConfig.priceCents) || 0) <= 0) return false;
-        if (hasClientApiKey && this.isArcadeAiMode(modeConfig)) return false;
-        return true;
-    }
-
-    isArcadeAiMode(modeConfig) {
-        return this.requiresPayment(modeConfig) && (Number(modeConfig?.aiBudgetCents) || 0) > 0;
     }
 
     formatPrice(cents, currency = "aud") {
@@ -80,89 +72,62 @@ class PlayBilling {
         }
     }
 
-    async ensurePlaySession({ modeId, modeConfig, robotSlug, continuation = false }) {
-        if (!this.requiresPayment(modeConfig)) {
-            this._active = null;
-            this._syncCreditBar();
+    /**
+     * Gate for hosted AI requests: resolves true once an active session has credit left,
+     * otherwise shows the top-up popup. Concurrent callers share one popup.
+     */
+    ensureAiCredit(options = {}) {
+        if (!this._creditPromise) {
+            this._creditPromise = this._ensureAiCredit(options).finally(() => {
+                this._creditPromise = null;
+            });
+        }
+        return this._creditPromise;
+    }
+
+    async _ensureAiCredit({ robotSlug } = {}) {
+        const slug = this._resolveRobotSlug(robotSlug);
+        this._lastRobotSlug = slug;
+        const active = this._active;
+        if (
+            active?.status === "active" &&
+            active.robotSlug === slug &&
+            this._sessionRemainingCents(active) > 0
+        ) {
             return true;
         }
 
-        const sharedAi = this.isArcadeAiMode(modeConfig);
-        if (robotSlug) this._lastRobotSlug = robotSlug;
-        const key = this._storageKey(robotSlug, sharedAi ? null : modeId);
-        let sessionId =
-            (continuation ? null : this._active?.id) ||
-            (continuation ? this._readStored(key) : this.returnedSessionId || this._readStored(key));
-        if (!sessionId && sharedAi && !continuation) {
-            sessionId = this._findLegacyModeSessionId(robotSlug) || this._readCreditCache()?.sessionId;
-        }
+        const key = this._storageKey(slug, null);
+        const sessionId =
+            active?.id ||
+            this._readStored(key) ||
+            this._findLegacyModeSessionId(slug) ||
+            this._readCreditCache()?.sessionId;
         if (sessionId) {
             const session = await this._getSession(sessionId).catch(() => null);
-            const reusable =
+            const usable =
                 session &&
-                session.robotSlug === robotSlug &&
-                (sharedAi ? this._sessionHasAiCredit(session) : session.modeId === modeId);
-            if (reusable && (session.status === "paid" || session.status === "active")) {
+                session.robotSlug === slug &&
+                ["paid", "active"].includes(session.status) &&
+                this._sessionRemainingCents(session) > 0;
+            if (usable) {
                 localStorage.setItem(key, session.id);
-                this._clearLegacyModeSessionKeys(robotSlug);
-                this.returnedSessionId = null;
-                this._removeReturnParam();
+                this._clearLegacyModeSessionKeys(slug);
                 this._setActive(await this._startSession(session.id));
                 return true;
             }
-            if (reusable && session.status === "paused_for_payment") {
-                this._setActive(session);
-                continuation = true;
-            } else {
-                localStorage.removeItem(key);
-                if (sharedAi) this._clearLegacyModeSessionKeys(robotSlug);
-            }
         }
 
-        const defaultPriceCents = this._clampPriceCents(
-            Number(modeConfig.continuePriceCents ?? modeConfig.priceCents) || PlayBilling.DEFAULT_PRICE_CENTS
-        );
-        const action = continuation ? "continue" : "play";
-        const accepted = await this._showPaywall({
-            title: continuation ? "AI credit used" : modeConfig.label || modeId,
-            message: sharedAi
-                ? PlayBilling.AI_CREDIT_PAYWALL_MESSAGE
-                : "Payment is required before this mode starts.",
-            currency: modeConfig.currency || "aud",
-            defaultPriceCents,
-            allowAmountPick: sharedAi,
-            action
-        });
-        if (!accepted) return false;
-
-        return this._runCheckout({
-            modeId,
-            robotSlug,
-            modeConfig,
-            key,
-            continuation,
-            sessionId,
-            accepted,
-            sharedAi,
-            defaultPriceCents
+        return this.topUpCredit({
+            robotSlug: slug,
+            title: "AI credit needed",
+            message: PlayBilling.AI_CREDIT_NEEDED_MESSAGE
         });
     }
 
-    /** Same paywall as game selection; Worker clamps credit so balance never exceeds $10. */
+    /** Worker clamps credit so balance never exceeds $10. */
     async topUpCredit(options = {}) {
-        const robotSlug =
-            options.robotSlug ||
-            this._lastRobotSlug ||
-            this._readCreditCache()?.robotSlug ||
-            PlayBilling.DEFAULT_ROBOT_SLUG;
-        const modeId = options.modeId || PlayBilling.DEFAULT_TOPUP_MODE;
-        const modeConfig = options.modeConfig || {
-            label: "Top up",
-            priceCents: PlayBilling.DEFAULT_PRICE_CENTS,
-            continuePriceCents: PlayBilling.DEFAULT_PRICE_CENTS,
-            currency: "aud",
-            aiBudgetCents: PlayBilling.DEFAULT_PRICE_CENTS
-        };
+        const robotSlug = this._resolveRobotSlug(options.robotSlug);
         this._lastRobotSlug = robotSlug;
         const key = this._storageKey(robotSlug, null);
         const sessionId =
@@ -182,52 +147,41 @@ class PlayBilling {
             }
         }
 
-        const defaultPriceCents = this._clampPriceCents(
-            Number(modeConfig.priceCents) || PlayBilling.DEFAULT_PRICE_CENTS
-        );
         const accepted = await this._showPaywall({
-            title: modeConfig.label || "Top up",
-            message: PlayBilling.AI_CREDIT_PAYWALL_MESSAGE,
-            currency: modeConfig.currency || "aud",
-            defaultPriceCents,
-            allowAmountPick: true,
-            action: "play"
+            title: options.title || "Top up",
+            message: options.message || PlayBilling.AI_CREDIT_PAYWALL_MESSAGE,
+            currency: "aud",
+            defaultPriceCents: PlayBilling.DEFAULT_PRICE_CENTS,
+            action: continuation ? "continue" : "play"
         });
         if (!accepted) return false;
 
         return this._runCheckout({
-            modeId,
             robotSlug,
-            modeConfig,
             key,
             continuation,
             sessionId: this._active?.id || sessionId,
-            accepted,
-            sharedAi: true,
-            defaultPriceCents
+            accepted
         });
     }
 
-    async _runCheckout({
-        modeId,
-        robotSlug,
-        modeConfig,
-        key,
-        continuation,
-        sessionId,
-        accepted,
-        sharedAi,
-        defaultPriceCents
-    }) {
-        const priceCents = sharedAi
-            ? this._clampPriceCents(accepted.priceCents ?? defaultPriceCents)
-            : defaultPriceCents;
+    _resolveRobotSlug(robotSlug) {
+        return (
+            robotSlug ||
+            this._lastRobotSlug ||
+            this._readCreditCache()?.robotSlug ||
+            PlayBilling.DEFAULT_ROBOT_SLUG
+        );
+    }
+
+    async _runCheckout({ robotSlug, key, continuation, sessionId, accepted }) {
+        const priceCents = this._clampPriceCents(accepted.priceCents ?? PlayBilling.DEFAULT_PRICE_CENTS);
         this._rememberAmountCents(priceCents);
 
         const checkout = await this._request("/checkout", {
             method: "POST",
             body: JSON.stringify({
-                modeId,
+                modeId: PlayBilling.CREDIT_MODE_ID,
                 robot: robotSlug,
                 owner: this.ownerId || undefined,
                 machine: this.machineId || undefined,
@@ -246,7 +200,7 @@ class PlayBilling {
         localStorage.setItem(key, checkout.playSessionId);
         this._writeCreditCache({
             remainingCents: this._cachedRemainingCents(),
-            currency: modeConfig.currency || "aud",
+            currency: "aud",
             sessionId: checkout.playSessionId,
             robotSlug
         });
@@ -296,72 +250,6 @@ class PlayBilling {
                 win.close();
             } catch (_) {}
             return null;
-        }
-    }
-
-    async ensureAiBudget({ modeId, modeConfig, robotSlug }) {
-        if (!this.isArcadeAiMode(modeConfig)) return true;
-        if (robotSlug) this._lastRobotSlug = robotSlug;
-        const key = this._storageKey(robotSlug, null);
-        const sessionId =
-            this._active?.id || this._readStored(key) || this._findLegacyModeSessionId(robotSlug) ||
-            this._readCreditCache()?.sessionId;
-        if (!sessionId) {
-            return this.ensurePlaySession({ modeId, modeConfig, robotSlug });
-        }
-        const session = await this._getSession(sessionId).catch(() => null);
-        if (
-            session &&
-            session.robotSlug === robotSlug &&
-            this._sessionHasAiCredit(session) &&
-            (session.status === "paid" || session.status === "active")
-        ) {
-            localStorage.setItem(key, session.id);
-            this._setActive(await this._startSession(session.id));
-            return true;
-        }
-        if (session?.status === "paused_for_payment" && session.robotSlug === robotSlug) {
-            this._setActive(session);
-            return this.ensurePlaySession({
-                modeId,
-                modeConfig,
-                robotSlug,
-                continuation: true
-            });
-        }
-        localStorage.removeItem(key);
-        return this.ensurePlaySession({ modeId, modeConfig, robotSlug });
-    }
-
-    async onAiBudgetExhausted({ modeId, modeConfig, robotSlug }) {
-        if (!this.isArcadeAiMode(modeConfig)) return false;
-        return this.ensurePlaySession({ modeId, modeConfig, robotSlug, continuation: true });
-    }
-
-    async completeActiveSession(reason = "game_finished") {
-        const session = this._active;
-        this._active = null;
-        await this.completeSession(session, reason);
-        this._syncCreditBar();
-    }
-
-    async completeSession(session, reason = "game_finished") {
-        if (!session?.id || !["paid", "active", "paused_for_payment"].includes(session.status)) return;
-        try {
-            await this._request(`/session/${encodeURIComponent(session.id)}/complete`, {
-                method: "POST",
-                body: JSON.stringify({ reason })
-            });
-        } finally {
-            localStorage.removeItem(this._storageKey(session.robotSlug, null));
-            localStorage.removeItem(this._storageKey(session.robotSlug, session.modeId));
-            this._writeCreditCache({
-                remainingCents: 0,
-                currency: session.currency || "aud",
-                sessionId: null,
-                robotSlug: session.robotSlug
-            });
-            this._syncCreditBar();
         }
     }
 
@@ -435,7 +323,7 @@ class PlayBilling {
         });
     }
 
-    async handlePaymentRequired(response, context) {
+    async handlePaymentRequired(response, context = {}) {
         if (response?.status !== 402) return false;
         let payload = null;
         try {
@@ -443,7 +331,11 @@ class PlayBilling {
         } catch (_) {}
         if (payload?.session) this._setActive(payload.session);
         else this._writeCreditCache({ remainingCents: 0 });
-        await this.onAiBudgetExhausted(context);
+        await this.topUpCredit({
+            robotSlug: context.robotSlug,
+            title: "AI credit used",
+            message: PlayBilling.AI_CREDIT_NEEDED_MESSAGE
+        });
         return true;
     }
 
@@ -682,7 +574,6 @@ class PlayBilling {
         message,
         currency = "aud",
         defaultPriceCents,
-        allowAmountPick = false,
         action = "play"
     }) {
         if (this._modalResolve) {
@@ -699,8 +590,6 @@ class PlayBilling {
         this._modal.querySelector(".play-billing-title").textContent = title;
         this._modal.querySelector(".play-billing-message").textContent = message;
         this._modal.querySelector(".play-billing-error").textContent = "";
-        const amountRow = this._modal.querySelector(".play-billing-amount");
-        if (amountRow) amountRow.hidden = !allowAmountPick;
         const amountLabel = this._modal.querySelector(".play-billing-amount-label");
         if (amountLabel) amountLabel.textContent = "Amount (AUD)";
         const cancel = this._modal.querySelector(".play-billing-cancel");
@@ -788,7 +677,7 @@ class PlayBilling {
             <section class="play-billing-card" role="dialog" aria-modal="true" aria-labelledby="playBillingTitle">
                 <h2 id="playBillingTitle" class="play-billing-title"></h2>
                 <p class="play-billing-message"></p>
-                <div class="play-billing-amount" hidden>
+                <div class="play-billing-amount">
                     <label class="play-billing-amount-label" for="playBillingAmount">Amount (AUD)</label>
                     <div class="play-billing-amount-row">
                         <button type="button" class="play-billing-amount-down secondary" aria-label="Decrease by one dollar">−</button>

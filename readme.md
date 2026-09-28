@@ -156,11 +156,12 @@ POST /config
 
 ## Arcade billing (Stripe Checkout)
 
-Paid talking-head modes share one arcade checkout in `robots.js` / the Worker catalog.
-`priceCents` is the default suggestion (A$2); players can pick any whole-dollar amount from
-A$1–A$10 with ±$1 controls. The full payment becomes hosted AI credit (bottom bar; A$10 =
-full width). Top-up uses the same paywall; the Worker silently charges only what fits under
-the A$10 cap when they already have credit. Credit expires after 7 days without use (keeps
+No mode has a paywall. Any hosted AI request (chat, Whisper, TTS or a voice turn, from any
+game including Custom) made without a Groq API key while hosted credit is A$0 opens the
+top-up popup first; the request continues once payment is confirmed. Players pick any
+whole-dollar amount from A$1–A$10 (default A$2) with ±$1 controls. The full payment becomes
+hosted AI credit (bottom bar; A$10 = full width). The bottom bar opens the same popup; the
+Worker silently charges only what fits under the A$10 cap when they already have credit. Credit expires after 7 days without use (keeps
 D1 session rows from growing forever). Margin comes from `ARCADE_AI_MARKUP` (default `2`,
 overridable via `GROQ_RATE_MARKUP`) on Groq costs. The bar reads a local credit cache so
 menu/free use does not call the Worker; the cache updates after payment and hosted AI calls.
@@ -188,17 +189,17 @@ Copy `worker/.dev.vars.example` to `worker/.dev.vars` for local secrets. Never c
 `.dev.vars` or real Stripe/Groq keys.
 
 `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET` must be Stripe **test-mode** values while
-testing. `GROQ_API_KEY` is used only by the Worker's metered hosted chat route. Free modes
-retain BYOK. In paid arcade modes, a key entered in the app takes priority: chat, Whisper,
-and TTS use that key directly and no AI budget is debited. With the key field empty, those
-calls route through the Worker using `GROQ_API_KEY` and debit the play-session AI budget.
+testing. `GROQ_API_KEY` is used only by the Worker's metered hosted AI routes. A key entered
+in the app takes priority: chat, Whisper, and TTS use that key directly and no AI credit is
+debited. With the key field empty, those calls route through the Worker using
+`GROQ_API_KEY` and debit the play-session AI credit (Gemini agents have no hosted path).
 Hand-raised conversation turns with the hosted key use one Worker request for transcription,
 chat, and speech, with one session check and one combined budget debit. BYOK remains entirely
 client-side and continues to call Groq directly. Hand-raised recordings stop automatically
 after 20 seconds. The agent UI shows the percentage and dollar amount of the hosted AI budget
 used; while BYOK is active it shows that the hosted quota is not being consumed.
-Payment is still required to enter a paid mode either way. Checkout amounts come from the
-Worker mode catalog, not from the browser request body.
+Every checkout buys the same shared AI credit; the Worker clamps the amount to A$1–A$10 and
+the A$10 balance cap.
 
 Set `GROQ_RATES_JSON` to a JSON object keyed by allowed model. Rates are AUD cents per
 million tokens, for example:
@@ -232,19 +233,21 @@ stripe listen --forward-to http://localhost:8787/api/webhooks/stripe
 ```
 
 Use the `whsec_...` printed by `stripe listen` as the local
-`STRIPE_WEBHOOK_SECRET`; it differs from the Dashboard endpoint secret. Open a paid mode,
-complete Checkout with Stripe's test card `4242 4242 4242 4242`, any future expiry and
+`STRIPE_WEBHOOK_SECRET`; it differs from the Dashboard endpoint secret. With the key field
+empty, start an AI game (or a Custom game with speech/prompt tiles), complete Checkout with Stripe's test card `4242 4242 4242 4242`, any future expiry and
 any CVC. The PWA polls/validates the returned play-session ID and unlocks only after the
 verified webhook marks it paid.
 
 Useful checks:
 
-- `priceCents: 0` or `free: true`: mode starts without billing.
-- AI modes: paywall lets the player choose A$1–A$10 (default A$2). Credit equals the
-  payment; costs are marked up by `ARCADE_AI_MARKUP` (default 2×). Bottom bar + top-up
-  dock always visible; top-up uses the same paywall and the Worker clamps to the A$10 cap.
-- Switching AI games (or finishing one and picking another) keeps the same play session
-  until the AI budget is spent or the session expires (~7 days idle; refreshed on use).
+- Every mode starts without billing; only hosted AI requests at A$0 credit open the popup.
+  Non-AI games (Parrot, Menu, Escape the Wall) never prompt.
+- The popup lets the player choose A$1–A$10 (default A$2). Credit equals the payment;
+  costs are marked up by `ARCADE_AI_MARKUP` (default 2×). Bottom bar + top-up dock always
+  visible; the Worker clamps top-ups to the A$10 cap.
+- Switching games (or finishing one and picking another) keeps the same play session
+  until the AI credit is spent or the session expires (~7 days idle; refreshed on use).
+- Cancelling the popup fails that AI request; speech falls back to the free browser voice.
 - Closing and reopening the PWA on the same browser restores credit via `localStorage` +
   the Worker session, until expiry.
 - When hosted AI spends the budget, the session becomes `paused_for_payment`; paying

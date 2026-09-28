@@ -87,6 +87,8 @@ class AgentInterface {
         this._countdownOverlayEl = null;
         this._countdownNumberEl = null;
         this._countdownLabelEl = null;
+        /** requestAnimationFrame id driving the countdown clock sweep. */
+        this._countdownSweepRaf = 0;
         /** White shutter flash on the camera frame when a photo is taken. */
         this._shutterOverlayEl = null;
         /** Bumps to cancel an in-flight photo countdown/flicker. */
@@ -108,6 +110,12 @@ class AgentInterface {
         this._pttWaitGeneration = 0;
         /** Cancels in-flight mode auto-start when the mode changes again. */
         this._modeStartGeneration = 0;
+        /**
+         * Talking-head reasoning_effort set by a prompt (e.g. Custom prompt actions). Applies to
+         * every later send until another prompt changes it; cleared on mode change.
+         * @type {"low"|"medium"|"high"|null}
+         */
+        this._reasoningEffort = null;
         this._loadSavedKeyPreference();
         this._voiceOn = this._resolveVoiceDefault(null);
     }
@@ -125,9 +133,13 @@ class AgentInterface {
             mode === "philosophy" ||
             mode === "twentyquestions" ||
             mode === "fortuneteller" ||
-            mode === "custom" ||
-            mode.startsWith("customselected:")
+            mode === "custom"
         );
+    }
+
+    /** Custom Messages game — its prompt actions carry their own instructions. */
+    _isCustomMessagesMode() {
+        return String(this.robot?.mode || "").trim().toLowerCase() === "custom";
     }
 
     _isFortuneTellerMode() {
@@ -188,6 +200,7 @@ class AgentInterface {
         this._modeStartGeneration += 1;
         this._sessionModels = null;
         this._sessionModelsPromise = null;
+        this._reasoningEffort = null;
         // Fresh transcript per game (Custom included — re-selecting Custom after leaving wipes prior chat).
         this.messageHistory = [];
         this._renderHistory();
@@ -389,11 +402,7 @@ class AgentInterface {
     }
 
     _billingContext() {
-        return {
-            modeId: this.robot?.mode,
-            modeConfig: this.robot?._getActiveModeConfig?.(),
-            robotSlug: this.robot?._robotSlug?.()
-        };
+        return { robotSlug: this.robot?._robotSlug?.() };
     }
 
     /** The key field is the source of truth, so clearing it drops any remembered key. */
@@ -406,28 +415,29 @@ class AgentInterface {
         return !!this._clientApiKey();
     }
 
-    /** Hosted Groq is the fallback for paid modes only when the user has no key of their own. */
+    /** Without a key of their own, Groq-compatible agents use hosted AI credit (Gemini has no hosted path). */
     _useHostedAi() {
-        if (this._clientApiKey()) return false;
-        return !!window.playBilling?.isArcadeAiMode?.(this._billingContext().modeConfig);
+        if (this._clientApiKey() || !window.playBilling) return false;
+        return !this._isGeminiProvider();
     }
 
-    async _ensureArcadeAiBudget() {
-        const context = this._billingContext();
-        if (!this._useHostedAi()) return true;
-        if (!window.playBilling?.isArcadeAiMode?.(context.modeConfig)) return true;
-        const allowed = await window.playBilling.ensureAiBudget(context);
+    /** Before any hosted AI request: shows the top-up popup when credit is $0. */
+    async _ensureHostedAiCredit() {
+        if (!this._useHostedAi()) return;
+        const sessionBefore = window.playBilling.getActiveSessionId();
+        const allowed = await window.playBilling.ensureAiCredit(this._billingContext());
         this._billingPaused = !allowed;
         if (!allowed) {
-            throw new Error("AI is paused until payment is completed.");
+            throw new Error("Top up AI credit or enter a Groq API key to continue.");
         }
-        return true;
+        if (window.playBilling.getActiveSessionId() !== sessionBefore) {
+            this._sessionModels = null;
+        }
     }
 
     _syncAiBudgetUi() {
         if (!this._aiBudgetEl) return;
-        const modeConfig = this._billingContext().modeConfig;
-        if (!window.playBilling?.isArcadeAiMode?.(modeConfig)) {
+        if (!window.playBilling) {
             this._aiBudgetEl.hidden = true;
             return;
         }
@@ -437,15 +447,12 @@ class AgentInterface {
             this._aiBudgetEl.className = "ok";
             return;
         }
-        const session = window.playBilling?.getActiveSession?.();
-        const budget = Math.max(
-            0,
-            Number(session?.aiBudgetCents ?? modeConfig?.aiBudgetCents) || 0
-        );
+        const session = window.playBilling.getActiveSession();
+        const budget = Math.max(0, Number(session?.aiBudgetCents) || 0);
         const spent = Math.min(budget, Math.max(0, Number(session?.aiSpentCents) || 0));
         const percent = budget > 0 ? Math.min(100, Math.round((spent / budget) * 100)) : 0;
         const format = (cents) =>
-            window.playBilling?.formatPrice?.(cents, modeConfig?.currency || "aud") ??
+            window.playBilling?.formatPrice?.(cents, session?.currency || "aud") ??
             `${cents}¢`;
         this._aiBudgetEl.textContent =
             `Hosted AI quota: ${percent}% used (${format(spent)} of ${format(budget)}).`;
@@ -625,7 +632,7 @@ class AgentInterface {
      * @returns {Promise<string>} trimmed transcript text
      */
     async transcribeSpeechBlob(blob, options = {}) {
-        await this._ensureArcadeAiBudget();
+        await this._ensureHostedAiCredit();
         await this.ensureSessionGroqModels();
         if (!blob || blob.size < 32) {
             throw new Error("No audio captured for transcription.");
@@ -727,10 +734,19 @@ class AgentInterface {
     }
 
     /**
+     * Set the talking-head reasoning_effort used by every send until changed again.
+     * @param {string|null} value low|medium|high, or null to fall back to the agent config.
+     */
+    setReasoningEffort(value) {
+        const v = String(value || "").trim().toLowerCase();
+        this._reasoningEffort = v === "low" || v === "medium" || v === "high" ? v : null;
+    }
+
+    /**
      * Cross-model reasoning_effort (low|medium|high). Prefer "low" for Talking Head.
      */
     _resolveReasoningEffort(agent, _modelId) {
-        const raw = agent?.reasoningEffort ?? agent?.reasoning_effort ?? "low";
+        const raw = this._reasoningEffort || agent?.reasoningEffort || agent?.reasoning_effort || "low";
         if (typeof window.GroqModelSelect?.normalizeReasoningEffort === "function") {
             return window.GroqModelSelect.normalizeReasoningEffort(raw);
         }
@@ -781,7 +797,7 @@ class AgentInterface {
         if (this._isBrowserTtsVoice(options.voice ?? this._ttsVoice)) {
             throw new Error("Web TTS does not return an audio blob.");
         }
-        await this._ensureArcadeAiBudget();
+        await this._ensureHostedAiCredit();
         await this.ensureSessionGroqModels();
         const agent = this.getSelectedAgent();
         if (!agent) throw new Error("No agent selected.");
@@ -991,7 +1007,7 @@ class AgentInterface {
             this._isBrowserTtsVoice()
                 ? "Web TTS (free browser speech). No API credits used for speech."
                 : this._useHostedAi()
-                  ? "Arcade session active. Chat, Whisper, and TTS use the hosted metered Groq key (clear key field = hosted)."
+                  ? "No API key: chat, Whisper, and TTS use hosted AI credit (top-up popup when it runs out)."
                   : gemini
                     ? "Gemini audio turn + TTS (AI Studio). Text history only — no Groq Whisper/Orpheus."
                     : "Groq Orpheus TTS (uses API credits). Long replies play in sequence (200 chars per chunk)."
@@ -1197,6 +1213,7 @@ class AgentInterface {
     }
 
     _clearCameraCountdownOverlay() {
+        this._stopCameraCountdownSweep();
         if (this._countdownOverlayEl && this._countdownOverlayEl.parentNode) {
             this._countdownOverlayEl.parentNode.removeChild(this._countdownOverlayEl);
         }
@@ -1806,6 +1823,14 @@ class AgentInterface {
         const overlay = document.createElement("div");
         overlay.className = "sensor-camera-countdown-overlay";
         overlay.setAttribute("aria-live", "polite");
+        const sweepEl = document.createElement("div");
+        sweepEl.className = "sensor-camera-countdown-sweep";
+        sweepEl.setAttribute("aria-hidden", "true");
+        const handEl = document.createElement("div");
+        handEl.className = "sensor-camera-countdown-hand";
+        handEl.setAttribute("aria-hidden", "true");
+        overlay.appendChild(sweepEl);
+        overlay.appendChild(handEl);
         const numberEl = document.createElement("div");
         numberEl.className = "sensor-camera-countdown-number";
         const labelEl = document.createElement("div");
@@ -1818,6 +1843,29 @@ class AgentInterface {
         this._countdownNumberEl = numberEl;
         this._countdownLabelEl = labelEl;
         return overlay;
+    }
+
+    _stopCameraCountdownSweep() {
+        if (this._countdownSweepRaf) cancelAnimationFrame(this._countdownSweepRaf);
+        this._countdownSweepRaf = 0;
+    }
+
+    /**
+     * Sweep a clock hand once around the countdown overlay, revealing the camera behind it.
+     * @param {HTMLElement} overlay
+     * @param {number} durationMs
+     */
+    _startCameraCountdownSweep(overlay, durationMs) {
+        this._stopCameraCountdownSweep();
+        const start = performance.now();
+        const tick = (now) => {
+            if (overlay !== this._countdownOverlayEl) return;
+            const progress = Math.min(1, (now - start) / durationMs);
+            overlay.style.setProperty("--sweep-deg", `${(progress * 360).toFixed(2)}deg`);
+            this._countdownSweepRaf = progress < 1 ? requestAnimationFrame(tick) : 0;
+        };
+        overlay.style.setProperty("--sweep-deg", "0deg");
+        this._countdownSweepRaf = requestAnimationFrame(tick);
     }
 
     /**
@@ -1847,6 +1895,7 @@ class AgentInterface {
             return isActive();
         }
         try {
+            this._startCameraCountdownSweep(overlay, total * 1000);
             for (let n = total; n >= 1; n--) {
                 if (!isActive()) return false;
                 if (this._countdownNumberEl) this._countdownNumberEl.textContent = String(n);
@@ -2301,8 +2350,10 @@ class AgentInterface {
      * Template used for first-turn auto-merge and (when no selection yet) hydrate.
      * Prefers the dropdown selection; otherwise mode `promptTemplate`, then introduction templates —
      * never “first template in the list”, which double-pastes game prompts.
+     * Custom mode never merges a template.
      */
     _getIntroductionTemplateSpec() {
+        if (this._isCustomMessagesMode()) return null;
         const list = Array.isArray(this.promptTemplates) ? this.promptTemplates : [];
         const selected = String(this._templateSelect?.value || "").trim();
         if (selected && selected !== AgentInterface.TEMPLATE_VALUE_STATE) {
@@ -2487,7 +2538,7 @@ class AgentInterface {
      * If singleTurn, only `userText` is sent as one user message.
      */
     async sendPrompt(userText, options = {}) {
-        await this._ensureArcadeAiBudget();
+        await this._ensureHostedAiCredit();
         await this.ensureSessionGroqModels();
         const agent = this.getSelectedAgent();
         const prompt = String(userText || "").trim();
@@ -3274,7 +3325,6 @@ class AgentInterface {
         if (!this._agentEnabled || !this._useHostedAi()) return false;
         if (this._sendInProgress) return false;
 
-        await this.ensureSessionGroqModels();
         const agent = this.getSelectedAgent();
         if (!agent || this._isGeminiProvider(agent)) return false;
 
@@ -3290,6 +3340,8 @@ class AgentInterface {
         let audioBlob = null;
         let ok = false;
         try {
+            await this._ensureHostedAiCredit();
+            await this.ensureSessionGroqModels();
             const marker = `__PHONEBOT_TRANSCRIPT_${crypto.randomUUID()}__`;
             const stateBlock = this._buildCurrentStateForIntroductionPrompt();
             const spokenSlot = this._withFortuneTellerFinaleIfDue(marker);
@@ -3584,7 +3636,7 @@ class AgentInterface {
     /**
      * Used by external modules (e.g. SpeechToText model) to submit a prompt.
      * @param {string} text
-     * @param {{ fromSpeech?: boolean, speechTranscriber?: string, allowEmpty?: boolean, forceCameraImage?: boolean, cameraCountdownSeconds?: number, skipCameraCountdown?: boolean, cameraCountdownLabel?: string, cameraStatusPrefix?: string, cameraOverlayIsActive?: () => boolean }} [options] If fromSpeech, sends full user/assistant history plus current state and transcript; the introduction template is merged into the first user message only and stored in history. speechTranscriber labels the STT path for status/TTS hints. allowEmpty permits an empty prompt body. forceCameraImage attaches the current camera frame even if the checkbox is off. Camera countdown/flicker overlays run on every photo attach.
+     * @param {{ fromSpeech?: boolean, speechTranscriber?: string, allowEmpty?: boolean, forceCameraImage?: boolean, cameraCountdownSeconds?: number, skipCameraCountdown?: boolean, cameraCountdownLabel?: string, cameraStatusPrefix?: string, cameraOverlayIsActive?: () => boolean, reasoningEffort?: "low"|"medium"|"high" }} [options] If fromSpeech, sends full user/assistant history plus current state and transcript; the introduction template is merged into the first user message only and stored in history. speechTranscriber labels the STT path for status/TTS hints. allowEmpty permits an empty prompt body. forceCameraImage attaches the current camera frame even if the checkbox is off. Camera countdown/flicker overlays run on every photo attach. reasoningEffort sets the talking-head reasoning level for this and every later send until changed.
      * @returns {Promise<boolean>}
      */
     async submitPrompt(text, options = {}) {
@@ -3604,6 +3656,7 @@ class AgentInterface {
             forceCameraImage: options.forceCameraImage === true
         };
         this._assignCameraSendOptions(sendOpts, options);
+        if (options.reasoningEffort) this.setReasoningEffort(options.reasoningEffort);
         await this._onSend(sendOpts);
         return true;
     }
@@ -3649,7 +3702,7 @@ class AgentInterface {
             }
             return false;
         }
-        if (!this._apiKey) {
+        if (!this._apiKey && !this._useHostedAi()) {
             if (this._statusEl) {
                 this._statusEl.textContent = "Enter an API key to receive robot notifications.";
                 this._statusEl.className = "warn";

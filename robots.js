@@ -301,91 +301,56 @@ window.ROBOTS_DATA = {
                 menu: {
                     label: "Menu",
                     game: "menuMode",
-                    priceCents: 0,
-                    currency: "aud",
-                    free: true,
                     computervisionModel: "blazeface"
                 },
                 escapeTheWall: {
                     label: "Story: Escape the Wall",
                     game: "escapeTheWall",
-                    priceCents: 0,
-                    currency: "aud",
-                    free: true,
                     computervisionModel: "blazeface"
                 },
                 chat: {
                     label: "Chat",
                     promptTemplate: "promptTemplates/chatPrompt.txt",
-                    priceCents: 200,
-                    currency: "aud",
                     endCondition: "manualOrTimeout",
-                    aiBudgetCents: 200,
-                    continuePriceCents: 200,
                     computervisionModel: "blazeface"
                 },
                 fortuneTeller: {
                     label: "Fortune Teller",
                     promptTemplate: "promptTemplates/fortuneTellerPrompt.txt",
-                    priceCents: 200,
-                    currency: "aud",
                     endCondition: "manualOrTimeout",
-                    aiBudgetCents: 200,
-                    continuePriceCents: 200,
                     computervisionModel: "blazeface"
                 },
                 twentyQuestions: {
                     label: "20 Questions",
                     promptTemplate: "promptTemplates/20QuestionsPrompt.txt",
-                    priceCents: 200,
-                    currency: "aud",
                     endCondition: "gameFinished",
-                    aiBudgetCents: 200,
-                    continuePriceCents: 200,
                     computervisionModel: "blazeface"
                 },
                 philosophy: {
                     label: "Philosophy",
                     promptTemplate: "promptTemplates/philosophyPrompt.txt",
-                    priceCents: 200,
-                    currency: "aud",
                     endCondition: "manualOrTimeout",
-                    aiBudgetCents: 200,
-                    continuePriceCents: 200,
                     computervisionModel: "blazeface"
                 },
                 simonSaysAi: {
                     label: "Simon Says (Camera)",
                     promptTemplate: "promptTemplates/simonSaysPrompt.txt",
-                    priceCents: 200,
-                    currency: "aud",
                     endCondition: "gameFinished",
-                    aiBudgetCents: 200,
-                    continuePriceCents: 200,
                     computervisionModel: "blazeface"
                 },
                 parrot: {
                     label: "Parrot",
                     game: "parrot",
-                    priceCents: 0,
-                    currency: "aud",
-                    free: true,
                     computervisionModel: "blazeface"
                 },
-                characters: {
-                    label: "Characters",
-                    game: "customCharacters",
-                    priceCents: 0,
-                    currency: "aud",
-                    free: true,
+                customGames: {
+                    label: "Custom Games",
+                    game: "customGames",
                     computervisionModel: "blazeface"
                 },
                 custom: {
                     label: "Custom",
                     game: "customMessages",
-                    priceCents: 0,
-                    currency: "aud",
-                    free: true,
                     computervisionModel: "blazeface"
                 }
             },

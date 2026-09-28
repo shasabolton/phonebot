@@ -51,6 +51,10 @@
       font-size: 1.15rem;
       font-weight: 700;
       letter-spacing: 0.01em;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
     .app-header-actions {
       display: flex;
@@ -309,20 +313,19 @@
       overflow-y: auto;
       -webkit-overflow-scrolling: touch;
     }
-    .custom-messages-character-meta {
+    .custom-messages-game-meta {
       display: grid;
       gap: 10px;
       margin: 0 0 14px;
     }
-    .custom-messages-character-meta-label {
+    .custom-messages-game-meta-label {
       display: block;
       margin: 0;
       font-size: 0.88rem;
       font-weight: 600;
       color: #444;
     }
-    .custom-messages-character-name-input,
-    .custom-messages-character-voice-input {
+    .custom-messages-game-meta-name-input {
       display: block;
       width: 100%;
       margin: 4px 0 0;
@@ -334,8 +337,7 @@
       background: #fff;
       color: #111;
     }
-    .custom-messages-character-name-input:disabled,
-    .custom-messages-character-voice-input:disabled {
+    .custom-messages-game-meta-name-input:disabled {
       opacity: 0.55;
     }
     .custom-messages-title {
@@ -459,6 +461,25 @@
       cursor: pointer;
       user-select: none;
     }
+    .custom-messages-prompt-settings {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin: 8px 0 0;
+    }
+    .custom-messages-prompt-settings label {
+      display: block;
+      margin: 0;
+      font-size: 0.88rem;
+      font-weight: 600;
+      color: #444;
+    }
+    .custom-messages-prompt-settings select {
+      display: block;
+      width: 100%;
+      margin: 4px 0 0;
+      box-sizing: border-box;
+    }
     .custom-messages-camera-label input {
       width: 1.05rem;
       height: 1.05rem;
@@ -476,12 +497,12 @@
     .custom-messages-delete {
       color: #a11;
     }
-    .custom-messages-character-row {
+    .custom-messages-game-row {
       width: 100%;
       box-sizing: border-box;
       min-width: 0;
     }
-    .custom-messages-character-name {
+    .custom-messages-game-row-name {
       flex: 1 1 auto;
       width: auto;
       min-width: 0;
@@ -499,21 +520,21 @@
       text-overflow: ellipsis;
       white-space: nowrap;
     }
-    .custom-messages-character-name:hover,
-    .custom-messages-character-name:focus-visible {
+    .custom-messages-game-row-name:hover,
+    .custom-messages-game-row-name:focus-visible {
       text-decoration: underline;
     }
-    .custom-messages-character-row .custom-messages-tile-edit {
+    .custom-messages-game-row .custom-messages-tile-edit {
       flex: 0 0 auto;
       width: auto;
       margin-top: 0;
       white-space: nowrap;
     }
-    .custom-messages-character-delete {
+    .custom-messages-game-delete {
       color: #a11;
     }
     .custom-messages-name-overlay,
-    .custom-messages-characters-overlay {
+    .custom-messages-games-overlay {
       z-index: 10004;
     }
     .robot-dashboard-chat {
@@ -969,9 +990,35 @@
       justify-content: center;
       gap: 0.25em;
       pointer-events: none;
-      background: rgba(0, 0, 0, 0.35);
+      overflow: hidden;
       color: #fff;
       text-shadow: 0 2px 8px rgba(0, 0, 0, 0.55);
+      --sweep-deg: 0deg;
+    }
+    /* Clock-face dim: the swept wedge (12 o'clock → hand) is clear, the rest stays dark. */
+    .sensor-camera-countdown-sweep {
+      position: absolute;
+      inset: 0;
+      background: conic-gradient(
+        transparent 0deg var(--sweep-deg),
+        rgba(0, 0, 0, 0.5) var(--sweep-deg) 360deg
+      );
+    }
+    .sensor-camera-countdown-hand {
+      position: absolute;
+      left: 50%;
+      bottom: 50%;
+      width: 3px;
+      height: 100vmax;
+      margin-left: -1.5px;
+      background: rgba(255, 255, 255, 0.85);
+      box-shadow: 0 0 6px rgba(0, 0, 0, 0.6);
+      transform-origin: 50% 100%;
+      transform: rotate(var(--sweep-deg));
+    }
+    .sensor-camera-countdown-number,
+    .sensor-camera-countdown-label {
+      position: relative;
     }
     .sensor-camera-countdown-number {
       font-size: clamp(3.5rem, 18vw, 7rem);

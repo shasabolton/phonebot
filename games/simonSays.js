@@ -111,13 +111,13 @@ class SimonSaysPoseMatch {
 
     start() {
         if (this.robot && this.robot._modeReady === false) {
-            void this._startAfterPayment();
+            void this._startAfterModeActivation();
             return;
         }
         this._startGame();
     }
 
-    async _startAfterPayment() {
+    async _startAfterModeActivation() {
         if (typeof this.robot?._activateCurrentMode !== "function") return;
         await this.robot._activateCurrentMode();
     }

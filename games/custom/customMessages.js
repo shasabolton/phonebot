@@ -1,37 +1,50 @@
 /**
  * Custom Messages — author audio / text / prompt clips with triggers and loops.
  * Free local talking-head game: tiles under the Game menu; editor dialog for create/edit.
- * Named "characters" store separate action collections; Characters mode picks which to load.
+ * Named "games" store separate action collections; Custom Games mode picks which to load.
  */
 class CustomMessagesGame {
     static STORAGE_KEY = "phonebot.customMessages.v2";
     static STORAGE_KEY_V1 = "phonebot.customMessages.v1";
-    /** Portable single-character backup (download / upload). */
-    static EXPORT_FORMAT = "phonebot.character.v1";
+    /** Portable single-game backup (download / upload). */
+    static EXPORT_FORMAT = "phonebot.game.v1";
+    /** Older backup formats still accepted on upload. */
+    static LEGACY_EXPORT_FORMATS = Object.freeze(["phonebot.character.v1"]);
+    /** Fired on window whenever the game store is saved. */
+    static GAME_CHANGE_EVENT = "phonebot:gamechange";
     static FACE_POLL_MS = 200;
     static SPEECH_POLL_MS = 150;
     static REPEAT_GAP_MS = 1200;
     static FACE_STABLE_MS = 400;
-    static _pendingOpenActionsList = false;
+    /** @type {string|null} Set by requestEditGame; consumed by the next start(). */
+    static _pendingEditGameId = null;
     /** Debug: confirm popup before each triggered action runs, plus speech-edge console logs. */
     static DEBUG_CONFIRM_TRIGGERS = false;
 
     static TRIGGERS = Object.freeze([
         { id: "gameLoad", label: "Game load" },
-        { id: "selected", label: "Selected" },
         { id: "faceDetected", label: "Face detected" },
         { id: "noFaceDetected", label: "No face detected" },
         { id: "speechFinished", label: "Speech finished" },
         { id: "playNext", label: "Play next" }
     ]);
 
-    /** Prefix for Game-menu modes created by messages with trigger "selected". */
-    static SELECTED_MODE_PREFIX = "customSelected:";
-
     static LOOPS = Object.freeze([
         { id: "once", label: "Play once" },
         { id: "repeat", label: "Repeat" }
     ]);
+
+    /** Prompt reply word limit; 0 = no limit (nothing appended). Default matches Talking Heads chat. */
+    static PROMPT_MAX_WORDS = Object.freeze([0, 10, 20, 30, 50, 75, 100, 150, 200]);
+    static DEFAULT_PROMPT_MAX_WORDS = 50;
+
+    /** Default matches the Talking Heads agent config. */
+    static REASONING_EFFORTS = Object.freeze([
+        { id: "low", label: "Low" },
+        { id: "medium", label: "Medium" },
+        { id: "high", label: "High" }
+    ]);
+    static DEFAULT_REASONING_EFFORT = "low";
 
     /** Optional gates — all must hold in addition to the trigger firing. */
     static FACE_CONSTRAINTS = Object.freeze([
@@ -42,19 +55,17 @@ class CustomMessagesGame {
 
     /**
      * @param {object} robot
-     * @param {{ selectedMessageId?: string|null }} [options]
      */
-    constructor(robot, options = {}) {
+    constructor(robot) {
         this.robot = robot;
         /** @type {CustomMessage[]} */
         this.messages = [];
         /** @type {string|null} */
-        this._activeCharacterId = null;
+        this._activeGameId = null;
         /** @type {string} */
-        this._activeCharacterName = "";
-        /** @type {string} */
-        this._activeCharacterVoice = "";
-        this._selectedMessageId = String(options.selectedMessageId || "").trim() || null;
+        this._activeGameName = "";
+        /** Editing from Custom Games → Edit/New: no triggers run and the game is not selected. */
+        this._editOnly = false;
         this._running = false;
         this._generation = 0;
         this._audioBusy = false;
@@ -79,13 +90,13 @@ class CustomMessagesGame {
         this._mediaRecorder = null;
         this._recordChunks = [];
         this._recordStreamOwned = false;
-        this._editorGameName = null;
         this._editorDelayInput = null;
         this._editorFaceConstraint = null;
-        this._editorGameConstraint = null;
-        this._actionsVoiceSelect = null;
+        /** @type {HTMLAudioElement|null} Editor preview of the draft audio clip. */
+        this._previewAudio = null;
+        this._previewUrl = null;
+        this._previewBtn = null;
         this._actionsNameInput = null;
-        this._actionsTitleEl = null;
         this._debugConfirmOverlay = null;
         /** @type {((ok: boolean) => void)|null} */
         this._debugConfirmResolve = null;
@@ -103,65 +114,47 @@ class CustomMessagesGame {
         this._speechFinishedPending = false;
         this._speechStartEpoch = 0;
         this._speechFinishEpoch = 0;
-        const active = CustomMessagesGame.loadActiveWorkspace();
+        const editGameId = CustomMessagesGame._pendingEditGameId;
+        CustomMessagesGame._pendingEditGameId = null;
+        this._editOnly = !!editGameId;
+        const active = editGameId
+            ? CustomMessagesGame.loadGameWorkspace(editGameId)
+            : CustomMessagesGame.loadActiveWorkspace();
+        if (!active.gameId) {
+            // Actions only exist inside a saved game — send the player to the picker.
+            this._running = false;
+            const robot = this.robot;
+            setTimeout(() => {
+                if (robot?.mode === "custom" && typeof robot.setMode === "function") {
+                    void robot.setMode("customGames");
+                }
+            }, 0);
+            return;
+        }
         this.messages = active.messages;
-        this._activeCharacterId = active.characterId;
-        this._activeCharacterName = active.characterName;
-        this._activeCharacterVoice = active.characterVoice;
+        this._activeGameId = active.gameId;
+        this._activeGameName = active.gameName;
+        if (this._editOnly) {
+            this._running = false;
+            this.openActionsList();
+            return;
+        }
         this._showChatHistory();
-        this._applyCharacterVoice(this._activeCharacterVoice);
         this._armHoldToTalk();
-        const openActions =
-            CustomMessagesGame._pendingOpenActionsList || !this.messages.length;
-        CustomMessagesGame._pendingOpenActionsList = false;
-        if (openActions) {
+        if (!this.messages.length) {
             this.openActionsList();
         }
-        if (this._selectedMessageId) {
-            void this._runSelected(this._generation, this._selectedMessageId);
-        } else {
-            void this._runGameLoad(this._generation);
-        }
+        void this._runGameLoad(this._generation);
         this._startFacePoll(this._generation);
         this._startSpeechPoll(this._generation);
     }
 
     /**
-     * Named games for the robot Game menu (messages with trigger "selected" on the active character).
-     * @returns {{ modeId: string, messageId: string, label: string }[]}
-     */
-    static listMenuGames() {
-        return CustomMessagesGame.loadActiveWorkspace()
-            .messages.filter(
-                (m) =>
-                    m &&
-                    m.trigger === "selected" &&
-                    String(m.gameName || "").trim()
-            )
-            .map((m) => {
-                const label = String(m.gameName || "").trim();
-                return {
-                    modeId: CustomMessagesGame.SELECTED_MODE_PREFIX + m.id,
-                    messageId: m.id,
-                    label
-                };
-            });
-    }
-
-    /** @param {string} modeId */
-    static messageIdFromModeId(modeId) {
-        const id = String(modeId || "");
-        const prefix = CustomMessagesGame.SELECTED_MODE_PREFIX;
-        if (!id.startsWith(prefix)) return null;
-        return id.slice(prefix.length) || null;
-    }
-
-    /**
      * @returns {{ id: string, name: string }[]}
      */
-    static listCharacters() {
+    static listGames() {
         const store = CustomMessagesGame._loadStore();
-        return (store.characters || [])
+        return (store.games || [])
             .map((c) => ({
                 id: String(c.id || ""),
                 name: String(c.name || "").trim() || "Untitled"
@@ -170,156 +163,145 @@ class CustomMessagesGame {
     }
 
     /**
-     * Active working set (current character or untitled scratch).
-     * @returns {{ characterId: string|null, characterName: string, characterVoice: string, messages: CustomMessage[] }}
+     * Active saved game. `gameId` is null (and `messages` empty) when no game is chosen.
+     * @returns {{ gameId: string|null, gameName: string, messages: CustomMessage[] }}
      */
     static loadActiveWorkspace() {
         const store = CustomMessagesGame._loadStore();
-        const activeId = store.activeCharacterId ? String(store.activeCharacterId) : null;
-        if (activeId) {
-            const character = (store.characters || []).find((c) => c && c.id === activeId);
-            if (character) {
+        return CustomMessagesGame.loadGameWorkspace(store.activeGameId);
+    }
+
+    /**
+     * A saved game by id. `gameId` is null (and `messages` empty) when it does not exist.
+     * @param {string|null} gameId
+     * @returns {{ gameId: string|null, gameName: string, messages: CustomMessage[] }}
+     */
+    static loadGameWorkspace(gameId) {
+        const store = CustomMessagesGame._loadStore();
+        const want = gameId ? String(gameId) : null;
+        if (want) {
+            const game = (store.games || []).find((c) => c && c.id === want);
+            if (game) {
                 return {
-                    characterId: character.id,
-                    characterName: String(character.name || "").trim() || "Untitled",
-                    characterVoice:
-                        String(character.voice || "").trim() || CustomMessagesGame._defaultVoiceId(),
-                    messages: CustomMessagesGame._deserializeMessageList(character.messages)
+                    gameId: game.id,
+                    gameName: String(game.name || "").trim() || "Untitled",
+                    messages: CustomMessagesGame._deserializeMessageList(game.messages)
                 };
             }
         }
         return {
-            characterId: null,
-            characterName: "",
-            characterVoice: CustomMessagesGame._defaultVoiceId(),
-            messages: CustomMessagesGame._deserializeMessageList(store.scratch)
+            gameId: null,
+            gameName: "",
+            messages: []
         };
     }
 
-    /**
-     * @returns {{ id: string, label: string }[]}
-     */
-    static _pickerVoices() {
-        if (typeof window.GroqTts?.pickerVoices === "function") {
-            return window.GroqTts.pickerVoices();
-        }
-        return [
-            { id: "browser", label: "Web TTS (free)" },
-            ...(Array.isArray(window.GroqTts?.VOICES) ? window.GroqTts.VOICES : [])
-        ];
-    }
-
-    static _defaultVoiceId() {
-        if (typeof window.GroqTts?.loadSavedVoice === "function") {
-            const saved = String(window.GroqTts.loadSavedVoice() || "").trim();
-            if (saved) return saved;
-        }
-        if (typeof window.GroqTts?.WEB_VOICE_ID === "string" && window.GroqTts.WEB_VOICE_ID) {
-            return window.GroqTts.WEB_VOICE_ID;
-        }
-        return "browser";
+    /** Name of the active saved game, or "" when none is chosen. */
+    static activeGameName() {
+        const store = CustomMessagesGame._loadStore();
+        const activeId = store.activeGameId ? String(store.activeGameId) : null;
+        if (!activeId) return "";
+        const game = (store.games || []).find((c) => c && c.id === activeId);
+        return game ? String(game.name || "").trim() || "Untitled" : "";
     }
 
     /**
-     * Update name/voice for a saved character.
-     * @param {string} characterId
-     * @param {{ name?: string, voice?: string }} patch
+     * Update the name of a saved game.
+     * @param {string} gameId
+     * @param {{ name?: string }} patch
      * @returns {boolean}
      */
-    static updateCharacterMeta(characterId, patch = {}) {
-        const want = String(characterId || "").trim();
+    static updateGameMeta(gameId, patch = {}) {
+        const want = String(gameId || "").trim();
         if (!want) return false;
         const store = CustomMessagesGame._loadStore();
-        const character = (store.characters || []).find((c) => c && c.id === want);
-        if (!character) return false;
+        const game = (store.games || []).find((c) => c && c.id === want);
+        if (!game) return false;
         if (patch.name != null) {
             const label = String(patch.name || "").trim();
-            if (label) character.name = label;
-        }
-        if (patch.voice != null) {
-            const voice = String(patch.voice || "").trim();
-            if (voice) character.voice = voice;
+            if (label) game.name = label;
         }
         CustomMessagesGame._saveStore(store);
         return true;
     }
 
     /**
-     * Make a saved character the active workspace.
-     * @param {string} characterId
+     * Make a saved game the active workspace.
+     * @param {string} gameId
      * @returns {boolean}
      */
-    static activateCharacter(characterId) {
-        const want = String(characterId || "").trim();
+    static activateGame(gameId) {
+        const want = String(gameId || "").trim();
         if (!want) return false;
         const store = CustomMessagesGame._loadStore();
-        const character = (store.characters || []).find((c) => c && c.id === want);
-        if (!character) return false;
-        store.activeCharacterId = want;
+        const game = (store.games || []).find((c) => c && c.id === want);
+        if (!game) return false;
+        store.activeGameId = want;
         CustomMessagesGame._saveStore(store);
         return true;
     }
 
     /**
-     * Remove a saved character. Does not delete other characters.
-     * @param {string} characterId
+     * Remove a saved game. Does not delete other games.
+     * @param {string} gameId
      * @returns {boolean}
      */
-    static deleteCharacter(characterId) {
-        const want = String(characterId || "").trim();
+    static deleteGame(gameId) {
+        const want = String(gameId || "").trim();
         if (!want) return false;
         const store = CustomMessagesGame._loadStore();
-        const before = Array.isArray(store.characters) ? store.characters.length : 0;
-        store.characters = (store.characters || []).filter((c) => c && c.id !== want);
-        if (store.characters.length === before) return false;
-        if (store.activeCharacterId === want) {
-            store.activeCharacterId = null;
-            store.scratch = [];
+        const before = Array.isArray(store.games) ? store.games.length : 0;
+        store.games = (store.games || []).filter((c) => c && c.id !== want);
+        if (store.games.length === before) return false;
+        if (store.activeGameId === want) {
+            store.activeGameId = null;
         }
         CustomMessagesGame._saveStore(store);
         return true;
     }
 
-    /** Next CustomMessagesGame start should open the messages panel. */
-    static requestOpenActionsList() {
-        CustomMessagesGame._pendingOpenActionsList = true;
+    /**
+     * Next CustomMessagesGame start opens this game's editor only — the game is not made
+     * active and no triggers run.
+     * @param {string} gameId
+     */
+    static requestEditGame(gameId) {
+        CustomMessagesGame._pendingEditGameId = String(gameId || "").trim() || null;
     }
 
     /**
-     * Copy messages into a new named character and activate it.
+     * Copy messages into a new named game. Does not make it the active game.
      * @param {string} name
      * @param {CustomMessage[]} [messages]
      * @returns {{ id: string, name: string }|null}
      */
-    static saveAsNewCharacter(name, messages = []) {
+    static saveAsNewGame(name, messages = []) {
         const label = String(name || "").trim();
         if (!label) return null;
         const store = CustomMessagesGame._loadStore();
         const serialized = (messages || []).map((m) => CustomMessagesGame._serializeMessage(m));
-        const character = {
-            id: CustomMessagesGame._newCharacterId(),
+        const game = {
+            id: CustomMessagesGame._newGameId(),
             name: label,
-            voice: CustomMessagesGame._defaultVoiceId(),
             messages: serialized
         };
-        if (!Array.isArray(store.characters)) store.characters = [];
-        store.characters.push(character);
-        store.activeCharacterId = character.id;
+        if (!Array.isArray(store.games)) store.games = [];
+        store.games.push(game);
         CustomMessagesGame._saveStore(store);
-        return { id: character.id, name: character.name };
+        return { id: game.id, name: game.name };
     }
 
-    /** Create an empty named character and activate it. */
-    static createNamedCharacter(name) {
-        return CustomMessagesGame.saveAsNewCharacter(name, []);
+    /** Create an empty named game (not made active). */
+    static createNamedGame(name) {
+        return CustomMessagesGame.saveAsNewGame(name, []);
     }
 
     /**
-     * Build a portable JSON payload for one character (includes audio as base64).
-     * @param {{ name?: string, voice?: string, messages?: CustomMessage[] }} source
+     * Build a portable JSON payload for one game (includes audio as base64).
+     * @param {{ name?: string, messages?: CustomMessage[] }} source
      * @returns {Promise<object>}
      */
-    static async buildCharacterExport(source = {}) {
+    static async buildGameExport(source = {}) {
         const messages = Array.isArray(source.messages) ? source.messages : [];
         for (const msg of messages) {
             if (msg?.audioBlob && !msg._audioBase64) {
@@ -332,41 +314,41 @@ class CustomMessagesGame {
             }
         }
         const name = String(source.name || "").trim() || "Untitled";
-        const voice =
-            String(source.voice || "").trim() || CustomMessagesGame._defaultVoiceId();
         return {
             format: CustomMessagesGame.EXPORT_FORMAT,
             exportedAt: new Date().toISOString(),
             name,
-            voice,
             messages: messages.map((m) => CustomMessagesGame._serializeMessage(m))
         };
     }
 
     /**
-     * Import a character backup file into the local store (new id; does not replace others).
+     * Import a game backup file into the local store (new id; does not replace others).
      * @param {object} payload
      * @returns {{ id: string, name: string }|null}
      */
-    static importCharacterFromExport(payload) {
+    static importGameFromExport(payload) {
         if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
         const format = String(payload.format || "").trim();
-        if (format && format !== CustomMessagesGame.EXPORT_FORMAT) return null;
+        if (
+            format &&
+            format !== CustomMessagesGame.EXPORT_FORMAT &&
+            !CustomMessagesGame.LEGACY_EXPORT_FORMATS.includes(format)
+        ) {
+            return null;
+        }
         const name = String(payload.name || "").trim() || "Untitled";
-        const voice =
-            String(payload.voice || "").trim() || CustomMessagesGame._defaultVoiceId();
         const messages = CustomMessagesGame._deserializeMessageList(payload.messages);
         const store = CustomMessagesGame._loadStore();
-        const character = {
-            id: CustomMessagesGame._newCharacterId(),
+        const game = {
+            id: CustomMessagesGame._newGameId(),
             name,
-            voice,
             messages: messages.map((m) => CustomMessagesGame._serializeMessage(m))
         };
-        if (!Array.isArray(store.characters)) store.characters = [];
-        store.characters.push(character);
+        if (!Array.isArray(store.games)) store.games = [];
+        store.games.push(game);
         CustomMessagesGame._saveStore(store);
-        return { id: character.id, name: character.name };
+        return { id: game.id, name: game.name };
     }
 
     /**
@@ -376,17 +358,17 @@ class CustomMessagesGame {
      */
     static downloadJsonFile(filename, data) {
         const safeName =
-            String(filename || "character")
+            String(filename || "game")
                 .replace(/[<>:"/\\|?*\u0000-\u001f]+/g, "_")
                 .replace(/\s+/g, "-")
-                .slice(0, 64) || "character";
+                .slice(0, 64) || "game";
         const blob = new Blob([JSON.stringify(data, null, 2)], {
             type: "application/json"
         });
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
-        a.download = `${safeName}.phonebot-character.json`;
+        a.download = `${safeName}.phonebot-game.json`;
         document.body.appendChild(a);
         a.click();
         a.remove();
@@ -466,12 +448,15 @@ class CustomMessagesGame {
                   trigger: existing.trigger,
                   loop: existing.loop,
                   delaySec: CustomMessagesGame._normalizeDelaySec(existing.delaySec),
-                  gameName: existing.gameName || "",
                   constraints: CustomMessagesGame._normalizeConstraints(existing.constraints),
                   text: existing.text || "",
                   fileName: existing.fileName || "",
                   sendCamera: !!existing.sendCamera,
                   clearHistory: existing.clearHistory !== false,
+                  maxWords: CustomMessagesGame._normalizeMaxWords(existing.maxWords),
+                  reasoningEffort: CustomMessagesGame._normalizeReasoningEffort(
+                      existing.reasoningEffort
+                  ),
                   audioBlob: existing.audioBlob || null
               }
             : {
@@ -480,12 +465,13 @@ class CustomMessagesGame {
                   trigger: "gameLoad",
                   loop: "once",
                   delaySec: 0,
-                  gameName: "",
                   constraints: CustomMessagesGame._normalizeConstraints(null),
                   text: "",
                   fileName: "",
                   sendCamera: false,
                   clearHistory: true,
+                  maxWords: CustomMessagesGame.DEFAULT_PROMPT_MAX_WORDS,
+                  reasoningEffort: CustomMessagesGame.DEFAULT_REASONING_EFFORT,
                   audioBlob: null
               };
         this._mountEditor();
@@ -538,10 +524,27 @@ class CustomMessagesGame {
     static _emptyStore() {
         return {
             version: 2,
-            activeCharacterId: null,
-            scratch: [],
-            characters: []
+            activeGameId: null,
+            games: []
         };
+    }
+
+    /**
+     * Older stores kept unsaved actions in `scratch` (or a bare v1 array). Actions must belong
+     * to a game, so those become an "Untitled" game.
+     * @param {object} store
+     * @param {unknown[]} scratch
+     */
+    static _migrateScratchToGame(store, scratch) {
+        const game = {
+            id: CustomMessagesGame._newGameId(),
+            name: "Untitled",
+            messages: scratch
+        };
+        store.games.push(game);
+        if (!store.activeGameId) store.activeGameId = game.id;
+        CustomMessagesGame._saveStore(store);
+        return store;
     }
 
     static _loadStore() {
@@ -550,37 +553,36 @@ class CustomMessagesGame {
             if (rawV2) {
                 const parsed = JSON.parse(rawV2);
                 if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-                    return {
+                    // Stores saved before the rename use `characters` / `activeCharacterId`.
+                    const activeGameId = parsed.activeGameId ?? parsed.activeCharacterId;
+                    const games = Array.isArray(parsed.games) ? parsed.games : parsed.characters;
+                    const store = {
                         version: 2,
-                        activeCharacterId: parsed.activeCharacterId
-                            ? String(parsed.activeCharacterId)
-                            : null,
-                        scratch: Array.isArray(parsed.scratch) ? parsed.scratch : [],
-                        characters: Array.isArray(parsed.characters)
-                            ? parsed.characters
+                        activeGameId: activeGameId ? String(activeGameId) : null,
+                        games: Array.isArray(games)
+                            ? games
                                   .filter((c) => c && typeof c === "object")
                                   .map((c) => ({
-                                      id: String(c.id || CustomMessagesGame._newCharacterId()),
+                                      id: String(c.id || CustomMessagesGame._newGameId()),
                                       name: String(c.name || "").trim() || "Untitled",
-                                      voice:
-                                          String(c.voice || "").trim() ||
-                                          CustomMessagesGame._defaultVoiceId(),
                                       messages: Array.isArray(c.messages) ? c.messages : []
                                   }))
                             : []
                     };
+                    if (Array.isArray(parsed.scratch) && parsed.scratch.length) {
+                        return CustomMessagesGame._migrateScratchToGame(store, parsed.scratch);
+                    }
+                    return store;
                 }
             }
             const rawV1 = localStorage.getItem(CustomMessagesGame.STORAGE_KEY_V1);
             if (rawV1) {
                 const parsed = JSON.parse(rawV1);
-                if (Array.isArray(parsed)) {
-                    const migrated = {
-                        ...CustomMessagesGame._emptyStore(),
-                        scratch: parsed
-                    };
-                    CustomMessagesGame._saveStore(migrated);
-                    return migrated;
+                if (Array.isArray(parsed) && parsed.length) {
+                    return CustomMessagesGame._migrateScratchToGame(
+                        CustomMessagesGame._emptyStore(),
+                        parsed
+                    );
                 }
             }
         } catch (err) {
@@ -593,14 +595,14 @@ class CustomMessagesGame {
         try {
             const payload = {
                 version: 2,
-                activeCharacterId: store?.activeCharacterId || null,
-                scratch: Array.isArray(store?.scratch) ? store.scratch : [],
-                characters: Array.isArray(store?.characters) ? store.characters : []
+                activeGameId: store?.activeGameId || null,
+                games: Array.isArray(store?.games) ? store.games : []
             };
             localStorage.setItem(CustomMessagesGame.STORAGE_KEY, JSON.stringify(payload));
         } catch (err) {
             console.warn("Custom messages store save failed:", err);
         }
+        window.dispatchEvent(new CustomEvent(CustomMessagesGame.GAME_CHANGE_EVENT));
     }
 
     /** @deprecated Use loadActiveWorkspace — kept for older call sites. */
@@ -608,20 +610,20 @@ class CustomMessagesGame {
         return CustomMessagesGame.loadActiveWorkspace().messages;
     }
 
-    static _saveMessages(messages) {
+    /**
+     * @param {CustomMessage[]} messages
+     * @param {string|null} [gameId] defaults to the active game
+     */
+    static _saveMessages(messages, gameId = null) {
         const store = CustomMessagesGame._loadStore();
         const serialized = (messages || []).map((m) => CustomMessagesGame._serializeMessage(m));
-        const activeId = store.activeCharacterId ? String(store.activeCharacterId) : null;
-        if (activeId) {
-            const character = (store.characters || []).find((c) => c && c.id === activeId);
-            if (character) {
-                character.messages = serialized;
-                CustomMessagesGame._saveStore(store);
-                return;
-            }
-            store.activeCharacterId = null;
+        const want = gameId || store.activeGameId;
+        const game = want ? (store.games || []).find((c) => c && c.id === String(want)) : null;
+        if (!game) {
+            console.warn("Custom messages not saved: game not found.");
+            return;
         }
-        store.scratch = serialized;
+        game.messages = serialized;
         CustomMessagesGame._saveStore(store);
     }
 
@@ -638,7 +640,6 @@ class CustomMessagesGame {
             trigger: msg.trigger,
             loop: msg.loop,
             delaySec: CustomMessagesGame._normalizeDelaySec(msg.delaySec),
-            gameName: msg.trigger === "selected" ? String(msg.gameName || "").trim() : "",
             constraints,
             text: msg.text || "",
             fileName: msg.fileName || "",
@@ -647,6 +648,10 @@ class CustomMessagesGame {
             audioBase64: null,
             audioMime: ""
         };
+        if (msg.kind === "prompt") {
+            out.maxWords = CustomMessagesGame._normalizeMaxWords(msg.maxWords);
+            out.reasoningEffort = CustomMessagesGame._normalizeReasoningEffort(msg.reasoningEffort);
+        }
         if (msg.audioBlob && typeof msg.audioBlob.size === "number" && msg.audioBlob.size > 0) {
             // Stored async via _persistAll; placeholder filled when available on the message.
             out.audioBase64 = msg._audioBase64 || null;
@@ -659,6 +664,7 @@ class CustomMessagesGame {
         if (!entry || typeof entry !== "object") return null;
         const kind = String(entry.kind || "").trim();
         if (kind !== "audio" && kind !== "text" && kind !== "prompt") return null;
+        // Unknown or retired triggers (e.g. the old "selected") fall back to gameLoad.
         const trigger = String(entry.trigger || "gameLoad").trim();
         const loop = String(entry.loop || "once").trim() === "repeat" ? "repeat" : "once";
         /** @type {CustomMessage} */
@@ -670,17 +676,17 @@ class CustomMessagesGame {
                 : "gameLoad",
             loop,
             delaySec: CustomMessagesGame._normalizeDelaySec(entry.delaySec),
-            gameName: String(entry.gameName || "").trim(),
             constraints: CustomMessagesGame._normalizeConstraints(entry.constraints),
             text: String(entry.text || ""),
             fileName: String(entry.fileName || ""),
             sendCamera: kind === "prompt" && !!entry.sendCamera,
             clearHistory: kind === "prompt" && entry.clearHistory !== false,
+            maxWords: CustomMessagesGame._normalizeMaxWords(entry.maxWords),
+            reasoningEffort: CustomMessagesGame._normalizeReasoningEffort(entry.reasoningEffort),
             audioBlob: null,
             _audioBase64: entry.audioBase64 || null,
             _audioMime: entry.audioMime || ""
         };
-        if (msg.trigger !== "selected") msg.gameName = "";
         if (msg._audioBase64) {
             try {
                 msg.audioBlob = CustomMessagesGame._base64ToBlob(
@@ -702,25 +708,59 @@ class CustomMessagesGame {
     }
 
     /**
+     * Missing values (older saves) take the default; 0 means no limit.
      * @param {unknown} value
-     * @returns {{ face: "any"|"present"|"absent", game: string }}
+     * @returns {number}
+     */
+    static _normalizeMaxWords(value) {
+        if (value == null || value === "") return CustomMessagesGame.DEFAULT_PROMPT_MAX_WORDS;
+        const n = Math.round(Number(value));
+        if (!Number.isFinite(n) || n < 0) return CustomMessagesGame.DEFAULT_PROMPT_MAX_WORDS;
+        return Math.min(n, 1000);
+    }
+
+    /**
+     * @param {unknown} value
+     * @returns {"low"|"medium"|"high"}
+     */
+    static _normalizeReasoningEffort(value) {
+        const raw = String(value || "").trim().toLowerCase();
+        return CustomMessagesGame.REASONING_EFFORTS.some((r) => r.id === raw)
+            ? raw
+            : CustomMessagesGame.DEFAULT_REASONING_EFFORT;
+    }
+
+    /**
+     * Prompt text sent to the agent, with the word limit appended at the end.
+     * @param {string} text
+     * @param {number} maxWords
+     */
+    static _composePromptText(text, maxWords) {
+        const body = String(text || "").trim();
+        const limit = CustomMessagesGame._normalizeMaxWords(maxWords);
+        if (!limit) return body;
+        const line = `Keep your replies under ${limit} words.`;
+        return body ? `${body}\n\n${line}` : line;
+    }
+
+    /**
+     * @param {unknown} value
+     * @returns {{ face: "any"|"present"|"absent" }}
      */
     static _normalizeConstraints(value) {
         const src = value && typeof value === "object" && !Array.isArray(value) ? value : {};
         const faceRaw = String(src.face || "any").trim().toLowerCase();
         const face =
             faceRaw === "present" || faceRaw === "absent" ? faceRaw : "any";
-        const game = String(src.game || "").trim();
-        return { face, game };
+        return { face };
     }
 
-    /** @param {{ face?: string, game?: string }|null|undefined} constraints */
+    /** @param {{ face?: string }|null|undefined} constraints */
     static _constraintsSummary(constraints) {
         const c = CustomMessagesGame._normalizeConstraints(constraints);
         const parts = [];
         if (c.face === "present") parts.push("face present");
         if (c.face === "absent") parts.push("face absent");
-        if (c.game) parts.push(`game=${c.game}`);
         return parts.length ? parts.join(", ") : "";
     }
 
@@ -728,7 +768,7 @@ class CustomMessagesGame {
         return `cm-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     }
 
-    static _newCharacterId() {
+    static _newGameId() {
         return `char-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     }
 
@@ -761,18 +801,11 @@ class CustomMessagesGame {
                 }
             }
         }
-        CustomMessagesGame._saveMessages(this.messages);
-        if (typeof this.robot?.refreshModesSelect === "function") {
-            this.robot.refreshModesSelect();
-        }
+        CustomMessagesGame._saveMessages(this.messages, this._activeGameId);
     }
 
     static tileLabel(msg) {
         if (!msg) return "Message";
-        if (msg.trigger === "selected") {
-            const gameName = String(msg.gameName || "").trim();
-            if (gameName) return gameName;
-        }
         if (msg.kind === "audio") {
             const name = String(msg.fileName || "").trim();
             return name || "Recording";
@@ -786,74 +819,19 @@ class CustomMessagesGame {
         return msg.kind === "prompt" ? "Prompt" : "Text";
     }
 
-    // —— Voice helpers ——————————————————————————————————————————————
-
-    _fillVoiceSelect(select, selectedId) {
-        if (!select) return;
-        select.innerHTML = "";
-        for (const v of CustomMessagesGame._pickerVoices()) {
-            const opt = document.createElement("option");
-            opt.value = v.id;
-            opt.textContent = v.label || v.id;
-            select.appendChild(opt);
-        }
-        const want =
-            String(selectedId || "").trim() ||
-            this._activeCharacterVoice ||
-            CustomMessagesGame._defaultVoiceId();
-        if ([...select.options].some((o) => o.value === want)) {
-            select.value = want;
-        } else if (typeof window.GroqTts?.WEB_VOICE_ID === "string") {
-            select.value = window.GroqTts.WEB_VOICE_ID;
-        }
-    }
-
     /**
-     * @param {string} voiceId
-     * @param {{ persist?: boolean }} [options]
+     * @param {{ name?: string }} patch
      */
-    _applyCharacterVoice(voiceId, options = {}) {
-        const id =
-            String(voiceId || "").trim() ||
-            this._activeCharacterVoice ||
-            CustomMessagesGame._defaultVoiceId();
-        this._activeCharacterVoice = id;
-        const agent = this._getAgent();
-        if (agent && typeof agent.setTtsVoice === "function") {
-            agent.setTtsVoice(id);
-        } else if (typeof window.GroqTts?.saveVoice === "function") {
-            window.GroqTts.saveVoice(id);
-        }
-        if (this._actionsVoiceSelect) this._fillVoiceSelect(this._actionsVoiceSelect, id);
-        if (options.persist !== false && this._activeCharacterId) {
-            CustomMessagesGame.updateCharacterMeta(this._activeCharacterId, { voice: id });
-        }
-    }
-
-    /**
-     * @param {{ name?: string, voice?: string }} patch
-     */
-    _persistActiveCharacterMeta(patch = {}) {
-        if (!this._activeCharacterId) return;
+    _persistActiveGameMeta(patch = {}) {
+        if (!this._activeGameId) return;
         if (patch.name != null) {
             const label = String(patch.name || "").trim();
-            if (label) this._activeCharacterName = label;
+            if (label) this._activeGameName = label;
             else return;
         }
-        if (patch.voice != null) {
-            const voice = String(patch.voice || "").trim();
-            if (voice) this._activeCharacterVoice = voice;
-        }
-        CustomMessagesGame.updateCharacterMeta(this._activeCharacterId, {
-            name: this._activeCharacterName,
-            voice: this._activeCharacterVoice
+        CustomMessagesGame.updateGameMeta(this._activeGameId, {
+            name: this._activeGameName
         });
-        if (this._actionsTitleEl && this._activeCharacterName) {
-            this._actionsTitleEl.textContent = this._activeCharacterName;
-        }
-        if (typeof this.robot?.refreshModesSelect === "function") {
-            this.robot.refreshModesSelect();
-        }
     }
 
     // —— Actions list popup ————————————————————————————————————————
@@ -865,32 +843,37 @@ class CustomMessagesGame {
         overlay.className = "custom-messages-overlay custom-messages-actions-overlay";
         overlay.setAttribute("role", "dialog");
         overlay.setAttribute("aria-modal", "true");
-        overlay.setAttribute("aria-label", "Character messages");
+        overlay.setAttribute("aria-label", "Game Editor");
 
         const card = document.createElement("div");
         card.className = "custom-messages-card custom-messages-actions-card";
 
         const title = document.createElement("h2");
         title.className = "custom-messages-title";
-        title.textContent = this._activeCharacterName || "Character messages";
+        title.textContent = "Game Editor";
         card.appendChild(title);
 
+        const hint = document.createElement("p");
+        hint.className = "custom-messages-hint muted";
+        hint.textContent = "A game is a collection of actions and triggers.";
+        card.appendChild(hint);
+
         const meta = document.createElement("div");
-        meta.className = "custom-messages-character-meta";
+        meta.className = "custom-messages-game-meta";
 
         const nameLabel = document.createElement("label");
-        nameLabel.className = "custom-messages-character-meta-label";
+        nameLabel.className = "custom-messages-game-meta-label";
         nameLabel.textContent = "Name";
         const nameInput = document.createElement("input");
         nameInput.type = "text";
-        nameInput.className = "custom-messages-character-name-input";
-        nameInput.placeholder = "Character name";
+        nameInput.className = "custom-messages-game-meta-name-input";
+        nameInput.placeholder = "Game name";
         nameInput.autocomplete = "off";
         nameInput.maxLength = 48;
-        nameInput.value = this._activeCharacterName || "";
-        nameInput.disabled = !this._activeCharacterId;
+        nameInput.value = this._activeGameName || "";
+        nameInput.disabled = !this._activeGameId;
         nameInput.addEventListener("change", () => {
-            this._persistActiveCharacterMeta({ name: nameInput.value });
+            this._persistActiveGameMeta({ name: nameInput.value });
         });
         nameInput.addEventListener("keydown", (e) => {
             if (e.key === "Enter") {
@@ -900,21 +883,7 @@ class CustomMessagesGame {
         });
         nameLabel.appendChild(nameInput);
 
-        const voiceLabel = document.createElement("label");
-        voiceLabel.className = "custom-messages-character-meta-label";
-        voiceLabel.textContent = "Voice";
-        const voiceSelect = document.createElement("select");
-        voiceSelect.className = "custom-messages-character-voice-input";
-        voiceSelect.setAttribute("aria-label", "Character voice");
-        voiceSelect.disabled = !this._activeCharacterId;
-        this._fillVoiceSelect(voiceSelect, this._activeCharacterVoice);
-        voiceSelect.addEventListener("change", () => {
-            this._applyCharacterVoice(voiceSelect.value, { persist: true });
-        });
-        voiceLabel.appendChild(voiceSelect);
-
         meta.appendChild(nameLabel);
-        meta.appendChild(voiceLabel);
         card.appendChild(meta);
 
         const list = document.createElement("div");
@@ -936,13 +905,13 @@ class CustomMessagesGame {
         downloadBtn.className = "custom-messages-download secondary";
         downloadBtn.textContent = "Download";
         downloadBtn.title = "Save a backup file you can upload later";
-        downloadBtn.addEventListener("click", () => void this._downloadCharacterBackup());
+        downloadBtn.addEventListener("click", () => void this._downloadGameBackup());
 
         const doneBtn = document.createElement("button");
         doneBtn.type = "button";
         doneBtn.className = "custom-messages-cancel secondary";
         doneBtn.textContent = "Done";
-        doneBtn.addEventListener("click", () => this._closeActionsList());
+        doneBtn.addEventListener("click", () => this._finishActionsList());
 
         actions.appendChild(addBtn);
         actions.appendChild(downloadBtn);
@@ -951,16 +920,22 @@ class CustomMessagesGame {
 
         overlay.appendChild(card);
         overlay.addEventListener("click", (e) => {
-            if (e.target === overlay) this._closeActionsList();
+            if (e.target === overlay) this._finishActionsList();
         });
         document.body.appendChild(overlay);
 
         this._actionsOverlay = overlay;
         this._tileListEl = list;
-        this._actionsTitleEl = title;
         this._actionsNameInput = nameInput;
-        this._actionsVoiceSelect = voiceSelect;
         this._renderTiles();
+    }
+
+    /** Done / backdrop: edit-only sessions return to the Custom Games picker. */
+    _finishActionsList() {
+        this._closeActionsList();
+        if (this._editOnly && typeof this.robot?.setMode === "function") {
+            void this.robot.setMode("customGames");
+        }
     }
 
     _closeActionsList() {
@@ -969,34 +944,27 @@ class CustomMessagesGame {
         }
         this._actionsOverlay = null;
         this._tileListEl = null;
-        this._actionsTitleEl = null;
         this._actionsNameInput = null;
-        this._actionsVoiceSelect = null;
     }
 
-    /** Download the active character (messages + voice) as a restoreable JSON file. */
-    async _downloadCharacterBackup() {
+    /** Download the active game as a restoreable JSON file. */
+    async _downloadGameBackup() {
         const nameFromInput = String(this._actionsNameInput?.value || "").trim();
         const name =
             nameFromInput ||
-            this._activeCharacterName ||
+            this._activeGameName ||
             "Untitled";
-        const voice =
-            String(this._actionsVoiceSelect?.value || "").trim() ||
-            this._activeCharacterVoice ||
-            CustomMessagesGame._defaultVoiceId();
         try {
             await this._persistAll();
-            const payload = await CustomMessagesGame.buildCharacterExport({
+            const payload = await CustomMessagesGame.buildGameExport({
                 name,
-                voice,
                 messages: this.messages
             });
             CustomMessagesGame.downloadJsonFile(name, payload);
         } catch (err) {
-            console.warn("Character download failed:", err);
+            console.warn("Game download failed:", err);
             if (typeof window.alert === "function") {
-                window.alert("Could not download character backup.");
+                window.alert("Could not download game backup.");
             }
         }
     }
@@ -1026,11 +994,15 @@ class CustomMessagesGame {
             const cameraNote = msg.kind === "prompt" && msg.sendCamera ? " · camera" : "";
             const clearNote =
                 msg.kind === "prompt" && msg.clearHistory !== false ? " · clear history" : "";
+            let promptNote = "";
+            if (msg.kind === "prompt") {
+                const maxWords = CustomMessagesGame._normalizeMaxWords(msg.maxWords);
+                const effort = CustomMessagesGame._normalizeReasoningEffort(msg.reasoningEffort);
+                promptNote = `${maxWords ? ` · max ${maxWords} words` : ""} · ${effort} reasoning`;
+            }
             const constraintNote = CustomMessagesGame._constraintsSummary(msg.constraints);
             const constraintSuffix = constraintNote ? ` · if ${constraintNote}` : "";
-            label.title = msg.trigger === "selected"
-                ? `${msg.kind} · selected · ${msg.gameName || "unnamed"} · ${msg.loop}${delayNote}${cameraNote}${clearNote}${constraintSuffix}`
-                : `${msg.kind} · ${msg.trigger} · ${msg.loop}${delayNote}${cameraNote}${clearNote}${constraintSuffix}`;
+            label.title = `${msg.kind} · ${msg.trigger} · ${msg.loop}${delayNote}${cameraNote}${clearNote}${promptNote}${constraintSuffix}`;
 
             const editBtn = document.createElement("button");
             editBtn.type = "button";
@@ -1052,6 +1024,8 @@ class CustomMessagesGame {
 
     _closeEditor() {
         this._stopRecording(true);
+        this._stopPreview();
+        this._previewBtn = null;
         if (this._overlay?.parentElement) {
             this._overlay.parentElement.removeChild(this._overlay);
         }
@@ -1063,10 +1037,7 @@ class CustomMessagesGame {
         this._editorTrigger = null;
         this._editorLoop = null;
         this._editorDelayInput = null;
-        this._editorGameName = null;
-        this._editorGameNameLabel = null;
         this._editorFaceConstraint = null;
-        this._editorGameConstraint = null;
         if (this._actionsOverlay) this._renderTiles();
     }
 
@@ -1141,27 +1112,8 @@ class CustomMessagesGame {
         triggerSelect.value = draft.trigger;
         triggerSelect.addEventListener("change", () => {
             draft.trigger = triggerSelect.value;
-            this._syncGameNameField();
-            this._syncEditorOptionsVisibility();
         });
         triggerLabel.appendChild(triggerSelect);
-
-        const gameNameLabel = document.createElement("label");
-        gameNameLabel.className = "custom-messages-game-name-label";
-        gameNameLabel.textContent = "Game name";
-        const gameNameInput = document.createElement("input");
-        gameNameInput.type = "text";
-        gameNameInput.className = "custom-messages-game-name";
-        gameNameInput.placeholder = "Name shown in Game menu";
-        gameNameInput.autocomplete = "off";
-        gameNameInput.maxLength = 48;
-        gameNameInput.value = draft.gameName || "";
-        gameNameInput.addEventListener("input", () => {
-            draft.gameName = gameNameInput.value;
-            this._fillGameConstraintSelect();
-            this._syncEditorOptionsVisibility();
-        });
-        gameNameLabel.appendChild(gameNameInput);
 
         const loopLabel = document.createElement("label");
         loopLabel.textContent = "Loop";
@@ -1224,25 +1176,11 @@ class CustomMessagesGame {
         });
         faceConstraintLabel.appendChild(faceConstraintSelect);
 
-        const gameConstraintLabel = document.createElement("label");
-        gameConstraintLabel.textContent = "Game equals";
-        const gameConstraintSelect = document.createElement("select");
-        gameConstraintSelect.className = "custom-messages-game-constraint";
-        gameConstraintSelect.addEventListener("change", () => {
-            draft.constraints = CustomMessagesGame._normalizeConstraints({
-                ...draft.constraints,
-                game: gameConstraintSelect.value
-            });
-        });
-        gameConstraintLabel.appendChild(gameConstraintSelect);
-
         options.appendChild(triggerLabel);
-        options.appendChild(gameNameLabel);
         options.appendChild(loopLabel);
         options.appendChild(delayLabel);
         options.appendChild(constraintsHeading);
         options.appendChild(faceConstraintLabel);
-        options.appendChild(gameConstraintLabel);
         card.appendChild(options);
 
         const actions = document.createElement("div");
@@ -1288,61 +1226,9 @@ class CustomMessagesGame {
         this._editorTrigger = triggerSelect;
         this._editorLoop = loopSelect;
         this._editorDelayInput = delayInput;
-        this._editorGameName = gameNameInput;
-        this._editorGameNameLabel = gameNameLabel;
         this._editorFaceConstraint = faceConstraintSelect;
-        this._editorGameConstraint = gameConstraintSelect;
 
         this._refreshEditorBody();
-        this._syncGameNameField();
-        this._fillGameConstraintSelect();
-    }
-
-    _syncGameNameField() {
-        const draft = this._draft;
-        const show = !!draft && draft.trigger === "selected";
-        const label = this._editorGameNameLabel;
-        if (label) {
-            label.hidden = !show;
-            // Inline display beats author `label { display:block }` on mobile WebViews.
-            label.style.display = show ? "" : "none";
-        }
-        this._fillGameConstraintSelect();
-    }
-
-    /** Populate "Game equals" constraint options from Selected-trigger game names. */
-    _fillGameConstraintSelect() {
-        const select = this._editorGameConstraint;
-        const draft = this._draft;
-        if (!select || !draft) return;
-        const names = new Set();
-        for (const m of this.messages) {
-            if (m?.trigger === "selected") {
-                const name = String(m.gameName || "").trim();
-                if (name) names.add(name);
-            }
-        }
-        const draftGame = String(draft.gameName || "").trim();
-        if (draft.trigger === "selected" && draftGame) names.add(draftGame);
-        const current = String(draft.constraints?.game || "").trim();
-        if (current) names.add(current);
-
-        select.innerHTML = "";
-        const anyOpt = document.createElement("option");
-        anyOpt.value = "";
-        anyOpt.textContent = "Any";
-        select.appendChild(anyOpt);
-        for (const name of [...names].sort((a, b) => a.localeCompare(b))) {
-            const opt = document.createElement("option");
-            opt.value = name;
-            opt.textContent = name;
-            select.appendChild(opt);
-        }
-        select.value = current && [...select.options].some((o) => o.value === current) ? current : "";
-        draft.constraints = CustomMessagesGame._normalizeConstraints({
-            ...draft.constraints,
-            game: select.value
-        });
     }
 
     _hasDraftMedia() {
@@ -1354,23 +1240,21 @@ class CustomMessagesGame {
     }
 
     _hasDraftContent() {
-        const draft = this._draft;
-        if (!this._hasDraftMedia()) return false;
-        if (draft.trigger === "selected" && !String(draft.gameName || "").trim()) return false;
-        return true;
+        return this._hasDraftMedia();
     }
 
     _syncEditorOptionsVisibility() {
         const mediaReady = this._hasDraftMedia();
         if (this._editorOptions) this._editorOptions.hidden = !mediaReady;
         if (this._editorSubmit) this._editorSubmit.disabled = !this._hasDraftContent();
-        if (mediaReady) this._syncGameNameField();
     }
 
     _refreshEditorBody() {
         const body = this._editorBody;
         const draft = this._draft;
         if (!body || !draft) return;
+        this._stopPreview();
+        this._previewBtn = null;
         body.innerHTML = "";
 
         const kindBtns = this._overlay?.querySelectorAll(".custom-messages-kind-btn") || [];
@@ -1416,6 +1300,12 @@ class CustomMessagesGame {
             void this._toggleRecord(recordBtn, status);
         });
 
+        const playBtn = document.createElement("button");
+        playBtn.type = "button";
+        playBtn.className = "custom-messages-play secondary";
+        playBtn.addEventListener("click", () => this._togglePreview());
+        this._previewBtn = playBtn;
+
         const uploadBtn = document.createElement("button");
         uploadBtn.type = "button";
         uploadBtn.className = "custom-messages-upload secondary";
@@ -1429,20 +1319,72 @@ class CustomMessagesGame {
             const file = fileInput.files?.[0];
             fileInput.value = "";
             if (!file) return;
+            this._stopPreview();
             draft.audioBlob = file;
             draft.fileName = file.name || "upload.audio";
             draft._audioBase64 = null;
             status.textContent = `Ready: ${draft.fileName}`;
             status.className = "custom-messages-status ok";
+            this._syncPreviewButton();
             this._syncEditorOptionsVisibility();
         });
         uploadBtn.addEventListener("click", () => fileInput.click());
 
         row.appendChild(recordBtn);
+        row.appendChild(playBtn);
         row.appendChild(uploadBtn);
         row.appendChild(fileInput);
         body.appendChild(row);
         body.appendChild(status);
+        this._syncPreviewButton();
+    }
+
+    _syncPreviewButton() {
+        const btn = this._previewBtn;
+        if (!btn) return;
+        const blob = this._draft?.audioBlob;
+        btn.disabled = this._recording || !(blob && blob.size > 0);
+        btn.textContent = this._previewAudio ? "Stop" : "Play";
+        btn.setAttribute("aria-label", this._previewAudio ? "Stop audio" : "Play audio");
+    }
+
+    _togglePreview() {
+        if (this._previewAudio) {
+            this._stopPreview();
+            return;
+        }
+        const blob = this._draft?.audioBlob;
+        if (this._recording || !blob || !blob.size) return;
+        const url = URL.createObjectURL(blob);
+        const audio = new Audio(url);
+        this._previewAudio = audio;
+        this._previewUrl = url;
+        const finish = () => {
+            if (this._previewAudio === audio) this._stopPreview();
+        };
+        audio.addEventListener("ended", finish);
+        audio.addEventListener("error", finish);
+        audio.play().catch((err) => {
+            console.warn("Custom audio preview failed:", err);
+            finish();
+        });
+        this._syncPreviewButton();
+    }
+
+    _stopPreview() {
+        const audio = this._previewAudio;
+        this._previewAudio = null;
+        if (audio) {
+            try {
+                audio.pause();
+            } catch (_) {}
+            audio.removeAttribute("src");
+        }
+        if (this._previewUrl) {
+            URL.revokeObjectURL(this._previewUrl);
+            this._previewUrl = null;
+        }
+        this._syncPreviewButton();
     }
 
     _renderTextEditor(body, draft) {
@@ -1475,6 +1417,56 @@ class CustomMessagesGame {
 
         if (draft.kind === "prompt") {
             if (draft.clearHistory === undefined) draft.clearHistory = true;
+            draft.maxWords = CustomMessagesGame._normalizeMaxWords(draft.maxWords);
+            draft.reasoningEffort = CustomMessagesGame._normalizeReasoningEffort(
+                draft.reasoningEffort
+            );
+
+            const settings = document.createElement("div");
+            settings.className = "custom-messages-prompt-settings";
+
+            const maxWordsLabel = document.createElement("label");
+            maxWordsLabel.textContent = "Max words";
+            const maxWordsSelect = document.createElement("select");
+            maxWordsSelect.className = "custom-messages-max-words";
+            const wordOptions = [...CustomMessagesGame.PROMPT_MAX_WORDS];
+            if (!wordOptions.includes(draft.maxWords)) {
+                wordOptions.push(draft.maxWords);
+                wordOptions.sort((a, b) => a - b);
+            }
+            for (const n of wordOptions) {
+                const opt = document.createElement("option");
+                opt.value = String(n);
+                opt.textContent = n ? String(n) : "No limit";
+                maxWordsSelect.appendChild(opt);
+            }
+            maxWordsSelect.value = String(draft.maxWords);
+            maxWordsSelect.addEventListener("change", () => {
+                draft.maxWords = CustomMessagesGame._normalizeMaxWords(maxWordsSelect.value);
+            });
+            maxWordsLabel.appendChild(maxWordsSelect);
+
+            const reasoningLabel = document.createElement("label");
+            reasoningLabel.textContent = "Reasoning";
+            const reasoningSelect = document.createElement("select");
+            reasoningSelect.className = "custom-messages-reasoning";
+            for (const r of CustomMessagesGame.REASONING_EFFORTS) {
+                const opt = document.createElement("option");
+                opt.value = r.id;
+                opt.textContent = r.label;
+                reasoningSelect.appendChild(opt);
+            }
+            reasoningSelect.value = draft.reasoningEffort;
+            reasoningSelect.addEventListener("change", () => {
+                draft.reasoningEffort = CustomMessagesGame._normalizeReasoningEffort(
+                    reasoningSelect.value
+                );
+            });
+            reasoningLabel.appendChild(reasoningSelect);
+
+            settings.appendChild(maxWordsLabel);
+            settings.appendChild(reasoningLabel);
+            body.appendChild(settings);
 
             const clearLabel = document.createElement("label");
             clearLabel.className = "custom-messages-camera-label";
@@ -1548,9 +1540,11 @@ class CustomMessagesGame {
                 statusEl.textContent = `Ready: ${this._draft.fileName || "Recording"}`;
                 statusEl.className = "custom-messages-status ok";
             }
+            this._syncPreviewButton();
             this._syncEditorOptionsVisibility();
             return;
         }
+        this._stopPreview();
         try {
             if (statusEl) {
                 statusEl.textContent = "Recording… tap Stop when done.";
@@ -1566,6 +1560,7 @@ class CustomMessagesGame {
                 statusEl.className = "custom-messages-status error";
             }
         }
+        this._syncPreviewButton();
     }
 
     _pickRecorderMimeType() {
@@ -1694,12 +1689,13 @@ class CustomMessagesGame {
             trigger,
             loop: draft.loop === "repeat" ? "repeat" : "once",
             delaySec: CustomMessagesGame._normalizeDelaySec(draft.delaySec),
-            gameName: trigger === "selected" ? String(draft.gameName || "").trim() : "",
             constraints: CustomMessagesGame._normalizeConstraints(draft.constraints),
             text: String(draft.text || ""),
             fileName: String(draft.fileName || ""),
             sendCamera: draft.kind === "prompt" && !!draft.sendCamera,
             clearHistory: draft.kind === "prompt" && draft.clearHistory !== false,
+            maxWords: CustomMessagesGame._normalizeMaxWords(draft.maxWords),
+            reasoningEffort: CustomMessagesGame._normalizeReasoningEffort(draft.reasoningEffort),
             audioBlob: draft.kind === "audio" ? draft.audioBlob : null,
             _audioBase64: null,
             _audioMime: ""
@@ -1714,7 +1710,7 @@ class CustomMessagesGame {
         this._renderTiles();
         this._closeEditor();
 
-        if (msg.trigger === "gameLoad" && this._running && !this._selectedMessageId) {
+        if (msg.trigger === "gameLoad" && this._running) {
             void this._playMessage(msg, this._generation);
         }
     }
@@ -1735,14 +1731,6 @@ class CustomMessagesGame {
         return !!(cv && cv.faceScale != null);
     }
 
-    /** Active Game-menu selected game name, or "" when none. */
-    _activeSelectedGameName() {
-        const want = String(this._selectedMessageId || "").trim();
-        if (!want) return "";
-        const msg = this.messages.find((m) => m && m.id === want);
-        return String(msg?.gameName || "").trim();
-    }
-
     /**
      * Constraints are AND gates on top of the trigger — trigger must also fire.
      * @param {CustomMessage} msg
@@ -1751,12 +1739,10 @@ class CustomMessagesGame {
         const c = CustomMessagesGame._normalizeConstraints(msg?.constraints);
         if (c.face === "present" && !this._isFacePresent()) return false;
         if (c.face === "absent" && this._isFacePresent()) return false;
-        if (c.game) {
-            if (this._activeSelectedGameName() !== c.game) return false;
-        }
         return true;
     }
 
+    /** Fires once each time this saved game is started (picked in Custom Games). */
     async _runGameLoad(generation) {
         const list = this.messages.filter((m) => m.trigger === "gameLoad");
         for (const msg of list) {
@@ -1773,34 +1759,6 @@ class CustomMessagesGame {
                     await this._playMessage(msg, generation);
                 }
                 return;
-            }
-        }
-    }
-
-    /**
-     * Play the message tied to a Game-menu "selected" entry (and its playNext chain).
-     * @param {number} generation
-     * @param {string} messageId
-     */
-    async _runSelected(generation, messageId) {
-        const want = String(messageId || "").trim();
-        if (!want) return;
-        const msg = this.messages.find((m) => m.id === want && m.trigger === "selected");
-        if (!msg) {
-            console.warn("Custom: selected game message not found:", want);
-            return;
-        }
-        if (!this._isActive(generation)) return;
-        if (msg.loop === "once" && this._firedOnceIds.has(msg.id)) return;
-        if (!this._constraintsMet(msg)) return;
-        const played = await this._playMessage(msg, generation);
-        if (played && msg.loop === "once") this._firedOnceIds.add(msg.id);
-        if (played && msg.loop === "repeat") {
-            while (this._isActive(generation)) {
-                const gap = await this._sleep(CustomMessagesGame.REPEAT_GAP_MS, generation);
-                if (!gap) return;
-                if (!this._constraintsMet(msg)) continue;
-                await this._playMessage(msg, generation);
             }
         }
     }
@@ -1973,7 +1931,7 @@ class CustomMessagesGame {
                     constraintsMet: this._constraintsMet(m),
                     constraints: CustomMessagesGame._constraintsSummary(m.constraints) || "none"
                 })),
-                { activeGame: this._activeSelectedGameName() || "(none)" }
+                { activeGame: this._activeGameName || "(none)" }
             );
             // Trigger already fired; keep pending while constraints may still become true.
             if (!waitingOnConstraints) this._speechFinishedPending = false;
@@ -2119,7 +2077,7 @@ class CustomMessagesGame {
             ["Loop", msg.loop === "repeat" ? "Repeat" : "Play once"],
             ["Delay", `${delaySec}s`],
             ["Constraints", constraints],
-            ["Active game", this._activeSelectedGameName() || "(none)"]
+            ["Active game", this._activeGameName || "(none)"]
         ];
         if (text) rows.push(["Text", text.length > 160 ? `${text.slice(0, 160)}…` : text]);
 
@@ -2256,7 +2214,8 @@ class CustomMessagesGame {
     }
 
     async _playPrompt(msg, generation) {
-        const text = String(msg.text || "").trim();
+        const text = CustomMessagesGame._composePromptText(msg.text, msg.maxWords);
+        const reasoningEffort = CustomMessagesGame._normalizeReasoningEffort(msg.reasoningEffort);
         const sendCamera = !!msg.sendCamera;
         const clearHistory = msg.clearHistory !== false;
         const agent = this._getAgent();
@@ -2274,6 +2233,7 @@ class CustomMessagesGame {
             const cameraCountdownSeconds = sendCamera ? Math.max(1, Math.ceil(delaySec) || 1) : 0;
             await agent.submitPrompt(text, {
                 allowEmpty: true,
+                reasoningEffort,
                 forceCameraImage: sendCamera,
                 cameraCountdownSeconds,
                 cameraCountdownLabel: "Photo!",
@@ -2290,7 +2250,6 @@ class CustomMessagesGame {
 /**
  * @typedef {object} CustomMessageConstraints
  * @property {"any"|"present"|"absent"} face
- * @property {string} game empty = any; otherwise must match active Selected game name
  */
 
 /**
@@ -2300,21 +2259,22 @@ class CustomMessagesGame {
  * @property {string} trigger
  * @property {"once"|"repeat"} loop
  * @property {number} delaySec
- * @property {string} gameName
  * @property {CustomMessageConstraints} constraints
  * @property {string} text
  * @property {string} fileName
  * @property {boolean} sendCamera
  * @property {boolean} clearHistory
+ * @property {number} maxWords Prompt reply word limit; 0 = no limit.
+ * @property {"low"|"medium"|"high"} reasoningEffort Sets the talking-head reasoning level when the prompt is sent.
  * @property {Blob|null} audioBlob
  * @property {string|null} [_audioBase64]
  * @property {string} [_audioMime]
  */
 
 /**
- * Characters mode — pick a saved custom-messages collection or start a new empty one.
+ * Custom Games mode — pick a saved custom-messages collection or start a new empty one.
  */
-class CustomCharactersPicker {
+class CustomGamesPicker {
     /**
      * @param {object} robot
      */
@@ -2356,9 +2316,6 @@ class CustomCharactersPicker {
     _goCustom() {
         if (this._closing) return;
         const robot = this.robot;
-        if (robot && typeof robot.refreshModesSelect === "function") {
-            robot.refreshModesSelect();
-        }
         if (robot && typeof robot.setMode === "function") {
             void robot.setMode("custom");
         }
@@ -2373,14 +2330,14 @@ class CustomCharactersPicker {
     }
 
     _onNew() {
-        this._promptNewCharacterName();
+        this._promptNewGameName();
     }
 
-    /** Restore a character from a previously downloaded backup file. */
+    /** Restore a game from a previously downloaded backup file. */
     _onUpload() {
         const input = document.createElement("input");
         input.type = "file";
-        input.accept = ".json,application/json,.phonebot-character.json";
+        input.accept = ".json,application/json,.phonebot-game.json,.phonebot-character.json";
         input.hidden = true;
         input.addEventListener("change", async () => {
             const file = input.files && input.files[0];
@@ -2389,21 +2346,18 @@ class CustomCharactersPicker {
             try {
                 const text = await file.text();
                 const parsed = JSON.parse(text);
-                const saved = CustomMessagesGame.importCharacterFromExport(parsed);
+                const saved = CustomMessagesGame.importGameFromExport(parsed);
                 if (!saved) {
                     if (typeof window.alert === "function") {
-                        window.alert("That file is not a valid character backup.");
+                        window.alert("That file is not a valid game backup.");
                     }
                     return;
                 }
-                if (typeof this.robot?.refreshModesSelect === "function") {
-                    this.robot.refreshModesSelect();
-                }
-                this._renderCharacterList();
+                this._renderGameList();
             } catch (err) {
-                console.warn("Character upload failed:", err);
+                console.warn("Game upload failed:", err);
                 if (typeof window.alert === "function") {
-                    window.alert("Could not read that character backup file.");
+                    window.alert("Could not read that game backup file.");
                 }
             }
         });
@@ -2415,57 +2369,53 @@ class CustomCharactersPicker {
         }, 60_000);
     }
 
-    /** Play / load this character (name control). */
-    _onSelect(characterId) {
-        if (!CustomMessagesGame.activateCharacter(characterId)) return;
+    /** Play / load this game (name control). */
+    _onSelect(gameId) {
+        if (!CustomMessagesGame.activateGame(gameId)) return;
         this._goCustom();
     }
 
-    /** Load character and open the messages dialog. */
-    _onEdit(characterId) {
-        if (!CustomMessagesGame.activateCharacter(characterId)) return;
-        CustomMessagesGame.requestOpenActionsList();
+    /** Open the messages dialog without selecting (playing) the game. */
+    _onEdit(gameId) {
+        CustomMessagesGame.requestEditGame(gameId);
         this._goCustom();
     }
 
-    _onDelete(characterId, characterName) {
-        const label = String(characterName || "this character").trim() || "this character";
+    _onDelete(gameId, gameName) {
+        const label = String(gameName || "this game").trim() || "this game";
         const ok =
             typeof window.confirm === "function"
                 ? window.confirm(`Delete “${label}”? This cannot be undone.`)
                 : true;
         if (!ok) return;
-        if (!CustomMessagesGame.deleteCharacter(characterId)) return;
-        if (typeof this.robot?.refreshModesSelect === "function") {
-            this.robot.refreshModesSelect();
-        }
-        this._renderCharacterList();
+        if (!CustomMessagesGame.deleteGame(gameId)) return;
+        this._renderGameList();
     }
 
-    _promptNewCharacterName() {
+    _promptNewGameName() {
         this._closeNamePrompt();
         const overlay = document.createElement("div");
         overlay.className = "custom-messages-overlay custom-messages-name-overlay";
         overlay.setAttribute("role", "dialog");
         overlay.setAttribute("aria-modal", "true");
-        overlay.setAttribute("aria-label", "New character");
+        overlay.setAttribute("aria-label", "New game");
 
         const card = document.createElement("div");
         card.className = "custom-messages-card";
 
         const title = document.createElement("h2");
         title.className = "custom-messages-title";
-        title.textContent = "New character";
+        title.textContent = "New game";
         card.appendChild(title);
 
         const hint = document.createElement("p");
         hint.className = "custom-messages-hint muted";
-        hint.textContent = "Name this character. Existing characters are kept.";
+        hint.textContent = "Name this game. Existing games are kept.";
         card.appendChild(hint);
 
         const label = document.createElement("label");
         label.className = "custom-messages-game-name-label";
-        label.textContent = "Character name";
+        label.textContent = "Game name";
         const input = document.createElement("input");
         input.type = "text";
         input.className = "custom-messages-game-name";
@@ -2496,10 +2446,10 @@ class CustomCharactersPicker {
         createBtn.addEventListener("click", () => {
             const name = String(input.value || "").trim();
             if (!name) return;
-            const saved = CustomMessagesGame.createNamedCharacter(name);
+            const saved = CustomMessagesGame.createNamedGame(name);
             if (!saved) return;
             this._closeNamePrompt();
-            CustomMessagesGame.requestOpenActionsList();
+            CustomMessagesGame.requestEditGame(saved.id);
             this._goCustom();
         });
 
@@ -2521,50 +2471,50 @@ class CustomCharactersPicker {
         setTimeout(() => input.focus(), 0);
     }
 
-    _renderCharacterList() {
+    _renderGameList() {
         const list = this._listEl;
         if (!list) return;
         list.innerHTML = "";
 
-        const characters = CustomMessagesGame.listCharacters();
-        if (!characters.length) {
+        const games = CustomMessagesGame.listGames();
+        if (!games.length) {
             const empty = document.createElement("p");
             empty.className = "custom-messages-hint muted";
-            empty.textContent = "No characters yet. Tap New to create one.";
+            empty.textContent = "No games yet. Tap New to create one.";
             list.appendChild(empty);
             return;
         }
 
-        for (const character of characters) {
+        for (const game of games) {
             const tile = document.createElement("div");
-            tile.className = "custom-messages-tile custom-messages-character-row";
+            tile.className = "custom-messages-tile custom-messages-game-row";
             tile.setAttribute("role", "listitem");
 
             const nameBtn = document.createElement("button");
             nameBtn.type = "button";
-            nameBtn.className = "custom-messages-character-name";
-            nameBtn.textContent = character.name;
-            nameBtn.title = `Play ${character.name}`;
-            nameBtn.addEventListener("click", () => this._onSelect(character.id));
+            nameBtn.className = "custom-messages-game-row-name";
+            nameBtn.textContent = game.name;
+            nameBtn.title = `Play ${game.name}`;
+            nameBtn.addEventListener("click", () => this._onSelect(game.id));
 
             const editBtn = document.createElement("button");
             editBtn.type = "button";
             editBtn.className = "custom-messages-tile-edit";
             editBtn.textContent = "Edit";
-            editBtn.setAttribute("aria-label", `Edit ${character.name}`);
+            editBtn.setAttribute("aria-label", `Edit ${game.name}`);
             editBtn.addEventListener("click", (e) => {
                 e.stopPropagation();
-                this._onEdit(character.id);
+                this._onEdit(game.id);
             });
 
             const deleteBtn = document.createElement("button");
             deleteBtn.type = "button";
-            deleteBtn.className = "custom-messages-tile-edit custom-messages-character-delete";
+            deleteBtn.className = "custom-messages-tile-edit custom-messages-game-delete";
             deleteBtn.textContent = "Delete";
-            deleteBtn.setAttribute("aria-label", `Delete ${character.name}`);
+            deleteBtn.setAttribute("aria-label", `Delete ${game.name}`);
             deleteBtn.addEventListener("click", (e) => {
                 e.stopPropagation();
-                this._onDelete(character.id, character.name);
+                this._onDelete(game.id, game.name);
             });
 
             tile.appendChild(nameBtn);
@@ -2576,23 +2526,23 @@ class CustomCharactersPicker {
 
     _mount() {
         const overlay = document.createElement("div");
-        overlay.className = "custom-messages-overlay custom-messages-characters-overlay";
+        overlay.className = "custom-messages-overlay custom-messages-games-overlay";
         overlay.setAttribute("role", "dialog");
         overlay.setAttribute("aria-modal", "true");
-        overlay.setAttribute("aria-label", "Characters");
+        overlay.setAttribute("aria-label", "Custom Games");
 
         const card = document.createElement("div");
         card.className = "custom-messages-card custom-messages-actions-card";
 
         const title = document.createElement("h2");
         title.className = "custom-messages-title";
-        title.textContent = "Characters";
+        title.textContent = "Custom Games";
         card.appendChild(title);
 
         const hint = document.createElement("p");
         hint.className = "custom-messages-hint muted";
         hint.textContent =
-            "Tap a name to play, Edit for messages, Upload to restore a backup, or create a new character.";
+            "Tap a name to play, Edit for messages, Upload to restore a backup, or create a new game.";
         card.appendChild(hint);
 
         const list = document.createElement("div");
@@ -2613,7 +2563,7 @@ class CustomCharactersPicker {
         uploadBtn.type = "button";
         uploadBtn.className = "custom-messages-upload secondary";
         uploadBtn.textContent = "Upload";
-        uploadBtn.title = "Restore a character from a backup file";
+        uploadBtn.title = "Restore a game from a backup file";
         uploadBtn.addEventListener("click", () => this._onUpload());
 
         const cancelBtn = document.createElement("button");
@@ -2634,9 +2584,9 @@ class CustomCharactersPicker {
         document.body.appendChild(overlay);
         this._overlay = overlay;
         this._listEl = list;
-        this._renderCharacterList();
+        this._renderGameList();
     }
 }
 
 window.CustomMessagesGame = CustomMessagesGame;
-window.CustomCharactersPicker = CustomCharactersPicker;
+window.CustomGamesPicker = CustomGamesPicker;

@@ -15,52 +15,8 @@ const ARCADE_PRICE_STEP_CENTS = 100;
 const ARCADE_CURRENCY = "aud";
 /** Multiply Groq cost before debiting player credit. 2 ≈ keep half of payment as margin. */
 const ARCADE_AI_MARKUP = 2;
-
-const MODE_CATALOG = Object.freeze({
-    simonSaysPoseMatch: {
-        label: "Simon Says Basic",
-        priceCents: ARCADE_DEFAULT_PRICE_CENTS,
-        currency: ARCADE_CURRENCY,
-        aiBudgetCents: 0,
-        continuePriceCents: ARCADE_DEFAULT_PRICE_CENTS,
-        fixedPrice: true
-    },
-    simonSaysAi: {
-        label: "Simon Says Advanced",
-        priceCents: ARCADE_DEFAULT_PRICE_CENTS,
-        currency: ARCADE_CURRENCY,
-        aiBudgetCents: ARCADE_DEFAULT_PRICE_CENTS,
-        continuePriceCents: ARCADE_DEFAULT_PRICE_CENTS
-    },
-    chat: {
-        label: "Chat",
-        priceCents: ARCADE_DEFAULT_PRICE_CENTS,
-        currency: ARCADE_CURRENCY,
-        aiBudgetCents: ARCADE_DEFAULT_PRICE_CENTS,
-        continuePriceCents: ARCADE_DEFAULT_PRICE_CENTS
-    },
-    philosophy: {
-        label: "Philosophy",
-        priceCents: ARCADE_DEFAULT_PRICE_CENTS,
-        currency: ARCADE_CURRENCY,
-        aiBudgetCents: ARCADE_DEFAULT_PRICE_CENTS,
-        continuePriceCents: ARCADE_DEFAULT_PRICE_CENTS
-    },
-    twentyQuestions: {
-        label: "20 Questions",
-        priceCents: ARCADE_DEFAULT_PRICE_CENTS,
-        currency: ARCADE_CURRENCY,
-        aiBudgetCents: ARCADE_DEFAULT_PRICE_CENTS,
-        continuePriceCents: ARCADE_DEFAULT_PRICE_CENTS
-    },
-    fortuneTeller: {
-        label: "Fortune Teller",
-        priceCents: ARCADE_DEFAULT_PRICE_CENTS,
-        currency: ARCADE_CURRENCY,
-        aiBudgetCents: ARCADE_DEFAULT_PRICE_CENTS,
-        continuePriceCents: ARCADE_DEFAULT_PRICE_CENTS
-    }
-});
+/** Every checkout buys shared AI credit; mode_id is metadata only. */
+const ARCADE_CREDIT_MODE_ID = "aiCredit";
 
 /** Pending Checkout / unpaid rows. */
 const UNUSED_TTL_MS = 30 * 60 * 1000;
@@ -127,29 +83,27 @@ export default {
 
 async function createCheckout(request, env) {
     const body = await readJson(request);
-    const modeId = cleanMetadata(body.modeId, 64);
+    const modeId = cleanMetadata(body.modeId, 64) || ARCADE_CREDIT_MODE_ID;
     const robotSlug = cleanMetadata(body.robot, 64);
     const ownerId = cleanMetadata(body.owner, 128);
     const machineId = cleanMetadata(body.machine, 128);
-    const mode = MODE_CATALOG[modeId];
-    if (!mode || mode.priceCents <= 0) throw httpError(400, "Mode is not a paid arcade mode.");
     if (!robotSlug) throw httpError(400, "robot is required.");
 
     const continuation = body.continueSessionId
         ? await selectSession(env, cleanMetadata(body.continueSessionId, 64))
         : null;
-    // Credit is shared across all AI arcade modes on the same robot.
+    // Credit is shared across all AI use on the same robot.
     if (
         continuation &&
         (continuation.robot_slug !== robotSlug ||
-            !MODE_CATALOG[continuation.mode_id] ||
+            !(Number(continuation.ai_budget_cents) > 0) ||
             !["paid", "active", "paused_for_payment"].includes(continuation.status))
     ) {
         throw httpError(409, "Continuation session is not eligible.");
     }
 
-    const currency = mode.currency;
-    const { priceCents, aiBudgetCents } = resolveCheckoutAmounts(body, mode, continuation);
+    const currency = ARCADE_CURRENCY;
+    const { priceCents, aiBudgetCents } = resolveCheckoutAmounts(body, continuation);
     const returnUrl = allowedReturnUrl(body.returnUrl, request, env);
     const playSessionId = crypto.randomUUID();
     const now = Date.now();
@@ -200,10 +154,7 @@ async function createCheckout(request, env) {
     params.set("line_items[0][quantity]", "1");
     params.set("line_items[0][price_data][currency]", currency);
     params.set("line_items[0][price_data][unit_amount]", String(priceCents));
-    params.set(
-        "line_items[0][price_data][product_data][name]",
-        aiBudgetCents > 0 ? "Phonebot arcade AI credit" : mode.label
-    );
+    params.set("line_items[0][price_data][product_data][name]", "Phonebot arcade AI credit");
     for (const [key, value] of Object.entries(metadata)) {
         params.set(`metadata[${key}]`, value);
         params.set(`payment_intent_data[metadata][${key}]`, value);
@@ -232,13 +183,8 @@ async function createCheckout(request, env) {
  * First purchase: charge selected amount (= credit).
  * Top-up / continuation: charge selected amount, but only as much as fits under the $10 cap.
  */
-function resolveCheckoutAmounts(body, mode, continuation) {
-    if (mode.fixedPrice || !(mode.aiBudgetCents > 0)) {
-        const priceCents = Math.max(0, Number(mode.priceCents) || 0);
-        return { priceCents, aiBudgetCents: 0 };
-    }
-
-    const requested = resolveCheckoutPriceCents(body.priceCents, mode);
+function resolveCheckoutAmounts(body, continuation) {
+    const requested = resolveCheckoutPriceCents(body.priceCents);
     if (continuation) {
         const remaining = Math.max(
             0,
@@ -255,16 +201,14 @@ function resolveCheckoutAmounts(body, mode, continuation) {
         };
     }
 
-    return { priceCents: requested, aiBudgetCents: aiBudgetForPayment(requested, mode) };
+    // Full payment becomes visible credit; margin comes from ARCADE_AI_MARKUP on debits.
+    return { priceCents: requested, aiBudgetCents: requested };
 }
 
-/** Whole-dollar amounts only; clamps to arcade min/max. Fixed-price modes ignore the client. */
-function resolveCheckoutPriceCents(requested, mode) {
-    if (mode.fixedPrice || !(mode.aiBudgetCents > 0)) {
-        return Math.max(0, Number(mode.priceCents) || 0);
-    }
+/** Whole-dollar amounts only; clamps to arcade min/max. */
+function resolveCheckoutPriceCents(requested) {
     let cents = Number(requested);
-    if (!Number.isFinite(cents)) cents = Number(mode.priceCents) || ARCADE_DEFAULT_PRICE_CENTS;
+    if (!Number.isFinite(cents)) cents = ARCADE_DEFAULT_PRICE_CENTS;
     cents = Math.round(cents / ARCADE_PRICE_STEP_CENTS) * ARCADE_PRICE_STEP_CENTS;
     if (cents < ARCADE_MIN_PRICE_CENTS || cents > ARCADE_MAX_PRICE_CENTS) {
         throw httpError(
@@ -273,12 +217,6 @@ function resolveCheckoutPriceCents(requested, mode) {
         );
     }
     return cents;
-}
-
-function aiBudgetForPayment(priceCents, mode) {
-    if (!(mode.aiBudgetCents > 0)) return 0;
-    // Full payment becomes visible credit; margin comes from ARCADE_AI_MARKUP on debits.
-    return Math.max(0, Math.round(Number(priceCents) || 0));
 }
 
 function arcadeAiMarkup(env) {

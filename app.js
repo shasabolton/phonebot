@@ -7,6 +7,7 @@ class App {
         this.dashboardMount = null;
         this.robotListEl = null;
         this.robotsData = null;
+        this.titleEl = null;
         this.transmitters = ["none", "wifi", "bluetooth"];
         this.transmitterListEl = null;
         this.transmitterGuiMount = null;
@@ -573,6 +574,13 @@ class App {
         }
     }
 
+    /** Header reads "Phone Robot", plus the active custom game's name when one is chosen. */
+    updateTitle() {
+        if (!this.titleEl) return;
+        const gameName = window.CustomMessagesGame?.activeGameName?.() || '';
+        this.titleEl.textContent = gameName ? `Phone Robot - ${gameName}` : 'Phone Robot';
+    }
+
     buildGUI() {
         const root = document.getElementById('robotApp');
         if (!root) return;
@@ -587,7 +595,12 @@ class App {
         header.className = 'app-header';
         const title = document.createElement('h1');
         title.className = 'app-title';
-        title.textContent = 'Phone Robot';
+        this.titleEl = title;
+        this.updateTitle();
+        const gameEvent = window.CustomMessagesGame?.GAME_CHANGE_EVENT;
+        if (gameEvent) {
+            window.addEventListener(gameEvent, () => this.updateTitle());
+        }
 
         const headerActions = document.createElement('div');
         headerActions.className = 'app-header-actions';
