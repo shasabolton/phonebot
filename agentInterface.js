@@ -3556,6 +3556,7 @@ class AgentInterface {
         }
         let spokenForFollowUp = "";
         let ok = false;
+        let pendingUserTurn = null;
         try {
             if (!text && !options.allowEmpty) {
                 if (this._statusEl) {
@@ -3571,13 +3572,14 @@ class AgentInterface {
             const prior = this._buildPriorConversationMessages();
             const outboundUser = await this._mergeIntroductionIntoFirstUserMessage(fullUserContent, prior.length);
             if (!modeStillCurrent()) return;
-            this.messageHistory.push({
+            pendingUserTurn = {
                 role: "user",
                 text: prior.length ? userText : outboundUser,
                 fullPrompt: outboundUser,
                 isKickoff: isKickoff || undefined,
                 at: new Date().toISOString()
-            });
+            };
+            this.messageHistory.push(pendingUserTurn);
             this._renderHistory();
             const conversationMessages = [...prior, { role: "user", content: outboundUser }];
             const sendOpts = { messages: conversationMessages };
@@ -3612,6 +3614,15 @@ class AgentInterface {
             if (this._statusEl) {
                 this._statusEl.textContent = err?.message || "Request failed";
                 this._statusEl.className = "error";
+            }
+            if (
+                pendingUserTurn &&
+                modeStillCurrent() &&
+                this.messageHistory[this.messageHistory.length - 1] === pendingUserTurn
+            ) {
+                this.messageHistory.pop();
+                this._renderHistory();
+                if (isKickoff) this._clearPromptInputs();
             }
             spokenForFollowUp = "";
             ok = false;

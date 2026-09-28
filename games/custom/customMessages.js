@@ -1,4 +1,118 @@
 /**
+ * Audio clips for custom games, kept in IndexedDB by `audioKey` so long clips stay out of the
+ * ~5 MB localStorage quota. Clips are stored as ArrayBuffer + MIME (older Safari rejects Blobs).
+ */
+class CustomAudioStore {
+    static DB_NAME = "phonebot.customAudio";
+    static DB_VERSION = 1;
+    static STORE_NAME = "clips";
+    /** @type {Promise<IDBDatabase>|null} */
+    static _dbPromise = null;
+    static _persistRequested = false;
+    /** Keys written by this page load; the orphan sweep skips them until their game is saved. */
+    static _writtenThisSession = new Set();
+
+    static isAvailable() {
+        return typeof indexedDB !== "undefined";
+    }
+
+    static newKey() {
+        return `ca-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    }
+
+    static _open() {
+        if (!CustomAudioStore._dbPromise) {
+            CustomAudioStore._dbPromise = new Promise((resolve, reject) => {
+                if (!CustomAudioStore.isAvailable()) {
+                    reject(new Error("IndexedDB unavailable."));
+                    return;
+                }
+                const req = indexedDB.open(CustomAudioStore.DB_NAME, CustomAudioStore.DB_VERSION);
+                req.onupgradeneeded = () => {
+                    const db = req.result;
+                    if (!db.objectStoreNames.contains(CustomAudioStore.STORE_NAME)) {
+                        db.createObjectStore(CustomAudioStore.STORE_NAME);
+                    }
+                };
+                req.onsuccess = () => resolve(req.result);
+                req.onerror = () => reject(req.error || new Error("IndexedDB open failed."));
+            }).catch((err) => {
+                CustomAudioStore._dbPromise = null;
+                throw err;
+            });
+        }
+        return CustomAudioStore._dbPromise;
+    }
+
+    /**
+     * @param {IDBTransactionMode} mode
+     * @param {(store: IDBObjectStore) => IDBRequest|void} fn
+     */
+    static async _run(mode, fn) {
+        const db = await CustomAudioStore._open();
+        return new Promise((resolve, reject) => {
+            const tx = db.transaction(CustomAudioStore.STORE_NAME, mode);
+            let result;
+            const req = fn(tx.objectStore(CustomAudioStore.STORE_NAME));
+            if (req) req.onsuccess = () => (result = req.result);
+            tx.oncomplete = () => resolve(result);
+            tx.onerror = () => reject(tx.error || new Error("IndexedDB request failed."));
+            tx.onabort = () => reject(tx.error || new Error("IndexedDB transaction aborted."));
+        });
+    }
+
+    /**
+     * @param {string} key
+     * @param {Blob} blob
+     */
+    static async put(key, blob) {
+        const buffer = await blob.arrayBuffer();
+        CustomAudioStore._writtenThisSession.add(key);
+        await CustomAudioStore._run("readwrite", (store) =>
+            store.put({ buffer, mime: blob.type || "audio/webm" }, key)
+        );
+        CustomAudioStore._requestPersist();
+    }
+
+    /**
+     * @param {string} key
+     * @returns {Promise<Blob|null>}
+     */
+    static async get(key) {
+        const entry = await CustomAudioStore._run("readonly", (store) => store.get(key));
+        if (!entry || !entry.buffer) return null;
+        return new Blob([entry.buffer], { type: entry.mime || "audio/webm" });
+    }
+
+    /** @param {string|string[]} keys */
+    static async remove(keys) {
+        const list = (Array.isArray(keys) ? keys : [keys])
+            .map((k) => String(k || ""))
+            .filter(Boolean);
+        if (!list.length) return;
+        await CustomAudioStore._run("readwrite", (store) => {
+            for (const key of list) store.delete(key);
+        });
+    }
+
+    /** @returns {Promise<string[]>} */
+    static async keys() {
+        const out = await CustomAudioStore._run("readonly", (store) => store.getAllKeys());
+        return Array.isArray(out) ? out.map(String) : [];
+    }
+
+    /** Ask the browser not to evict clips under storage pressure (installed PWAs usually get it). */
+    static _requestPersist() {
+        if (CustomAudioStore._persistRequested) return;
+        CustomAudioStore._persistRequested = true;
+        try {
+            const pending = navigator.storage?.persist?.();
+            if (pending && typeof pending.catch === "function") pending.catch(() => {});
+        } catch (_) {}
+    }
+}
+
+/**
  * Custom Messages — author audio / text / prompt clips with triggers and loops.
  * Free local talking-head game: tiles under the Game menu; editor dialog for create/edit.
  * Named "games" store separate action collections; Custom Games mode picks which to load.
@@ -96,7 +210,12 @@ class CustomMessagesGame {
         this._previewAudio = null;
         this._previewUrl = null;
         this._previewBtn = null;
+        /** @type {HTMLInputElement|null} */
+        this._editorAudioUrlInput = null;
+        /** @type {HTMLAudioElement|null} URL clip playing outside the player (host has no CORS). */
+        this._untappedAudio = null;
         this._actionsNameInput = null;
+        this._backupOverlay = null;
         this._debugConfirmOverlay = null;
         /** @type {((ok: boolean) => void)|null} */
         this._debugConfirmResolve = null;
@@ -134,8 +253,20 @@ class CustomMessagesGame {
         this.messages = active.messages;
         this._activeGameId = active.gameId;
         this._activeGameName = active.gameName;
+        if (this._editOnly) this._running = false;
+        void this._loadAudioAndBegin(this._generation);
+    }
+
+    /** Clips load from IndexedDB before the editor opens or any trigger can play them. */
+    async _loadAudioAndBegin(generation) {
+        await CustomMessagesGame._loadAudio(this.messages);
+        if (generation !== this._generation) return;
+        if (this.messages.some((m) => m.audioBlob && !m.audioKey)) {
+            // Clips saved inline in localStorage by older builds move into IndexedDB.
+            await this._persistAll();
+            if (generation !== this._generation) return;
+        }
         if (this._editOnly) {
-            this._running = false;
             this.openActionsList();
             return;
         }
@@ -144,9 +275,9 @@ class CustomMessagesGame {
         if (!this.messages.length) {
             this.openActionsList();
         }
-        void this._runGameLoad(this._generation);
-        this._startFacePoll(this._generation);
-        this._startSpeechPoll(this._generation);
+        void this._runGameLoad(generation);
+        this._startFacePoll(generation);
+        this._startSpeechPoll(generation);
     }
 
     /**
@@ -250,13 +381,17 @@ class CustomMessagesGame {
         const want = String(gameId || "").trim();
         if (!want) return false;
         const store = CustomMessagesGame._loadStore();
-        const before = Array.isArray(store.games) ? store.games.length : 0;
-        store.games = (store.games || []).filter((c) => c && c.id !== want);
-        if (store.games.length === before) return false;
+        const removed = (store.games || []).find((c) => c && c.id === want);
+        if (!removed) return false;
+        store.games = store.games.filter((c) => c && c.id !== want);
         if (store.activeGameId === want) {
             store.activeGameId = null;
         }
         CustomMessagesGame._saveStore(store);
+        const audioKeys = (removed.messages || []).map((m) => m?.audioKey).filter(Boolean);
+        CustomAudioStore.remove(audioKeys).catch((err) => {
+            console.warn("Custom audio delete failed:", err);
+        });
         return true;
     }
 
@@ -303,6 +438,7 @@ class CustomMessagesGame {
      */
     static async buildGameExport(source = {}) {
         const messages = Array.isArray(source.messages) ? source.messages : [];
+        await CustomMessagesGame._loadAudio(messages);
         for (const msg of messages) {
             if (msg?.audioBlob && !msg._audioBase64) {
                 try {
@@ -318,16 +454,18 @@ class CustomMessagesGame {
             format: CustomMessagesGame.EXPORT_FORMAT,
             exportedAt: new Date().toISOString(),
             name,
-            messages: messages.map((m) => CustomMessagesGame._serializeMessage(m))
+            messages: messages.map((m) =>
+                CustomMessagesGame._serializeMessage(m, { forExport: true })
+            )
         };
     }
 
     /**
      * Import a game backup file into the local store (new id; does not replace others).
      * @param {object} payload
-     * @returns {{ id: string, name: string }|null}
+     * @returns {Promise<{ id: string, name: string }|null>}
      */
-    static importGameFromExport(payload) {
+    static async importGameFromExport(payload) {
         if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
         const format = String(payload.format || "").trim();
         if (
@@ -339,6 +477,9 @@ class CustomMessagesGame {
         }
         const name = String(payload.name || "").trim() || "Untitled";
         const messages = CustomMessagesGame._deserializeMessageList(payload.messages);
+        // Fresh keys so importing the same backup twice never shares (then deletes) a clip.
+        for (const msg of messages) msg.audioKey = "";
+        await CustomMessagesGame._storeAudioInDb(messages);
         const store = CustomMessagesGame._loadStore();
         const game = {
             id: CustomMessagesGame._newGameId(),
@@ -397,6 +538,7 @@ class CustomMessagesGame {
         this._stopRecording(true);
         this._closeEditor();
         this._closeActionsList();
+        this._closeBackupPrompt();
         this._closeDebugConfirm(false);
         this._hideChatHistoryEmphasis();
         const agent = this._getAgent();
@@ -457,7 +599,8 @@ class CustomMessagesGame {
                   reasoningEffort: CustomMessagesGame._normalizeReasoningEffort(
                       existing.reasoningEffort
                   ),
-                  audioBlob: existing.audioBlob || null
+                  audioBlob: existing.audioBlob || null,
+                  audioUrl: existing.audioUrl || ""
               }
             : {
                   id: null,
@@ -472,7 +615,8 @@ class CustomMessagesGame {
                   clearHistory: true,
                   maxWords: CustomMessagesGame.DEFAULT_PROMPT_MAX_WORDS,
                   reasoningEffort: CustomMessagesGame.DEFAULT_REASONING_EFFORT,
-                  audioBlob: null
+                  audioBlob: null,
+                  audioUrl: ""
               };
         this._mountEditor();
     }
@@ -507,6 +651,7 @@ class CustomMessagesGame {
         if (player && typeof player.stop === "function") {
             player.stop();
         }
+        this._stopUntappedAudio();
         try {
             if (window.speechSynthesis) window.speechSynthesis.cancel();
         } catch (_) {}
@@ -632,7 +777,12 @@ class CustomMessagesGame {
         return list.map((entry) => CustomMessagesGame._deserializeMessage(entry)).filter(Boolean);
     }
 
-    static _serializeMessage(msg) {
+    /**
+     * Stored messages reference audio by `audioKey`; backups (`forExport`) embed it as base64.
+     * @param {CustomMessage} msg
+     * @param {{ forExport?: boolean }} [options]
+     */
+    static _serializeMessage(msg, { forExport = false } = {}) {
         const constraints = CustomMessagesGame._normalizeConstraints(msg.constraints);
         const out = {
             id: msg.id,
@@ -645,6 +795,9 @@ class CustomMessagesGame {
             fileName: msg.fileName || "",
             sendCamera: msg.kind === "prompt" && !!msg.sendCamera,
             clearHistory: msg.kind === "prompt" && msg.clearHistory !== false,
+            audioUrl:
+                msg.kind === "audio" ? CustomMessagesGame._normalizeAudioUrl(msg.audioUrl) : "",
+            audioKey: "",
             audioBase64: null,
             audioMime: ""
         };
@@ -652,8 +805,14 @@ class CustomMessagesGame {
             out.maxWords = CustomMessagesGame._normalizeMaxWords(msg.maxWords);
             out.reasoningEffort = CustomMessagesGame._normalizeReasoningEffort(msg.reasoningEffort);
         }
-        if (msg.audioBlob && typeof msg.audioBlob.size === "number" && msg.audioBlob.size > 0) {
-            // Stored async via _persistAll; placeholder filled when available on the message.
+        const hasBlob =
+            !!msg.audioBlob && typeof msg.audioBlob.size === "number" && msg.audioBlob.size > 0;
+        if (!forExport && msg.audioKey) {
+            // Keep the key even if the clip failed to load, so a later load can still find it.
+            out.audioKey = msg.audioKey;
+            out.audioMime = msg.audioBlob?.type || msg._audioMime || "audio/webm";
+        } else if (hasBlob) {
+            // Export, or no IndexedDB: inline base64, filled async by _persistAll / buildGameExport.
             out.audioBase64 = msg._audioBase64 || null;
             out.audioMime = msg.audioBlob.type || msg._audioMime || "audio/webm";
         }
@@ -683,6 +842,8 @@ class CustomMessagesGame {
             clearHistory: kind === "prompt" && entry.clearHistory !== false,
             maxWords: CustomMessagesGame._normalizeMaxWords(entry.maxWords),
             reasoningEffort: CustomMessagesGame._normalizeReasoningEffort(entry.reasoningEffort),
+            audioUrl: kind === "audio" ? CustomMessagesGame._normalizeAudioUrl(entry.audioUrl) : "",
+            audioKey: String(entry.audioKey || ""),
             audioBlob: null,
             _audioBase64: entry.audioBase64 || null,
             _audioMime: entry.audioMime || ""
@@ -698,6 +859,33 @@ class CustomMessagesGame {
             }
         }
         return msg;
+    }
+
+    /**
+     * Absolute http(s) URLs, or paths relative to the app such as `audio/intro.wav`.
+     * @param {unknown} value
+     * @returns {string} The trimmed value, or "" when it is not a usable URL.
+     */
+    static _normalizeAudioUrl(value) {
+        const raw = String(value || "").trim();
+        if (!raw) return "";
+        try {
+            const url = new URL(raw, window.location.href);
+            return url.protocol === "http:" || url.protocol === "https:" ? raw : "";
+        } catch (_) {
+            return "";
+        }
+    }
+
+    /** @param {string} value @returns {string} */
+    static _fileNameFromUrl(value) {
+        try {
+            const url = new URL(String(value || ""), window.location.href);
+            const last = url.pathname.split("/").filter(Boolean).pop();
+            return last ? decodeURIComponent(last) : url.hostname;
+        } catch (_) {
+            return "";
+        }
     }
 
     /** @param {unknown} value @returns {number} */
@@ -790,9 +978,42 @@ class CustomMessagesGame {
         return btoa(binary);
     }
 
-    async _persistAll() {
-        for (const msg of this.messages) {
-            if (msg.audioBlob && !msg._audioBase64) {
+    /**
+     * Fill `audioBlob` from IndexedDB for messages that reference a stored clip.
+     * @param {CustomMessage[]} messages
+     */
+    static async _loadAudio(messages) {
+        await Promise.all(
+            (messages || []).map(async (msg) => {
+                if (!msg?.audioKey || msg.audioBlob) return;
+                try {
+                    msg.audioBlob = await CustomAudioStore.get(msg.audioKey);
+                    if (!msg.audioBlob) console.warn("Custom audio clip missing:", msg.audioKey);
+                } catch (err) {
+                    console.warn("Custom audio load failed:", err);
+                }
+            })
+        );
+    }
+
+    /**
+     * Move clips without an `audioKey` into IndexedDB. Without IndexedDB they fall back to
+     * inline base64 in localStorage (quota-limited).
+     * @param {CustomMessage[]} messages
+     */
+    static async _storeAudioInDb(messages) {
+        for (const msg of messages || []) {
+            if (!msg?.audioBlob || !msg.audioBlob.size || msg.audioKey) continue;
+            try {
+                const key = CustomAudioStore.newKey();
+                await CustomAudioStore.put(key, msg.audioBlob);
+                msg.audioKey = key;
+                msg._audioBase64 = null;
+                continue;
+            } catch (err) {
+                console.warn("Custom audio IndexedDB save failed; storing inline:", err);
+            }
+            if (!msg._audioBase64) {
                 try {
                     msg._audioBase64 = await CustomMessagesGame._blobToBase64(msg.audioBlob);
                     msg._audioMime = msg.audioBlob.type || "audio/webm";
@@ -801,6 +1022,30 @@ class CustomMessagesGame {
                 }
             }
         }
+    }
+
+    /** Delete IndexedDB clips no saved game references (e.g. left by a failed save). */
+    static async sweepOrphanAudio() {
+        if (!CustomAudioStore.isAvailable()) return;
+        try {
+            const stored = await CustomAudioStore.keys();
+            const referenced = new Set();
+            for (const game of CustomMessagesGame._loadStore().games || []) {
+                for (const m of game?.messages || []) {
+                    if (m?.audioKey) referenced.add(String(m.audioKey));
+                }
+            }
+            const orphans = stored.filter(
+                (key) => !referenced.has(key) && !CustomAudioStore._writtenThisSession.has(key)
+            );
+            await CustomAudioStore.remove(orphans);
+        } catch (err) {
+            console.warn("Custom audio sweep failed:", err);
+        }
+    }
+
+    async _persistAll() {
+        await CustomMessagesGame._storeAudioInDb(this.messages);
         CustomMessagesGame._saveMessages(this.messages, this._activeGameId);
     }
 
@@ -808,7 +1053,8 @@ class CustomMessagesGame {
         if (!msg) return "Message";
         if (msg.kind === "audio") {
             const name = String(msg.fileName || "").trim();
-            return name || "Recording";
+            if (name) return name;
+            return (msg.audioUrl && CustomMessagesGame._fileNameFromUrl(msg.audioUrl)) || "Recording";
         }
         const words = String(msg.text || "")
             .trim()
@@ -930,12 +1176,93 @@ class CustomMessagesGame {
         this._renderTiles();
     }
 
-    /** Done / backdrop: edit-only sessions return to the Custom Games picker. */
+    /** Done / backdrop: offer a backup, then edit-only sessions return to the Custom Games picker. */
     _finishActionsList() {
         this._closeActionsList();
+        if (this._activeGameId && this.messages.length) {
+            this._openBackupPrompt();
+            return;
+        }
+        this._leaveActionsList();
+    }
+
+    _leaveActionsList() {
         if (this._editOnly && typeof this.robot?.setMode === "function") {
             void this.robot.setMode("customGames");
         }
+    }
+
+    /** Games live only in browser storage; nudge the player to keep a backup file. */
+    _openBackupPrompt() {
+        this._closeBackupPrompt();
+
+        const overlay = document.createElement("div");
+        overlay.className = "custom-messages-overlay custom-messages-backup-overlay";
+        overlay.setAttribute("role", "dialog");
+        overlay.setAttribute("aria-modal", "true");
+        overlay.setAttribute("aria-label", "Back up your game");
+
+        const card = document.createElement("div");
+        card.className = "custom-messages-card";
+
+        const title = document.createElement("h2");
+        title.className = "custom-messages-title";
+        title.textContent = "Back up your game?";
+        card.appendChild(title);
+
+        const body = document.createElement("p");
+        body.className = "custom-messages-hint";
+        body.textContent =
+            "Your game is stored in this browser's cache, which can be cleared. " +
+            "If you care about it, we recommend downloading a backup.";
+        card.appendChild(body);
+
+        const detail = document.createElement("p");
+        detail.className = "custom-messages-hint muted";
+        detail.textContent =
+            "The backup is a single file with all audio, text and triggers that you can upload later.";
+        card.appendChild(detail);
+
+        const actions = document.createElement("div");
+        actions.className = "custom-messages-actions";
+
+        const downloadBtn = document.createElement("button");
+        downloadBtn.type = "button";
+        downloadBtn.className = "custom-messages-submit";
+        downloadBtn.textContent = "Download";
+
+        const notNowBtn = document.createElement("button");
+        notNowBtn.type = "button";
+        notNowBtn.className = "custom-messages-cancel secondary";
+        notNowBtn.textContent = "Not now";
+
+        downloadBtn.addEventListener("click", async () => {
+            downloadBtn.disabled = true;
+            notNowBtn.disabled = true;
+            downloadBtn.textContent = "Downloading…";
+            await this._downloadGameBackup();
+            if (this._backupOverlay !== overlay) return;
+            this._closeBackupPrompt();
+            this._leaveActionsList();
+        });
+        notNowBtn.addEventListener("click", () => {
+            this._closeBackupPrompt();
+            this._leaveActionsList();
+        });
+
+        actions.appendChild(downloadBtn);
+        actions.appendChild(notNowBtn);
+        card.appendChild(actions);
+        overlay.appendChild(card);
+        document.body.appendChild(overlay);
+
+        this._backupOverlay = overlay;
+        downloadBtn.focus();
+    }
+
+    _closeBackupPrompt() {
+        if (this._backupOverlay) this._backupOverlay.remove();
+        this._backupOverlay = null;
     }
 
     _closeActionsList() {
@@ -1078,6 +1405,7 @@ class CustomMessagesGame {
                     draft.text = "";
                 } else {
                     draft.audioBlob = null;
+                    draft.audioUrl = "";
                     if (!draft.fileName || /\.(webm|wav|mp3|ogg|m4a)$/i.test(draft.fileName)) {
                         draft.fileName = "";
                     }
@@ -1234,7 +1562,12 @@ class CustomMessagesGame {
     _hasDraftMedia() {
         const draft = this._draft;
         if (!draft || !draft.kind) return false;
-        if (draft.kind === "audio") return !!(draft.audioBlob && draft.audioBlob.size > 0);
+        if (draft.kind === "audio") {
+            return (
+                !!(draft.audioBlob && draft.audioBlob.size > 0) ||
+                !!CustomMessagesGame._normalizeAudioUrl(draft.audioUrl)
+            );
+        }
         if (draft.kind === "prompt") return true;
         return String(draft.text || "").trim().length > 0;
     }
@@ -1281,13 +1614,22 @@ class CustomMessagesGame {
 
     _renderAudioEditor(body, draft) {
         const status = document.createElement("p");
-        status.className = "custom-messages-status muted";
-        if (draft.audioBlob && draft.audioBlob.size) {
-            status.textContent = `Ready: ${draft.fileName || "Recording"}`;
-            status.className = "custom-messages-status ok";
-        } else {
-            status.textContent = "Record a clip or upload an audio file.";
-        }
+        const showStatus = () => {
+            if (CustomMessagesGame._normalizeAudioUrl(draft.audioUrl)) {
+                status.textContent = `Ready: ${draft.fileName || "Audio"} (from URL)`;
+                status.className = "custom-messages-status ok";
+            } else if (String(draft.audioUrl || "").trim()) {
+                status.textContent = "Enter an http(s) URL or a path like audio/clip.wav.";
+                status.className = "custom-messages-status error";
+            } else if (draft.audioBlob && draft.audioBlob.size) {
+                status.textContent = `Ready: ${draft.fileName || "Recording"}`;
+                status.className = "custom-messages-status ok";
+            } else {
+                status.textContent = "Record a clip, upload an audio file, or paste a URL.";
+                status.className = "custom-messages-status muted";
+            }
+        };
+        showStatus();
 
         const row = document.createElement("div");
         row.className = "custom-messages-media-row";
@@ -1323,18 +1665,42 @@ class CustomMessagesGame {
             draft.audioBlob = file;
             draft.fileName = file.name || "upload.audio";
             draft._audioBase64 = null;
-            status.textContent = `Ready: ${draft.fileName}`;
-            status.className = "custom-messages-status ok";
+            draft.audioUrl = "";
+            urlInput.value = "";
+            showStatus();
             this._syncPreviewButton();
             this._syncEditorOptionsVisibility();
         });
         uploadBtn.addEventListener("click", () => fileInput.click());
+
+        const urlInput = document.createElement("input");
+        urlInput.type = "url";
+        urlInput.className = "custom-messages-audio-url";
+        urlInput.placeholder = "…or paste an audio file URL";
+        urlInput.autocomplete = "off";
+        urlInput.spellcheck = false;
+        urlInput.value = draft.audioUrl || "";
+        urlInput.addEventListener("input", () => {
+            this._stopPreview();
+            const raw = urlInput.value.trim();
+            draft.audioUrl = raw;
+            if (raw) {
+                draft.audioBlob = null;
+                draft._audioBase64 = null;
+                draft.fileName = CustomMessagesGame._fileNameFromUrl(raw);
+            }
+            showStatus();
+            this._syncPreviewButton();
+            this._syncEditorOptionsVisibility();
+        });
+        this._editorAudioUrlInput = urlInput;
 
         row.appendChild(recordBtn);
         row.appendChild(playBtn);
         row.appendChild(uploadBtn);
         row.appendChild(fileInput);
         body.appendChild(row);
+        body.appendChild(urlInput);
         body.appendChild(status);
         this._syncPreviewButton();
     }
@@ -1343,7 +1709,8 @@ class CustomMessagesGame {
         const btn = this._previewBtn;
         if (!btn) return;
         const blob = this._draft?.audioBlob;
-        btn.disabled = this._recording || !(blob && blob.size > 0);
+        const url = CustomMessagesGame._normalizeAudioUrl(this._draft?.audioUrl);
+        btn.disabled = this._recording || !(url || (blob && blob.size > 0));
         btn.textContent = this._previewAudio ? "Stop" : "Play";
         btn.setAttribute("aria-label", this._previewAudio ? "Stop audio" : "Play audio");
     }
@@ -1353,12 +1720,14 @@ class CustomMessagesGame {
             this._stopPreview();
             return;
         }
+        if (this._recording) return;
+        const remoteUrl = CustomMessagesGame._normalizeAudioUrl(this._draft?.audioUrl);
         const blob = this._draft?.audioBlob;
-        if (this._recording || !blob || !blob.size) return;
-        const url = URL.createObjectURL(blob);
-        const audio = new Audio(url);
+        if (!remoteUrl && (!blob || !blob.size)) return;
+        const objectUrl = remoteUrl ? null : URL.createObjectURL(blob);
+        const audio = new Audio(remoteUrl || objectUrl);
         this._previewAudio = audio;
-        this._previewUrl = url;
+        this._previewUrl = objectUrl;
         const finish = () => {
             if (this._previewAudio === audio) this._stopPreview();
         };
@@ -1657,8 +2026,12 @@ class CustomMessagesGame {
                 const blob = !discard && chunks.length ? new Blob(chunks, { type }) : null;
                 if (blob && this._draft) {
                     this._draft.audioBlob = blob;
-                    this._draft.fileName = this._draft.fileName || "recording.webm";
+                    this._draft.fileName = this._draft.audioUrl
+                        ? "recording.webm"
+                        : this._draft.fileName || "recording.webm";
                     this._draft._audioBase64 = null;
+                    this._draft.audioUrl = "";
+                    if (this._editorAudioUrlInput) this._editorAudioUrlInput.value = "";
                 }
                 releaseOwned();
                 resolve(blob);
@@ -1683,6 +2056,8 @@ class CustomMessagesGame {
         if (this._recording) await this._stopRecording(false);
 
         const trigger = draft.trigger || "gameLoad";
+        const audioUrl =
+            draft.kind === "audio" ? CustomMessagesGame._normalizeAudioUrl(draft.audioUrl) : "";
         const msg = {
             id: draft.id || CustomMessagesGame._newId(),
             kind: draft.kind,
@@ -1696,17 +2071,28 @@ class CustomMessagesGame {
             clearHistory: draft.kind === "prompt" && draft.clearHistory !== false,
             maxWords: CustomMessagesGame._normalizeMaxWords(draft.maxWords),
             reasoningEffort: CustomMessagesGame._normalizeReasoningEffort(draft.reasoningEffort),
-            audioBlob: draft.kind === "audio" ? draft.audioBlob : null,
+            audioUrl,
+            audioKey: "",
+            audioBlob: draft.kind === "audio" && !audioUrl ? draft.audioBlob : null,
             _audioBase64: null,
             _audioMime: ""
         };
 
         const idx = this.messages.findIndex((m) => m.id === msg.id);
+        const previous = idx >= 0 ? this.messages[idx] : null;
+        if (previous?.audioKey && msg.audioBlob && msg.audioBlob === previous.audioBlob) {
+            msg.audioKey = previous.audioKey;
+        }
         if (idx >= 0) this.messages[idx] = msg;
         else this.messages.push(msg);
 
         this._firedOnceIds.delete(msg.id);
         await this._persistAll();
+        if (previous?.audioKey && previous.audioKey !== msg.audioKey) {
+            CustomAudioStore.remove(previous.audioKey).catch((err) => {
+                console.warn("Custom audio delete failed:", err);
+            });
+        }
         this._renderTiles();
         this._closeEditor();
 
@@ -1717,9 +2103,15 @@ class CustomMessagesGame {
 
     async _deleteMessage(id) {
         const want = String(id || "");
+        const removed = this.messages.find((m) => m.id === want);
         this.messages = this.messages.filter((m) => m.id !== want);
         this._firedOnceIds.delete(want);
         await this._persistAll();
+        if (removed?.audioKey) {
+            CustomAudioStore.remove(removed.audioKey).catch((err) => {
+                console.warn("Custom audio delete failed:", err);
+            });
+        }
         this._renderTiles();
         this._closeEditor();
     }
@@ -2172,6 +2564,11 @@ class CustomMessagesGame {
     }
 
     async _playAudio(msg, generation) {
+        const url = CustomMessagesGame._normalizeAudioUrl(msg.audioUrl);
+        if (url) {
+            await this._playAudioUrl(msg, url, generation);
+            return this._isActive(generation);
+        }
         const blob = msg.audioBlob;
         if (!blob || !blob.size) return;
         const player = this._getAudioPlayer();
@@ -2185,6 +2582,77 @@ class CustomMessagesGame {
             console.warn("Custom audio playback failed:", err);
         }
         return this._isActive(generation);
+    }
+
+    /**
+     * URL clips are fetched into a Blob so they play through the player's mouth-sync tap.
+     * Cross-origin media without CORS plays silent through that tap, so hosts that block the
+     * fetch get a plain audio element instead (audible, but the mouth doesn't move).
+     * @param {CustomMessage} msg
+     * @param {string} url
+     * @param {number} generation
+     */
+    async _playAudioUrl(msg, url, generation) {
+        if (msg._urlFetch?.src !== url) {
+            let blob = null;
+            try {
+                const res = await fetch(url);
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                blob = await res.blob();
+            } catch (err) {
+                console.warn("Custom audio URL fetch failed; playing without mouth sync:", err);
+            }
+            msg._urlFetch = { src: url, blob };
+            if (!this._isActive(generation)) return;
+        }
+        const blob = msg._urlFetch.blob;
+        const player = this._getAudioPlayer();
+        if (blob && blob.size && player && typeof player.playBlob === "function") {
+            try {
+                await player.playBlob(blob, CustomMessagesGame.tileLabel(msg));
+            } catch (err) {
+                console.warn("Custom audio playback failed:", err);
+            }
+            return;
+        }
+        await this._playUntappedUrl(url);
+    }
+
+    /** @param {string} url @returns {Promise<void>} Resolves when playback ends or is stopped. */
+    _playUntappedUrl(url) {
+        this._stopUntappedAudio();
+        const audio = new Audio(url);
+        this._untappedAudio = audio;
+        return new Promise((resolve) => {
+            const finish = () => {
+                if (this._untappedAudio === audio) {
+                    this._untappedAudio = null;
+                    window.__phonebotTtsSpeaking = false;
+                }
+                resolve();
+            };
+            audio.addEventListener("ended", finish);
+            audio.addEventListener("error", finish);
+            audio.addEventListener("pause", finish);
+            audio
+                .play()
+                .then(() => {
+                    if (this._untappedAudio === audio) window.__phonebotTtsSpeaking = true;
+                })
+                .catch((err) => {
+                    console.warn("Custom audio URL playback failed:", err);
+                    finish();
+                });
+        });
+    }
+
+    _stopUntappedAudio() {
+        const audio = this._untappedAudio;
+        if (!audio) return;
+        try {
+            audio.pause();
+        } catch (_) {}
+        audio.removeAttribute("src");
     }
 
     async _playText(msg, generation) {
@@ -2266,6 +2734,9 @@ class CustomMessagesGame {
  * @property {boolean} clearHistory
  * @property {number} maxWords Prompt reply word limit; 0 = no limit.
  * @property {"low"|"medium"|"high"} reasoningEffort Sets the talking-head reasoning level when the prompt is sent.
+ * @property {string} audioUrl Audio file URL (absolute or app-relative); when set it replaces the stored clip.
+ * @property {{ src: string, blob: Blob|null }} [_urlFetch] Cached fetch of `audioUrl` (blob null = fetch blocked).
+ * @property {string} audioKey IndexedDB key for the clip ("" when none / stored inline).
  * @property {Blob|null} audioBlob
  * @property {string|null} [_audioBase64]
  * @property {string} [_audioMime]
@@ -2290,6 +2761,7 @@ class CustomGamesPicker {
         this.stop();
         this._closing = false;
         this._mount();
+        void CustomMessagesGame.sweepOrphanAudio();
     }
 
     stop() {
@@ -2346,7 +2818,7 @@ class CustomGamesPicker {
             try {
                 const text = await file.text();
                 const parsed = JSON.parse(text);
-                const saved = CustomMessagesGame.importGameFromExport(parsed);
+                const saved = await CustomMessagesGame.importGameFromExport(parsed);
                 if (!saved) {
                     if (typeof window.alert === "function") {
                         window.alert("That file is not a valid game backup.");
