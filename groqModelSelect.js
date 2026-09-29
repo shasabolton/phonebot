@@ -206,25 +206,89 @@ function resolveOrpheusVoice(requested, voiceIds = ORPHEUS_VOICE_IDS) {
     return ids[0] || ORPHEUS_PREFERRED_VOICE;
 }
 
-/** Prefixed to every Orpheus TTS input so delivery stays audible over motors. */
-const ORPHEUS_VOCAL_PREFIX = "[clearly][confident] ";
+/**
+ * Prefixed to Orpheus TTS input so delivery stays audible over motors.
+ * Keep it to one tag: stacked tags make Orpheus read a tag word aloud.
+ */
+const ORPHEUS_VOCAL_PREFIX = "[clearly] ";
+
+/** Bracketed vocal directions the chat model may use; any other [tag] is stripped before TTS. */
+const ORPHEUS_ALLOWED_DIRECTIONS = Object.freeze([
+    "laughs",
+    "chuckles",
+    "giggles",
+    "sighs",
+    "gasps",
+    "whisper",
+    "excited",
+    "cheerful",
+    "warm",
+    "playful",
+    "sarcastic",
+    "deadpan",
+    "dramatic",
+    "nervous",
+    "sad",
+    "singsong"
+]);
+
+const LEADING_PREFIX_TAGS_RE = /^(\[(?:clearly|confident(?:ly)?)\]\s*)+/i;
 
 /**
- * Prepend Orpheus vocal-direction tags and clamp to the model input limit.
- * Strips a leading clearly/confident(ly) tag run first so client+worker never stack.
+ * Make text safe for TTS: drop emoji, markdown symbols, <tags> and any [tag] not in
+ * `allowedTags`. Adjacent allowed tags collapse to the first one.
+ * Returns "" when nothing speakable remains outside tags.
+ * @param {string} text
+ * @param {string[]} [allowedTags=[]]
+ * @returns {string}
+ */
+function cleanSpeechText(text, allowedTags = []) {
+    const allowed = new Set((allowedTags || []).map((t) => String(t).trim().toLowerCase()));
+    const s = String(text || "")
+        .replace(/<\/?[a-z][^<>]*>/gi, " ")
+        .replace(/\[([^\[\]]*)\]/g, (_, inner) => {
+            const tag = String(inner).trim().toLowerCase();
+            return allowed.has(tag) ? ` \u0001${tag}\u0002 ` : " ";
+        })
+        .replace(/[\[\]]/g, " ")
+        .replace(/\u0001([^\u0002]*)\u0002/g, "[$1]")
+        .replace(/(\[[a-z ]+\]\s*){2,}/g, (run) => `${run.match(/\[[a-z ]+\]/)[0]} `)
+        .replace(/[\p{Extended_Pictographic}\u{1F1E6}-\u{1F1FF}\u{1F3FB}-\u{1F3FF}\u200D\uFE0F\u20E3]/gu, " ")
+        .replace(/[*_#`~|^{}\\]/g, " ")
+        .replace(/&/g, " and ")
+        .replace(/\s+/g, " ")
+        .replace(/\s+([.,!?;:…])/g, "$1")
+        .replace(/^[\s.,;:!?…\-–—]+/, "")
+        .trim();
+    if (!/[\p{L}\p{N}]/u.test(s.replace(/\[[^\]]*\]/g, ""))) return "";
+    return s;
+}
+
+/** `cleanSpeechText` keeping only the Orpheus allowlisted directions. */
+function cleanOrpheusSpeechText(text) {
+    return cleanSpeechText(String(text || "").replace(LEADING_PREFIX_TAGS_RE, ""), ORPHEUS_ALLOWED_DIRECTIONS);
+}
+
+/**
+ * Clean text, prepend the Orpheus vocal prefix and clamp to the model input limit.
+ * The prefix is skipped when the text already opens with a direction so tags never stack.
  * @param {string} text
  * @param {number} [maxChars=200]
  * @returns {string}
  */
 function applyOrpheusVocalDirections(text, maxChars = 200) {
-    const prefix = ORPHEUS_VOCAL_PREFIX;
     const limit = Math.max(1, Number(maxChars) || 200);
-    let s = String(text || "").trim();
+    const s = cleanOrpheusSpeechText(text);
     if (!s) return "";
-    s = s.replace(/^(\[(?:clearly|confident(?:ly)?)\]\s*)+/i, "").trim();
-    if (!s) return "";
+    const prefix = s.startsWith("[") ? "" : ORPHEUS_VOCAL_PREFIX;
     const maxBody = Math.max(1, limit - prefix.length);
-    const body = s.length <= maxBody ? s : `${s.slice(0, maxBody - 1)}…`;
+    const body =
+        s.length <= maxBody
+            ? s
+            : `${s
+                  .slice(0, maxBody - 1)
+                  .replace(/\[[^\]]*$/, "")
+                  .trimEnd()}…`;
     return `${prefix}${body}`;
 }
 
@@ -330,7 +394,10 @@ const api = {
     ORPHEUS_PREFERRED_VOICE,
     ORPHEUS_VOICE_IDS,
     ORPHEUS_VOCAL_PREFIX,
+    ORPHEUS_ALLOWED_DIRECTIONS,
     resolveOrpheusVoice,
+    cleanSpeechText,
+    cleanOrpheusSpeechText,
     applyOrpheusVocalDirections,
     orpheusSpeechBodyBudget
 };
@@ -354,7 +421,10 @@ export {
     ORPHEUS_PREFERRED_VOICE,
     ORPHEUS_VOICE_IDS,
     ORPHEUS_VOCAL_PREFIX,
+    ORPHEUS_ALLOWED_DIRECTIONS,
     resolveOrpheusVoice,
+    cleanSpeechText,
+    cleanOrpheusSpeechText,
     applyOrpheusVocalDirections,
     orpheusSpeechBodyBudget
 };

@@ -2,6 +2,7 @@ import {
     fetchAndSelectGroqModels,
     applyCrossModelChatDefaults,
     resolveOrpheusVoice,
+    cleanOrpheusSpeechText,
     applyOrpheusVocalDirections,
     orpheusSpeechBodyBudget
 } from "../../groqModelSelect.js";
@@ -773,10 +774,7 @@ function extractSpokenText(contentText) {
 const GROQ_SPEECH_MAX_CHARS = 200;
 
 function splitGroqSpeechInput(text, max = orpheusSpeechBodyBudget(GROQ_SPEECH_MAX_CHARS)) {
-    const s = String(text || "")
-        .trim()
-        .replace(/^(\[(?:clearly|confident(?:ly)?)\]\s*)+/i, "")
-        .trim();
+    const s = cleanOrpheusSpeechText(text);
     if (!s) return [];
     if (s.length <= max) return [s];
 

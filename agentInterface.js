@@ -1000,10 +1000,11 @@ class AgentInterface {
         }
         const gemini = this._isGeminiProvider();
         const chunks = gemini
-            ? [content]
+            ? [this._cleanSpeechText(content)].filter(Boolean)
             : typeof window.GroqTts?.splitInput === "function"
               ? window.GroqTts.splitInput(content)
               : [content];
+        if (!chunks.length) return;
         let usedBrowserFallback = false;
         try {
             this._apiKey = this._keyInput ? String(this._keyInput.value || "").trim() : this._apiKey;
@@ -1121,7 +1122,8 @@ class AgentInterface {
     }
 
     async _speakBrowserFallback(text) {
-        const content = String(text || "").trim();
+        const clean = window.GroqModelSelect?.cleanSpeechText;
+        const content = typeof clean === "function" ? clean(text, []) : String(text || "").trim();
         if (!content) return;
         if (!window.speechSynthesis || typeof window.SpeechSynthesisUtterance !== "function") {
             return;
@@ -1989,6 +1991,27 @@ class AgentInterface {
         return `${tag}:\n${text}`;
     }
 
+    /**
+     * Tell the active game a player message is going out. `text` is the game's hidden
+     * instruction for this turn; call `finish(ok)` once the reply has been spoken.
+     * @returns {{ text: string, finish: (ok: boolean) => void }}
+     */
+    _beginGamePlayerTurn() {
+        const game = this.robot?._localGame;
+        const turn = typeof game?.beginPlayerTurn === "function" ? game.beginPlayerTurn() : null;
+        return {
+            text: String(turn?.text || "").trim(),
+            finish: typeof turn?.finish === "function" ? turn.finish : () => {}
+        };
+    }
+
+    /** Append a game's hidden per-turn instruction to an outbound user message. */
+    _withGameTurnInstruction(content, instruction) {
+        const extra = String(instruction || "").trim();
+        if (!extra) return content;
+        return `${content}\n\nGame instruction (not said by the player):\n${extra}`;
+    }
+
     /** Active character's bio for robots with `characters: true`; "" when none. */
     _characterPrompt() {
         if (!this.robot?.config?.characters) return "";
@@ -2002,10 +2025,46 @@ class AgentInterface {
             .join("\n\n");
     }
 
-    /** Prepend the character bio as a system message. */
-    _withCharacterPrompt(messages) {
-        const prompt = this._characterPrompt();
+    /** [tag] directions the active voice can perform; [] for Web TTS and Gemini. */
+    _speechDirectionTags() {
+        if (this._isGeminiProvider() || this._isBrowserTtsVoice()) return [];
+        const tags = window.GroqModelSelect?.ORPHEUS_ALLOWED_DIRECTIONS;
+        return Array.isArray(tags) ? tags : [];
+    }
+
+    /** How spoken replies must be written so TTS reads them cleanly. */
+    _speechStylePrompt() {
+        const tags = this._speechDirectionTags();
+        const bracketRule = tags.length
+            ? `You may occasionally add one sound or tone cue in square brackets, chosen only from: ${tags
+                  .map((t) => `[${t}]`)
+                  .join(", ")}. Use at most one per reply and never any other square brackets.`
+            : "Never use square brackets.";
+        return [
+            "Everything you say is read aloud by a text-to-speech voice.",
+            "Write spoken words as plain sentences: no emojis, markdown, asterisks, bullet points or special symbols, and no stage directions or narrated actions.",
+            bracketRule,
+            "This does not change any reply format you have been asked to use."
+        ].join(" ");
+    }
+
+    /** Speech rules plus the character bio (when any), sent as one system message. */
+    _systemPrompt() {
+        return [this._speechStylePrompt(), this._characterPrompt()].filter(Boolean).join("\n\n");
+    }
+
+    /** Prepend the system prompt; rebuilt per request, never stored in history. */
+    _withSystemPrompt(messages) {
+        const prompt = this._systemPrompt();
         return prompt ? [{ role: "system", content: prompt }, ...messages] : messages;
+    }
+
+    /** TTS-safe text; keeps only the [tag] directions the active voice supports. */
+    _cleanSpeechText(text) {
+        const clean = window.GroqModelSelect?.cleanSpeechText;
+        return typeof clean === "function"
+            ? clean(text, this._speechDirectionTags())
+            : String(text || "").trim();
     }
 
     _resolveMaxTokens(agent, messages) {
@@ -2472,7 +2531,7 @@ class AgentInterface {
                 conversationMessages.push({ role: "user", content: prompt });
             }
         }
-        conversationMessages = this._withCharacterPrompt(conversationMessages);
+        conversationMessages = this._withSystemPrompt(conversationMessages);
 
         let sendCameraImage;
         if (options.forceCameraImage === true) {
@@ -2967,7 +3026,7 @@ class AgentInterface {
             audioBlob,
             typedUserText,
             textHistory: Array.isArray(textHistory) ? textHistory : this._buildPriorConversationMessages(),
-            systemOrIntro: [this._characterPrompt(), String(systemOrIntro || "").trim()]
+            systemOrIntro: [this._systemPrompt(), String(systemOrIntro || "").trim()]
                 .filter(Boolean)
                 .join("\n\n"),
             stateJson,
@@ -3014,6 +3073,7 @@ class AgentInterface {
         let spokenForFollowUp = "";
         let replyAudio = null;
         let ok = false;
+        const gameTurn = this._beginGamePlayerTurn();
         try {
             const stateBlock = this._buildCurrentStateForIntroductionPrompt();
             const intro = await this._fetchIntroductionPromptContent();
@@ -3021,7 +3081,7 @@ class AgentInterface {
             const result = await this.sendGeminiAudioTurn({
                 audioBlob: blob,
                 textHistory: prior,
-                systemOrIntro: intro,
+                systemOrIntro: this._withGameTurnInstruction(intro, gameTurn.text),
                 stateJson: stateBlock,
                 voice: this._ttsVoice
             });
@@ -3033,6 +3093,7 @@ class AgentInterface {
                     this._statusEl.className = "warn";
                 }
                 this._armConversationPtt();
+                gameTurn.finish(false);
                 return false;
             }
             if (!assistantTranscript && !(result?.audioBlob && result.audioBlob.size >= 44)) {
@@ -3041,6 +3102,7 @@ class AgentInterface {
                     this._statusEl.className = "error";
                 }
                 this._armConversationPtt();
+                gameTurn.finish(false);
                 return false;
             }
             const fullUserContent = this._buildUserTurnContent(stateBlock, "User said", userTranscript);
@@ -3099,6 +3161,7 @@ class AgentInterface {
         } else if (ok) {
             this._maybeQueueConversationListenAfterTurn();
         }
+        gameTurn.finish(ok);
         return ok;
     }
 
@@ -3141,9 +3204,13 @@ class AgentInterface {
         }
         let spokenForFollowUp = "";
         let ok = false;
+        const gameTurn = this._beginGamePlayerTurn();
         try {
             const stateBlock = this._buildCurrentStateForIntroductionPrompt();
-            const fullUserContent = this._buildUserTurnContent(stateBlock, "User said", text);
+            const fullUserContent = this._withGameTurnInstruction(
+                this._buildUserTurnContent(stateBlock, "User said", text),
+                gameTurn.text
+            );
             const prior = this._buildPriorConversationMessages();
             const outboundUser = await this._mergeIntroductionIntoFirstUserMessage(fullUserContent, prior.length);
             const conversationMessages = [...prior, { role: "user", content: outboundUser }];
@@ -3196,6 +3263,7 @@ class AgentInterface {
         } else if (this._agentEnabled && this._isConversationMode()) {
             this._armConversationPtt();
         }
+        gameTurn.finish(ok);
         return ok;
     }
 
@@ -3221,18 +3289,22 @@ class AgentInterface {
         let result = null;
         let audioBlob = null;
         let ok = false;
+        const gameTurn = this._beginGamePlayerTurn();
         try {
             await this._ensureHostedAiCredit();
             await this.ensureSessionGroqModels();
             const marker = `__PHONEBOT_TRANSCRIPT_${crypto.randomUUID()}__`;
             const stateBlock = this._buildCurrentStateForIntroductionPrompt();
-            const userTemplate = this._buildUserTurnContent(stateBlock, "User said", marker);
+            const userTemplate = this._withGameTurnInstruction(
+                this._buildUserTurnContent(stateBlock, "User said", marker),
+                gameTurn.text
+            );
             const prior = this._buildPriorConversationMessages();
             const outboundTemplate = await this._mergeIntroductionIntoFirstUserMessage(
                 userTemplate,
                 prior.length
             );
-            const conversationMessages = this._withCharacterPrompt([
+            const conversationMessages = this._withSystemPrompt([
                 ...prior,
                 { role: "user", content: outboundTemplate }
             ]);
@@ -3355,6 +3427,7 @@ class AgentInterface {
 
         if (!ok) {
             if (this._agentEnabled && this._isConversationMode()) this._armConversationPtt();
+            gameTurn.finish(false);
             return false;
         }
         const spokenText = String(result?.spokenText || result?.contentText || "").trim();
@@ -3397,6 +3470,7 @@ class AgentInterface {
             this._statusEl.className = "ok";
         }
         this._maybeQueueConversationListenAfterTurn();
+        gameTurn.finish(true);
         return true;
     }
 
@@ -3440,6 +3514,7 @@ class AgentInterface {
         let spokenForFollowUp = "";
         let ok = false;
         let pendingUserTurn = null;
+        let gameTurn = null;
         try {
             if (!text && !options.allowEmpty) {
                 if (this._statusEl) {
@@ -3449,8 +3524,13 @@ class AgentInterface {
                 return;
             }
             if (!modeStillCurrent()) return;
+            // Typed chat is a player turn; kickoffs and game-sent prompts are not.
+            if (!isKickoff && !options.gameAction) gameTurn = this._beginGamePlayerTurn();
             const stateBlock = this._buildCurrentStateForIntroductionPrompt();
-            const fullUserContent = this._buildUserTurnContent(stateBlock, "User", text);
+            const fullUserContent = this._withGameTurnInstruction(
+                this._buildUserTurnContent(stateBlock, "User", text),
+                gameTurn?.text
+            );
             const prior = this._buildPriorConversationMessages();
             const outboundUser = await this._mergeIntroductionIntoFirstUserMessage(fullUserContent, prior.length);
             if (!modeStillCurrent()) return;
@@ -3473,6 +3553,7 @@ class AgentInterface {
                     this.messageHistory.pop();
                     this._renderHistory();
                 }
+                gameTurn?.finish(false);
                 return;
             }
             this.messageHistory.push({
@@ -3512,7 +3593,10 @@ class AgentInterface {
             this._sendInProgress = false;
             this._syncSendButtonState();
         }
-        if (!modeStillCurrent()) return;
+        if (!modeStillCurrent()) {
+            gameTurn?.finish(false);
+            return;
+        }
         if (ok && spokenForFollowUp) {
             await this._afterAgentSpoke(spokenForFollowUp);
             if (this._statusEl && this._agentEnabled) {
@@ -3524,6 +3608,7 @@ class AgentInterface {
         } else if (this._agentEnabled && this._isConversationMode()) {
             this._armConversationPtt();
         }
+        gameTurn?.finish(ok);
     }
 
     /**
@@ -3546,7 +3631,8 @@ class AgentInterface {
         if (this._dashboardPromptInput) this._dashboardPromptInput.value = next;
         const sendOpts = {
             allowEmpty: options.allowEmpty === true,
-            forceCameraImage: options.forceCameraImage === true
+            forceCameraImage: options.forceCameraImage === true,
+            gameAction: options.gameAction === true
         };
         this._assignCameraSendOptions(sendOpts, options);
         if (options.reasoningEffort) this.setReasoningEffort(options.reasoningEffort);

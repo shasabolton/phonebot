@@ -275,6 +275,16 @@
       border: 1px solid #ccc;
       color: #333;
     }
+    .custom-messages-tile-badge {
+      flex: 0 0 auto;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: #fde8e8;
+      color: #a12;
+      font-size: 0.72rem;
+      font-weight: 600;
+      white-space: nowrap;
+    }
     .robot-dashboard--custom-messages .robot-dashboard-chat-host {
       flex: 1 1 auto;
       min-height: 5.5rem;
@@ -420,6 +430,15 @@
       margin: 4px 0 0;
       box-sizing: border-box;
     }
+    .custom-messages-options .custom-messages-end-game-label:not([hidden]) {
+      display: flex;
+      margin-top: 10px;
+    }
+    .custom-messages-options .custom-messages-end-game-hint {
+      margin: -4px 0 0;
+      font-size: 0.8rem;
+      text-align: left;
+    }
     .custom-messages-game-name {
       display: block;
       width: 100%;
@@ -558,6 +577,14 @@
       gap: 0 8px;
     }
     .characters-games .custom-messages-camera-label {
+      font-weight: 500;
+    }
+    .characters-game-ends {
+      display: grid;
+      gap: 8px;
+      margin: 8px 0 0;
+    }
+    .characters-game-ends .custom-messages-game-meta-label {
       font-weight: 500;
     }
     .robot-dashboard-chat {

@@ -568,6 +568,38 @@ class Robot {
     }
 
     /**
+     * Whether a catalog game can finish on its own: JS games flagged `canEnd` in
+     * games/index.json, or JSON / saved games with an End game action.
+     * @param {string} gameId
+     * @returns {Promise<boolean>}
+     */
+    async gameCanEnd(gameId) {
+        const id = String(gameId || "");
+        const Game = window.CustomMessagesGame;
+        if (id.startsWith("game:") || id.startsWith("custom:")) {
+            if (typeof Game?.gameCanEnd !== "function") return false;
+            const ref = id.slice(id.indexOf(":") + 1);
+            return Game.gameCanEnd(id.startsWith("game:") ? { builtinId: ref } : { savedId: ref });
+        }
+        const gameKey = String(this._getModesMap()?.[id]?.game || id);
+        return this._gamesIndex.some((e) => e.type === "js" && e.id === gameKey && e.canEnd);
+    }
+
+    /**
+     * Where the active character goes when `endedId` finishes: its on-end choice, else their
+     * home game. "" = no game (also when there is no character or the target isn't playable).
+     * @param {string} endedId
+     */
+    _gameEndTarget(endedId) {
+        const character = this._activeCharacter();
+        if (!character) return "";
+        const rule = character.onGameEnd?.[endedId];
+        const target = rule == null ? character.homeGame : rule === "none" ? "" : rule;
+        if (!target || !character.games.includes(target)) return "";
+        return this.getGameCatalog().some((g) => g.id === target) ? target : "";
+    }
+
+    /**
      * Play a dropdown entry: a mode id, or a JSON / saved game run by the Custom engine.
      * @param {string} gameId
      */
@@ -945,8 +977,19 @@ class Robot {
     }
 
     onLocalGameEnded() {
-        this._modeReady = false;
-        if (String(this.name || "").toLowerCase() === "talking head") this.showNoGame();
+        const target = this._gameEndTarget(this.dashboardGameId());
+        const runsInCustom = target.startsWith("game:") || target.startsWith("custom:");
+        // Custom games restart in place, which needs a ready mode; setMode only restarts
+        // the current mode (e.g. Simon Says again) when it is not ready.
+        if (!runsInCustom) this._modeReady = false;
+        if (String(this.name || "").toLowerCase() !== "talking head") return;
+        if (!target) {
+            this.showNoGame();
+            return;
+        }
+        void this.selectGame(target).then((ok) => {
+            if (!ok) this.showNoGame();
+        });
     }
 
     /** Default mode with no game selected; Custom with no active game is the plain chat. */

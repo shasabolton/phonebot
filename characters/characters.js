@@ -6,6 +6,9 @@
  * @property {string} voice TTS voice id; "" keeps whatever voice is selected.
  * @property {string[]} games Dashboard game ids shown while active: robot mode ids,
  *   `game:<id>` for JSON games in games/index.json, `custom:<id>` for browser-saved games.
+ * @property {string} homeGame One of `games` that games go to when they end; "" = no game.
+ * @property {Record<string, string>} onGameEnd Per-game override of where it goes when it
+ *   ends: another game id, or "none" for no game. Games not listed go to `homeGame`.
  */
 
 /**
@@ -84,12 +87,26 @@ class PhonebotCharacters {
         const games = Array.isArray(raw.games)
             ? [...new Set(raw.games.map((g) => String(g || "").trim()).filter(Boolean))]
             : [];
+        const homeGame = String(raw.homeGame || "").trim();
+        /** @type {Record<string, string>} */
+        const onGameEnd = {};
+        if (raw.onGameEnd && typeof raw.onGameEnd === "object" && !Array.isArray(raw.onGameEnd)) {
+            for (const [id, target] of Object.entries(raw.onGameEnd)) {
+                const key = String(id || "").trim();
+                const value = String(target || "").trim();
+                if (games.includes(key) && (value === "none" || games.includes(value))) {
+                    onGameEnd[key] = value;
+                }
+            }
+        }
         return {
             id: String(raw.id || "").trim() || PhonebotCharacters._slug(name),
             name,
             bio: String(raw.bio || "").trim(),
             voice: String(raw.voice || "").trim(),
-            games
+            games,
+            homeGame: games.includes(homeGame) ? homeGame : "",
+            onGameEnd
         };
     }
 
@@ -248,7 +265,9 @@ class PhonebotCharacters {
             name: character.name,
             bio: character.bio,
             voice: character.voice,
-            games: [...character.games]
+            games: [...character.games],
+            homeGame: character.homeGame || "",
+            onGameEnd: { ...(character.onGameEnd || {}) }
         };
     }
 
@@ -499,6 +518,17 @@ class CharactersPanel {
                 ? this.robot.getCharacterGameOptions()
                 : [];
         const knownGameIds = new Set(gameOptions.map((g) => g.id));
+        const gameLabels = new Map(gameOptions.map((g) => [g.id, g.label]));
+        /** Games that can finish on their own, so they get a "when it ends" choice. */
+        const canEnd = new Set();
+        if (typeof this.robot?.gameCanEnd === "function") {
+            await Promise.all(
+                gameOptions.map(async (g) => {
+                    if (await this.robot.gameCanEnd(g.id)) canEnd.add(g.id);
+                })
+            );
+            if (!this._overlay) return;
+        }
 
         const overlay = document.createElement("div");
         overlay.className = "custom-messages-overlay custom-messages-editor-overlay characters-editor-overlay";
@@ -577,6 +607,7 @@ class CharactersPanel {
             const check = document.createElement("input");
             check.type = "checkbox";
             check.value = game.id;
+            check.addEventListener("change", () => renderGameChoices());
             label.appendChild(check);
             label.appendChild(document.createTextNode(game.label));
             groupGrids.get(group).appendChild(label);
@@ -589,6 +620,33 @@ class CharactersPanel {
             gamesWrap.appendChild(none);
         }
 
+        const homeLabel = document.createElement("label");
+        homeLabel.className = "custom-messages-game-meta-label";
+        homeLabel.textContent = "Home game";
+        const homeSelect = document.createElement("select");
+        homeSelect.className = "custom-messages-game-meta-name-input";
+        homeSelect.addEventListener("change", () => {
+            homeGame = homeSelect.value;
+            renderEnds();
+        });
+        homeLabel.appendChild(homeSelect);
+        const homeHint = document.createElement("p");
+        homeHint.className = "muted characters-games-hint";
+        homeHint.textContent = "Where their games go when they end, unless changed below.";
+
+        const endsSection = document.createElement("div");
+        const endsHeading = document.createElement("p");
+        endsHeading.className = "custom-messages-game-meta-label";
+        endsHeading.textContent = "When a game ends";
+        const endsHint = document.createElement("p");
+        endsHint.className = "muted characters-games-hint";
+        endsHint.textContent = "Only games that can finish on their own are listed.";
+        const endsList = document.createElement("div");
+        endsList.className = "characters-game-ends";
+        endsSection.appendChild(endsHeading);
+        endsSection.appendChild(endsHint);
+        endsSection.appendChild(endsList);
+
         const meta = document.createElement("div");
         meta.className = "custom-messages-game-meta";
         meta.appendChild(nameLabel);
@@ -599,10 +657,67 @@ class CharactersPanel {
         gamesSection.appendChild(gamesHint);
         gamesSection.appendChild(gamesWrap);
         meta.appendChild(gamesSection);
+        const homeSection = document.createElement("div");
+        homeSection.appendChild(homeLabel);
+        homeSection.appendChild(homeHint);
+        meta.appendChild(homeSection);
+        meta.appendChild(endsSection);
         card.appendChild(meta);
 
         /** Games from other robots are kept even though they have no checkbox here. */
         let otherGames = [];
+        /** Kept while its game is unchecked, so re-checking it restores the choice. */
+        let homeGame = "";
+        /** @type {Record<string, string>} */
+        let onGameEnd = {};
+        const checkedGames = () =>
+            [...gameChecks].filter(([, check]) => check.checked).map(([id]) => id);
+        const labelOf = (id) => gameLabels.get(id) || id;
+        const addOption = (select, value, text) => {
+            const opt = document.createElement("option");
+            opt.value = value;
+            opt.textContent = text;
+            select.appendChild(opt);
+        };
+        const renderHome = () => {
+            const games = checkedGames();
+            homeSelect.replaceChildren();
+            addOption(homeSelect, "", "None");
+            for (const id of games) addOption(homeSelect, id, labelOf(id));
+            homeSelect.value = games.includes(homeGame) ? homeGame : "";
+        };
+        const renderEnds = () => {
+            const games = checkedGames();
+            const home = games.includes(homeGame) ? homeGame : "";
+            const endable = games.filter((id) => canEnd.has(id));
+            endsList.replaceChildren();
+            endsSection.hidden = !endable.length;
+            for (const id of endable) {
+                const row = document.createElement("label");
+                row.className = "custom-messages-game-meta-label";
+                row.textContent = labelOf(id);
+                const select = document.createElement("select");
+                select.className = "custom-messages-game-meta-name-input";
+                addOption(select, "", home ? `Home game (${labelOf(home)})` : "Home game (none set)");
+                addOption(select, "none", "No game");
+                for (const other of games) {
+                    if (other !== id) addOption(select, other, labelOf(other));
+                }
+                const rule = onGameEnd[id] || "";
+                select.value = [...select.options].some((o) => o.value === rule) ? rule : "";
+                select.addEventListener("change", () => {
+                    if (select.value) onGameEnd[id] = select.value;
+                    else delete onGameEnd[id];
+                });
+                row.appendChild(select);
+                endsList.appendChild(row);
+            }
+        };
+        const renderGameChoices = () => {
+            renderHome();
+            renderEnds();
+        };
+
         const fill = (source) => {
             nameInput.value = source?.name || "";
             bioInput.value = source?.bio || "";
@@ -617,6 +732,9 @@ class CharactersPanel {
             const games = new Set(source?.games || []);
             for (const [id, check] of gameChecks) check.checked = games.has(id);
             otherGames = [...games].filter((id) => !knownGameIds.has(id));
+            homeGame = String(source?.homeGame || "");
+            onGameEnd = { ...(source?.onGameEnd || {}) };
+            renderGameChoices();
             syncSave();
         };
 
@@ -633,15 +751,19 @@ class CharactersPanel {
         };
         nameInput.addEventListener("input", syncSave);
         saveBtn.addEventListener("click", () => {
+            const checked = checkedGames();
+            // normalize() also drops unchecked games and targets they no longer play.
+            const endings = Object.entries(onGameEnd).filter(
+                ([id, target]) => otherGames.includes(id) || (canEnd.has(id) && target !== id)
+            );
             const saved = PhonebotCharacters.save({
                 id: character?.id || "",
                 name: nameInput.value,
                 bio: bioInput.value,
                 voice: voiceSelect.value,
-                games: [
-                    ...[...gameChecks].filter(([, check]) => check.checked).map(([id]) => id),
-                    ...otherGames
-                ]
+                games: [...checked, ...otherGames],
+                homeGame,
+                onGameEnd: Object.fromEntries(endings)
             });
             if (!saved) return;
             PhonebotCharacters.download(saved);

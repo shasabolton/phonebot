@@ -13,7 +13,8 @@
       "type": "js",
       "path": "games/simonSays.js",
       "className": "SimonSaysPoseMatch",
-      "computervisionModel": "movenet"
+      "computervisionModel": "movenet",
+      "canEnd": true
     },
     {
       "id": "parrot",

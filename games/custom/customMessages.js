@@ -144,7 +144,8 @@ class CustomMessagesGame {
         { id: "faceDetected", label: "Face detected" },
         { id: "noFaceDetected", label: "No face detected" },
         { id: "speechFinished", label: "Speech finished" },
-        { id: "playNext", label: "Play next" }
+        { id: "playNext", label: "Play next" },
+        { id: "playerTurn", label: "Player turn" }
     ]);
 
     static LOOPS = Object.freeze([
@@ -200,6 +201,10 @@ class CustomMessagesGame {
         this._speechFinishEpoch = 0;
         this._firedOnceIds = new Set();
         this._playNextQueue = [];
+        /** Player messages sent since the game (or its last history-clearing prompt) started. */
+        this._playerTurn = 0;
+        /** A player-turn action will end the game once this turn's reply has been spoken. */
+        this._endPending = false;
         this._tileListEl = null;
         this._actionsOverlay = null;
         this._overlay = null;
@@ -210,6 +215,8 @@ class CustomMessagesGame {
         this._recordStreamOwned = false;
         this._editorDelayInput = null;
         this._editorFaceConstraint = null;
+        this._editorTurnLabel = null;
+        this._editorDelayLabel = null;
         /** @type {HTMLAudioElement|null} Editor preview of the draft audio clip. */
         this._previewAudio = null;
         this._previewUrl = null;
@@ -231,6 +238,8 @@ class CustomMessagesGame {
         this._generation += 1;
         this._firedOnceIds = new Set();
         this._playNextQueue = [];
+        this._playerTurn = 0;
+        this._endPending = false;
         this._lastFacePresent = null;
         this._faceSince = 0;
         this._lastSpeechSpeaking = null;
@@ -321,7 +330,8 @@ class CustomMessagesGame {
                             type: g.type === "js" ? "js" : "json",
                             path: String(g.path),
                             className: String(g.className || ""),
-                            computervisionModel: String(g.computervisionModel || "")
+                            computervisionModel: String(g.computervisionModel || ""),
+                            canEnd: g.canEnd === true
                         }))
                 )
                 .catch((err) => {
@@ -357,6 +367,36 @@ class CustomMessagesGame {
         if (!res.ok) throw new Error(`HTTP ${res.status} loading ${entry.path}`);
         const payload = await res.json();
         return CustomMessagesGame.importGameFromExport(payload, { builtinId: want });
+    }
+
+    /** @param {unknown} messages @returns {boolean} true when any action ends the game. */
+    static messagesCanEnd(messages) {
+        return Array.isArray(messages) && messages.some((m) => !!m?.endGame);
+    }
+
+    /**
+     * Whether a game has an End game action. A built-in JSON game is judged by the local
+     * copy that actually runs, or by its repo file before a copy has been made.
+     * @param {{ savedId?: string, builtinId?: string }} ref
+     * @returns {Promise<boolean>}
+     */
+    static async gameCanEnd({ savedId = "", builtinId = "" } = {}) {
+        const games = CustomMessagesGame._loadStore().games || [];
+        const saved = savedId
+            ? games.find((g) => g?.id === savedId)
+            : games.find((g) => builtinId && g?.builtinId === builtinId);
+        if (saved) return CustomMessagesGame.messagesCanEnd(saved.messages);
+        if (!builtinId) return false;
+        const entry = (await CustomMessagesGame.listBuiltinGames()).find((g) => g.id === builtinId);
+        if (!entry) return false;
+        try {
+            const res = await fetch(entry.path, { cache: "no-cache" });
+            if (!res.ok) return false;
+            return CustomMessagesGame.messagesCanEnd((await res.json())?.messages);
+        } catch (err) {
+            console.warn("Game end check failed:", entry.path, err);
+            return false;
+        }
     }
 
     /**
@@ -608,6 +648,7 @@ class CustomMessagesGame {
         this._running = false;
         this._generation += 1;
         this._audioBusy = false;
+        this._endPending = false;
         this._stopFacePoll();
         this._stopSpeechPoll();
         this._speechFinishedPending = false;
@@ -668,6 +709,8 @@ class CustomMessagesGame {
                   id: existing.id,
                   kind: existing.kind,
                   trigger: existing.trigger,
+                  turnNumber: CustomMessagesGame._normalizeTurnNumber(existing.turnNumber),
+                  endGame: !!existing.endGame,
                   loop: existing.loop,
                   delaySec: CustomMessagesGame._normalizeDelaySec(existing.delaySec),
                   constraints: CustomMessagesGame._normalizeConstraints(existing.constraints),
@@ -686,6 +729,8 @@ class CustomMessagesGame {
                   id: null,
                   kind: null,
                   trigger: "gameLoad",
+                  turnNumber: 1,
+                  endGame: false,
                   loop: "once",
                   delaySec: 0,
                   constraints: CustomMessagesGame._normalizeConstraints(null),
@@ -869,6 +914,10 @@ class CustomMessagesGame {
             id: msg.id,
             kind: msg.kind,
             trigger: msg.trigger,
+            ...(msg.trigger === "playerTurn"
+                ? { turnNumber: CustomMessagesGame._normalizeTurnNumber(msg.turnNumber) }
+                : {}),
+            endGame: !!msg.endGame,
             loop: msg.loop,
             delaySec: CustomMessagesGame._normalizeDelaySec(msg.delaySec),
             constraints,
@@ -914,6 +963,8 @@ class CustomMessagesGame {
             trigger: CustomMessagesGame.TRIGGERS.some((t) => t.id === trigger)
                 ? trigger
                 : "gameLoad",
+            turnNumber: CustomMessagesGame._normalizeTurnNumber(entry.turnNumber),
+            endGame: !!entry.endGame,
             loop,
             delaySec: CustomMessagesGame._normalizeDelaySec(entry.delaySec),
             constraints: CustomMessagesGame._normalizeConstraints(entry.constraints),
@@ -929,6 +980,11 @@ class CustomMessagesGame {
             _audioBase64: entry.audioBase64 || null,
             _audioMime: entry.audioMime || ""
         };
+        if (CustomMessagesGame._isTurnAttachment(msg)) {
+            msg.clearHistory = false;
+            msg.sendCamera = false;
+            msg.delaySec = 0;
+        }
         if (msg._audioBase64) {
             try {
                 msg.audioBlob = CustomMessagesGame._base64ToBlob(
@@ -967,6 +1023,13 @@ class CustomMessagesGame {
         } catch (_) {
             return "";
         }
+    }
+
+    /** Player turns are counted from 1. @param {unknown} value @returns {number} */
+    static _normalizeTurnNumber(value) {
+        const n = Math.round(Number(value));
+        if (!Number.isFinite(n) || n < 1) return 1;
+        return Math.min(n, 999);
     }
 
     /** @param {unknown} value @returns {number} */
@@ -1031,6 +1094,13 @@ class CustomMessagesGame {
         if (c.face === "present") parts.push("face present");
         if (c.face === "absent") parts.push("face absent");
         return parts.length ? parts.join(", ") : "";
+    }
+
+    /** e.g. "player turn 3" or "every 3rd player turn". @param {CustomMessage} msg */
+    static _playerTurnSummary(msg) {
+        const n = CustomMessagesGame._normalizeTurnNumber(msg?.turnNumber);
+        if (msg?.loop !== "repeat") return `player turn ${n}`;
+        return n === 1 ? "every player turn" : `every ${n} player turns`;
     }
 
     static _newId() {
@@ -1411,7 +1481,20 @@ class CustomMessagesGame {
             }
             const constraintNote = CustomMessagesGame._constraintsSummary(msg.constraints);
             const constraintSuffix = constraintNote ? ` · if ${constraintNote}` : "";
-            label.title = `${msg.kind} · ${msg.trigger} · ${msg.loop}${delayNote}${cameraNote}${clearNote}${promptNote}${constraintSuffix}`;
+            const triggerNote =
+                msg.trigger === "playerTurn"
+                    ? CustomMessagesGame._playerTurnSummary(msg)
+                    : msg.trigger;
+            const endNote = msg.endGame ? " · ends game" : "";
+            label.title = `${msg.kind} · ${triggerNote} · ${msg.loop}${delayNote}${cameraNote}${clearNote}${promptNote}${constraintSuffix}${endNote}`;
+            tile.appendChild(label);
+
+            if (msg.endGame) {
+                const badge = document.createElement("span");
+                badge.className = "custom-messages-tile-badge";
+                badge.textContent = "Ends game";
+                tile.appendChild(badge);
+            }
 
             const editBtn = document.createElement("button");
             editBtn.type = "button";
@@ -1423,7 +1506,6 @@ class CustomMessagesGame {
                 this.openEditor(msg);
             });
 
-            tile.appendChild(label);
             tile.appendChild(editBtn);
             list.appendChild(tile);
         }
@@ -1447,6 +1529,8 @@ class CustomMessagesGame {
         this._editorLoop = null;
         this._editorDelayInput = null;
         this._editorFaceConstraint = null;
+        this._editorTurnLabel = null;
+        this._editorDelayLabel = null;
         if (this._actionsOverlay) this._renderTiles();
     }
 
@@ -1522,8 +1606,29 @@ class CustomMessagesGame {
         triggerSelect.value = draft.trigger;
         triggerSelect.addEventListener("change", () => {
             draft.trigger = triggerSelect.value;
+            this._refreshEditorBody();
         });
         triggerLabel.appendChild(triggerSelect);
+
+        const turnLabel = document.createElement("label");
+        turnLabel.className = "custom-messages-turn-label";
+        turnLabel.textContent = "On player turn";
+        const turnInput = document.createElement("input");
+        turnInput.type = "number";
+        turnInput.className = "custom-messages-delay custom-messages-turn";
+        turnInput.min = "1";
+        turnInput.max = "999";
+        turnInput.step = "1";
+        turnInput.inputMode = "numeric";
+        turnInput.value = String(CustomMessagesGame._normalizeTurnNumber(draft.turnNumber));
+        turnInput.addEventListener("input", () => {
+            draft.turnNumber = CustomMessagesGame._normalizeTurnNumber(turnInput.value);
+        });
+        turnInput.addEventListener("change", () => {
+            draft.turnNumber = CustomMessagesGame._normalizeTurnNumber(turnInput.value);
+            turnInput.value = String(draft.turnNumber);
+        });
+        turnLabel.appendChild(turnInput);
 
         const loopLabel = document.createElement("label");
         loopLabel.textContent = "Loop";
@@ -1586,11 +1691,30 @@ class CustomMessagesGame {
         });
         faceConstraintLabel.appendChild(faceConstraintSelect);
 
+        const endGameLabel = document.createElement("label");
+        endGameLabel.className = "custom-messages-camera-label custom-messages-end-game-label";
+        const endGameCheck = document.createElement("input");
+        endGameCheck.type = "checkbox";
+        endGameCheck.className = "custom-messages-end-game";
+        endGameCheck.checked = !!draft.endGame;
+        endGameCheck.addEventListener("change", () => {
+            draft.endGame = !!endGameCheck.checked;
+        });
+        endGameLabel.appendChild(endGameCheck);
+        endGameLabel.appendChild(document.createTextNode(" End game after this"));
+        const endGameHint = document.createElement("p");
+        endGameHint.className = "custom-messages-hint muted custom-messages-end-game-hint";
+        endGameHint.textContent =
+            "Ends once this finishes playing, or once the reply to a prompt has been spoken.";
+
         options.appendChild(triggerLabel);
+        options.appendChild(turnLabel);
         options.appendChild(loopLabel);
         options.appendChild(delayLabel);
         options.appendChild(constraintsHeading);
         options.appendChild(faceConstraintLabel);
+        options.appendChild(endGameLabel);
+        options.appendChild(endGameHint);
         card.appendChild(options);
 
         const actions = document.createElement("div");
@@ -1637,8 +1761,25 @@ class CustomMessagesGame {
         this._editorLoop = loopSelect;
         this._editorDelayInput = delayInput;
         this._editorFaceConstraint = faceConstraintSelect;
+        this._editorTurnLabel = turnLabel;
+        this._editorDelayLabel = delayLabel;
 
         this._refreshEditorBody();
+    }
+
+    /** Prompts on the Player turn trigger ride along with the player's message. */
+    static _isTurnAttachment(msg) {
+        return !!msg && msg.kind === "prompt" && msg.trigger === "playerTurn";
+    }
+
+    /** Turn number only applies to Player turn; attached prompts have no delay. */
+    _syncTriggerOptions() {
+        const draft = this._draft;
+        if (!draft) return;
+        if (this._editorTurnLabel) this._editorTurnLabel.hidden = draft.trigger !== "playerTurn";
+        if (this._editorDelayLabel) {
+            this._editorDelayLabel.hidden = CustomMessagesGame._isTurnAttachment(draft);
+        }
     }
 
     _hasDraftMedia() {
@@ -1691,6 +1832,7 @@ class CustomMessagesGame {
         } else {
             this._renderTextEditor(body, draft);
         }
+        this._syncTriggerOptions();
         this._syncEditorOptionsVisibility();
     }
 
@@ -1841,9 +1983,13 @@ class CustomMessagesGame {
     _renderTextEditor(body, draft) {
         const status = document.createElement("p");
         status.className = "custom-messages-status muted";
+        const attachment = CustomMessagesGame._isTurnAttachment(draft);
         if (draft.fileName && draft.text) {
             status.textContent = `Loaded: ${draft.fileName}`;
             status.className = "custom-messages-status ok";
+        } else if (attachment) {
+            status.textContent =
+                "Added to the player's message on this turn as a hidden instruction, e.g. \"Wrap up the game now.\"";
         } else if (draft.kind === "prompt") {
             status.textContent =
                 "Type a prompt or leave empty. Sent to the agent (not TTS). Clears chat history by default.";
@@ -1854,10 +2000,11 @@ class CustomMessagesGame {
         const input = document.createElement("textarea");
         input.className = "custom-messages-text";
         input.rows = 4;
-        input.placeholder =
-            draft.kind === "prompt"
-                ? "Prompt text for the agent (optional)…"
-                : "Text to speak (TTS)…";
+        input.placeholder = attachment
+            ? "Instruction added to the player's message…"
+            : draft.kind === "prompt"
+              ? "Prompt text for the agent (optional)…"
+              : "Text to speak (TTS)…";
         input.value = draft.text || "";
         input.addEventListener("input", () => {
             draft.text = input.value;
@@ -1866,7 +2013,7 @@ class CustomMessagesGame {
         });
         body.appendChild(input);
 
-        if (draft.kind === "prompt") {
+        if (draft.kind === "prompt" && !attachment) {
             if (draft.clearHistory === undefined) draft.clearHistory = true;
             draft.maxWords = CustomMessagesGame._normalizeMaxWords(draft.maxWords);
             draft.reasoningEffort = CustomMessagesGame._normalizeReasoningEffort(
@@ -2140,17 +2287,20 @@ class CustomMessagesGame {
         const trigger = draft.trigger || "gameLoad";
         const audioUrl =
             draft.kind === "audio" ? CustomMessagesGame._normalizeAudioUrl(draft.audioUrl) : "";
+        const attachment = CustomMessagesGame._isTurnAttachment({ kind: draft.kind, trigger });
         const msg = {
             id: draft.id || CustomMessagesGame._newId(),
             kind: draft.kind,
             trigger,
+            turnNumber: CustomMessagesGame._normalizeTurnNumber(draft.turnNumber),
+            endGame: !!draft.endGame,
             loop: draft.loop === "repeat" ? "repeat" : "once",
-            delaySec: CustomMessagesGame._normalizeDelaySec(draft.delaySec),
+            delaySec: attachment ? 0 : CustomMessagesGame._normalizeDelaySec(draft.delaySec),
             constraints: CustomMessagesGame._normalizeConstraints(draft.constraints),
             text: String(draft.text || ""),
             fileName: String(draft.fileName || ""),
-            sendCamera: draft.kind === "prompt" && !!draft.sendCamera,
-            clearHistory: draft.kind === "prompt" && draft.clearHistory !== false,
+            sendCamera: draft.kind === "prompt" && !attachment && !!draft.sendCamera,
+            clearHistory: draft.kind === "prompt" && !attachment && draft.clearHistory !== false,
             maxWords: CustomMessagesGame._normalizeMaxWords(draft.maxWords),
             reasoningEffort: CustomMessagesGame._normalizeReasoningEffort(draft.reasoningEffort),
             audioUrl,
@@ -2257,6 +2407,7 @@ class CustomMessagesGame {
 
     async _onFaceTick(generation) {
         if (!this._isActive(generation) || this._audioBusy || this._faceTickBusy) return;
+        if (this._endPending) return;
         const facePresent = this._isFacePresent();
         const now = Date.now();
 
@@ -2346,7 +2497,7 @@ class CustomMessagesGame {
     }
 
     async _onSpeechTick(generation) {
-        if (!this._isActive(generation)) return;
+        if (!this._isActive(generation) || this._endPending) return;
         const speaking = this._isSpeechSpeaking();
 
         if (this._lastSpeechSpeaking === null) {
@@ -2460,8 +2611,10 @@ class CustomMessagesGame {
     /**
      * @param {CustomMessage} msg
      * @param {number} generation
+     * @param {{ turnFollowUp?: boolean }} [options] turnFollowUp still plays while the
+     *   game is waiting to end after a player turn.
      */
-    async _playMessage(msg, generation) {
+    async _playMessage(msg, generation, { turnFollowUp = false } = {}) {
         if (!msg || !this._isActive(generation)) return false;
         if (!this._constraintsMet(msg)) return false;
 
@@ -2471,6 +2624,7 @@ class CustomMessagesGame {
             if (!waited) return false;
         }
         if (!this._isActive(generation)) return false;
+        if (this._endPending && !turnFollowUp) return false;
         if (!this._constraintsMet(msg)) return false;
 
         if (CustomMessagesGame.DEBUG_CONFIRM_TRIGGERS) {
@@ -2503,8 +2657,103 @@ class CustomMessagesGame {
         }
 
         if (!this._isActive(generation)) return false;
+        // Plays above resolve only once audio / TTS / the prompt's spoken reply has finished.
+        if (msg.endGame) {
+            this._endGame(generation);
+            return true;
+        }
         await this._playFollowingNext(msg, generation);
         return this._isActive(generation);
+    }
+
+    // —— Player turns ————————————————————————————————————————————————
+
+    /** Player turn N matches turnNumber N, or every Nth turn when set to repeat. */
+    static _turnDue(msg, turn) {
+        const n = CustomMessagesGame._normalizeTurnNumber(msg.turnNumber);
+        return msg.loop === "repeat" ? turn % n === 0 : turn === n;
+    }
+
+    /**
+     * Called by the agent as a player message is about to be sent. Counts the turn and returns
+     * the text of any Player turn prompts due now (to append to that message), plus `finish`,
+     * which the agent calls once the reply has been spoken, or with false if the request failed.
+     * @returns {{ text: string, finish: (ok: boolean) => void }}
+     */
+    beginPlayerTurn() {
+        const generation = this._generation;
+        if (!this._isActive(generation) || this._endPending) return { text: "", finish: () => {} };
+        this._playerTurn += 1;
+        const turn = this._playerTurn;
+        const due = this.messages.filter(
+            (m) =>
+                m.trigger === "playerTurn" &&
+                CustomMessagesGame._turnDue(m, turn) &&
+                !(m.loop === "once" && this._firedOnceIds.has(m.id)) &&
+                this._constraintsMet(m)
+        );
+        const prompts = due.filter((m) => m.kind === "prompt");
+        const others = due.filter((m) => m.kind !== "prompt");
+        for (const msg of prompts) {
+            if (msg.loop === "once") this._firedOnceIds.add(msg.id);
+        }
+        if (prompts.some((m) => m.endGame)) this._endPending = true;
+        if (due.length) {
+            this._debugLog("Player turn", turn, due.map((m) => CustomMessagesGame.tileLabel(m)));
+        }
+        const text = prompts
+            .map((m) => String(m.text || "").trim())
+            .filter(Boolean)
+            .join("\n\n");
+        let finished = false;
+        return {
+            text,
+            finish: (ok) => {
+                if (finished) return;
+                finished = true;
+                this._finishPlayerTurn({ turn, generation, prompts, others }, ok);
+            }
+        };
+    }
+
+    /**
+     * Plays the turn's audio / text actions, then ends the game if an attached prompt asked to.
+     * A failed request un-counts the turn so its actions fire on the next attempt.
+     */
+    _finishPlayerTurn(pending, ok) {
+        if (!this._isActive(pending.generation)) return;
+        if (!ok) {
+            if (this._playerTurn === pending.turn) this._playerTurn -= 1;
+            for (const msg of pending.prompts) this._firedOnceIds.delete(msg.id);
+            if (pending.prompts.some((m) => m.endGame)) this._endPending = false;
+            return;
+        }
+        void this._runTurnFollowUps(pending);
+    }
+
+    async _runTurnFollowUps({ generation, prompts, others }) {
+        for (const msg of others) {
+            if (!this._isActive(generation)) return;
+            if (msg.loop === "once" && this._firedOnceIds.has(msg.id)) continue;
+            const played = await this._playMessage(msg, generation, { turnFollowUp: true });
+            if (played && msg.loop === "once") this._firedOnceIds.add(msg.id);
+        }
+        if (prompts.some((m) => m.endGame)) this._endGame(generation);
+    }
+
+    /** Stop every trigger and hand back to the robot, which returns to its default game. */
+    _endGame(generation) {
+        if (!this._isActive(generation)) return;
+        this._debugLog("Game ended", { activeGame: this._activeGameName || "(none)" });
+        this._running = false;
+        this._generation += 1;
+        this._endPending = false;
+        this._playNextQueue = [];
+        this._stopFacePoll();
+        this._stopSpeechPoll();
+        if (typeof this.robot?.onLocalGameEnded === "function") {
+            this.robot.onLocalGameEnded("custom_game_finished");
+        }
     }
 
     // —— Debug trigger confirm ———————————————————————————————————————
@@ -2777,11 +3026,17 @@ class CustomMessagesGame {
             if (clearHistory) {
                 agent.messageHistory = [];
                 if (typeof agent._renderHistory === "function") agent._renderHistory();
+                // A fresh conversation starts the player-turn count again.
+                this._playerTurn = 0;
+                for (const m of this.messages) {
+                    if (m.trigger === "playerTurn") this._firedOnceIds.delete(m.id);
+                }
             }
             const delaySec = CustomMessagesGame._normalizeDelaySec(msg.delaySec);
             // Always show the Simon-style timer for camera prompts (at least 1s), then flicker on capture.
             const cameraCountdownSeconds = sendCamera ? Math.max(1, Math.ceil(delaySec) || 1) : 0;
             await agent.submitPrompt(text, {
+                gameAction: true,
                 allowEmpty: true,
                 reasoningEffort,
                 forceCameraImage: sendCamera,
@@ -2805,6 +3060,7 @@ class CustomMessagesGame {
  * @property {string} path
  * @property {string} className Global class for JS games.
  * @property {string} computervisionModel Vision model a JS game needs ("" = robot default).
+ * @property {boolean} canEnd JS games that finish on their own (JSON games use End game actions).
  */
 
 /**
@@ -2817,6 +3073,8 @@ class CustomMessagesGame {
  * @property {string} id
  * @property {"audio"|"text"|"prompt"} kind
  * @property {string} trigger
+ * @property {number} turnNumber Player turn trigger: fire on this turn, or every Nth turn when repeating.
+ * @property {boolean} endGame End the game once this has played (prompts: once the reply is spoken).
  * @property {"once"|"repeat"} loop
  * @property {number} delaySec
  * @property {CustomMessageConstraints} constraints

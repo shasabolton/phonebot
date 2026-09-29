@@ -96,12 +96,12 @@ class GroqTts {
         if (typeof window !== "undefined" && window.GroqModelSelect?.orpheusSpeechBodyBudget) {
             return window.GroqModelSelect.orpheusSpeechBodyBudget(GroqTts.MAX_INPUT_CHARS);
         }
-        const prefix = "[clearly][confident] ";
+        const prefix = "[clearly] ";
         return Math.max(1, GroqTts.MAX_INPUT_CHARS - prefix.length);
     }
 
     /**
-     * Clamp text to Groq Orpheus max length and prepend [clearly][confident].
+     * Clean text, clamp to Groq Orpheus max length and prepend [clearly].
      * @param {string} text
      * @returns {string}
      */
@@ -109,7 +109,7 @@ class GroqTts {
         if (typeof window !== "undefined" && window.GroqModelSelect?.applyOrpheusVocalDirections) {
             return window.GroqModelSelect.applyOrpheusVocalDirections(text, GroqTts.MAX_INPUT_CHARS);
         }
-        const prefix = "[clearly][confident] ";
+        const prefix = "[clearly] ";
         let s = String(text || "").trim();
         if (!s) return "";
         s = s.replace(/^(\[(?:clearly|confident(?:ly)?)\]\s*)+/i, "").trim();
@@ -125,10 +125,14 @@ class GroqTts {
      * @returns {string[]}
      */
     static splitInput(text) {
-        const s = String(text || "")
-            .trim()
-            .replace(/^(\[(?:clearly|confident(?:ly)?)\]\s*)+/i, "")
-            .trim();
+        const clean = typeof window !== "undefined" ? window.GroqModelSelect?.cleanOrpheusSpeechText : null;
+        const s =
+            typeof clean === "function"
+                ? clean(text)
+                : String(text || "")
+                      .trim()
+                      .replace(/^(\[(?:clearly|confident(?:ly)?)\]\s*)+/i, "")
+                      .trim();
         if (!s) return [];
         const max = GroqTts.speechBodyBudget();
         if (s.length <= max) return [s];
