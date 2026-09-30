@@ -1,16 +1,18 @@
 {
   "format": "phonebot.game.v1",
   "exportedAt": "2026-09-28T00:00:00.000Z",
-  "name": "Chat",
+  "name": "Philosophy",
   "messages": [
     {
-      "id": "chat-open",
+      "id": "philosophy-open",
       "kind": "prompt",
       "trigger": "gameLoad",
       "loop": "once",
+
+      "onEnd": "",
       "delaySec": 0,
       "constraints": { "face": "any" },
-      "text": "Offer to chat with the person in front of you.",
+      "text": "Have a short conversation with me about metaphysics.\nAsk whatever you like.",
       "fileName": "",
       "sendCamera": false,
       "clearHistory": true,
@@ -18,7 +20,7 @@
       "audioKey": "",
       "audioBase64": null,
       "audioMime": "",
-      "maxWords": 50,
+      "maxWords": 20,
       "reasoningEffort": "low"
     }
   ]

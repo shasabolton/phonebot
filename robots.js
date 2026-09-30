@@ -131,7 +131,7 @@ window.ROBOTS_DATA = {
             },
             bodyPlan: "A face with one servo for mouth, one for eye yaw, and one for eyebrows",
             controlPlan:
-                "Eyes track BlazeFace/MoveNet nose x ~70% of the time; otherwise random glances with held positions. Eyebrows use the same random hold/jitter mix (no nose tracking). Starts with no game selected (plain hold-to-talk chat). Games: Parrot / Custom Games (Menu, Chat, Philosophy, Fortune Teller, 20 Questions, Simon Says Custom, Story: Escape the Wall). Lean in to speak on conversation games. Groq Orpheus or Gemini TTS / Mp3 → audioPlayer → audioMouthFilter → mouth servo.",
+                "Eyes track BlazeFace/MoveNet nose x ~70% of the time; otherwise random glances with held positions. Eyebrows use the same random hold/jitter mix (no nose tracking). Starts with no game selected (plain hold-to-talk chat). Games come from the active character (characters/<id>/games/) plus built-in Parrot and Simon Says. Lean in to speak on conversation games. Groq Orpheus or Gemini TTS / Mp3 → audioPlayer → audioMouthFilter → mouth servo.",
             actuators: [
                 {
                     type: "servo",

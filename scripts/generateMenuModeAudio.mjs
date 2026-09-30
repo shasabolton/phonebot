@@ -15,7 +15,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const OUT_DIR = path.join(__dirname, "..", "games", "menuMode", "audio");
+const OUT_DIR = path.join(__dirname, "..", "characters", "austin", "games", "menuMode", "audio");
 const API_URL = "https://api.groq.com/openai/v1/audio/speech";
 const MODEL = "canopylabs/orpheus-v1-english";
 const VOICE = "austin";

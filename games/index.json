@@ -1,20 +1,13 @@
 {
-  "version": 1,
+  "version": 2,
   "games": [
-    {
-      "id": "menuMode",
-      "name": "Menu",
-      "type": "json",
-      "path": "games/menuMode/menuMode.json"
-    },
     {
       "id": "simonSaysPoseMatch",
       "name": "Simon Says",
       "type": "js",
       "path": "games/simonSays.js",
       "className": "SimonSaysPoseMatch",
-      "computervisionModel": "movenet",
-      "canEnd": true
+      "computervisionModel": "movenet"
     },
     {
       "id": "parrot",
@@ -25,46 +18,10 @@
     },
     {
       "id": "customMessages",
-      "name": "Custom Games",
+      "name": "Character games",
       "type": "js",
       "path": "games/custom/customMessages.js",
       "className": "CustomMessagesGame"
-    },
-    {
-      "id": "chat",
-      "name": "Chat",
-      "type": "json",
-      "path": "games/chat/chat.json"
-    },
-    {
-      "id": "philosophy",
-      "name": "Philosophy",
-      "type": "json",
-      "path": "games/philosophy/philosophy.json"
-    },
-    {
-      "id": "fortuneTeller",
-      "name": "Fortune Teller",
-      "type": "json",
-      "path": "games/fortuneTeller/fortuneTeller.json"
-    },
-    {
-      "id": "twentyQuestions",
-      "name": "20 Questions",
-      "type": "json",
-      "path": "games/twentyQuestions/twentyQuestions.json"
-    },
-    {
-      "id": "simonSaysCustom",
-      "name": "Simon Says Custom",
-      "type": "json",
-      "path": "games/simon says/SimonSays.json"
-    },
-    {
-      "id": "escapeTheWallJson",
-      "name": "Story: Escape the Wall",
-      "type": "json",
-      "path": "games/escapeTheWall/escapeTheWall.json"
     }
   ]
 }

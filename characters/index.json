@@ -1,15 +1,7 @@
 {
-  "version": 1,
+  "version": 2,
   "characters": [
-    {
-      "id": "austin",
-      "name": "Austin",
-      "path": "characters/austin.json"
-    },
-    {
-      "id": "madameZora",
-      "name": "Madame Zora",
-      "path": "characters/madameZora.json"
-    }
+    { "id": "austin" },
+    { "id": "madameZora" }
   ]
 }

@@ -8,6 +8,7 @@
       "kind": "prompt",
       "trigger": "gameLoad",
       "loop": "once",
+      "onEnd": "",
       "delaySec": 0,
       "constraints": {
         "face": "any"
@@ -26,6 +27,7 @@
       "kind": "prompt",
       "trigger": "speechFinished",
       "loop": "once",
+      "onEnd": "",
       "delaySec": 20,
       "constraints": {
         "face": "present"

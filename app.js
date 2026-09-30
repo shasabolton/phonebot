@@ -72,12 +72,11 @@ class App {
     }
 
     /**
-     * ?game= value for a dashboard catalog entry: mode ids and games/index.json ids by id
-     * (`parrot`, `fortune-teller`), browser-saved games by name.
+     * ?game= value for a dashboard catalog entry: built-in game ids and the character's game
+     * folder names (`parrot`, `fortune-teller`).
      */
     gameUrlValue(entry) {
         const id = String(entry?.id || "");
-        if (id.startsWith("custom:")) return this.urlSlug(entry.label);
         return this.urlSlug(id.slice(id.indexOf(":") + 1));
     }
 
@@ -252,7 +251,6 @@ class App {
                 if (!this._applyingUrl) this.syncUrlParams();
             },
             onRequestStart: () => this.requestStartFromFlow(),
-            onShowDashboard: () => this.closeSettings(),
             onStartFlowAction: (action, step) => this.handleStartFlowAction(action, step),
             startFlowShouldSkipStep: (step) => this.startFlowShouldSkipStep(step),
             resolveStartFlowStepText: (step) => this.resolveStartFlowStepText(step)

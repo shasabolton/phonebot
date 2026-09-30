@@ -579,13 +579,12 @@
     .characters-games .custom-messages-camera-label {
       font-weight: 500;
     }
-    .characters-game-ends {
-      display: grid;
-      gap: 8px;
-      margin: 8px 0 0;
+    /* Same layer as the Characters list so the game editor, opened later, stacks on top. */
+    .characters-editor-overlay {
+      z-index: 10002;
     }
-    .characters-game-ends .custom-messages-game-meta-label {
-      font-weight: 500;
+    .characters-own-games {
+      margin: 6px 0 8px;
     }
     .robot-dashboard-chat {
       flex: 1 1 auto;
@@ -1684,6 +1683,7 @@
     "pid.js",
     "games/simonSays.js",
     "games/parrot/parrot.js",
+    "zip.js",
     "games/custom/customMessages.js",
     "playBilling.js",
     "groqModelSelect.js",

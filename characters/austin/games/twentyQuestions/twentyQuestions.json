@@ -8,6 +8,8 @@
       "kind": "prompt",
       "trigger": "gameLoad",
       "loop": "once",
+
+      "onEnd": "",
       "delaySec": 0,
       "constraints": { "face": "any" },
       "text": "A person has just walked up to you. You are a head on the wall robot and you want to play 20 questions with them.\n\nThey think of a secret animal, object, person or place. You guess. They answer yes or no.\n\nFirst turn: explain the game in one breath and ask them to think of something and say ready.\n\nThen ask one yes/no question per turn. Number every question, e.g. \"Question 4: does it live in water?\". Keep track of everything they've told you and use it to narrow things down - start broad, get specific. If an answer is unclear, ask them to just say yes or no (that doesn't use up a question).\n\nWhen you're fairly sure, make a guess - a guess counts as a question. If you get it right, celebrate. If you reach 20 without getting it, admit defeat and ask what it was. Either way, then ask if they want to play again, and start fresh if they do.\n\nBe playful and a little cheeky.",
@@ -26,6 +28,8 @@
       "kind": "text",
       "trigger": "noFaceDetected",
       "loop": "once",
+
+      "onEnd": "",
       "delaySec": 10,
       "constraints": { "face": "absent" },
       "text": "Hey, don't leave! I was just about to guess.",

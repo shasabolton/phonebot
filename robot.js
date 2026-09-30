@@ -1,8 +1,8 @@
 class Robot {
-    /** Runs JSON and browser-saved games; picked through those games, not the dashboard dropdown. */
+    /** Runs characters' games; picked through those games, not the dashboard dropdown. */
     static CUSTOM_MODE = "custom";
     static GAMES_GROUP = "Games";
-    static CUSTOM_GROUP = "Custom games";
+    static CHARACTER_GROUP = "Character";
 
     constructor(container, config, options = {}) {
         this.config = typeof config === 'string' ? JSON.parse(config) : config;
@@ -60,8 +60,6 @@ class Robot {
         /** Stored active character id; the event also fires for edits and repo loads. */
         this._activeCharacterId = window.PhonebotCharacters?.activeId?.() || null;
         this._onCharacterChange = () => this._onActiveCharacterChanged();
-        this._onShowDashboard =
-            typeof options.onShowDashboard === "function" ? options.onShowDashboard : null;
         this._destroyed = false;
         /** @type {GamesIndexEntry[]} */
         this._gamesIndex = [];
@@ -102,8 +100,6 @@ class Robot {
         }
         this._charactersPanel?.close();
         this._charactersPanel = null;
-        this._customGamesPicker?.close();
-        this._customGamesPicker = null;
         this._dismissStartFlowOverlay();
         this._stopLocalGame();
         this.teardownJoysticks();
@@ -492,7 +488,7 @@ class Robot {
         return modes;
     }
 
-    /** Robots with a Custom mode list games/index.json and browser-saved games. */
+    /** Robots with a Custom mode list games/index.json code games and characters' games. */
     _usesGamesIndex() {
         return !!this.config?.modes?.custom && typeof window.CustomMessagesGame === "function";
     }
@@ -523,36 +519,30 @@ class Robot {
         return extra;
     }
 
-    /** Dropdown id for a browser-saved game; copies of index JSON games use the index id. */
-    _catalogIdForSavedGame(game) {
-        const builtinId = String(game?.builtinId || "");
-        const inIndex = this._gamesIndex.some((e) => e.type === "json" && e.id === builtinId);
-        return inIndex ? `game:${builtinId}` : `custom:${game.id}`;
+    /** Built-in (code) games: config modes plus JS index games, without the Custom mode itself. */
+    _builtInGameCatalog() {
+        const modes = this._getModesMap();
+        if (!modes) return [];
+        return Object.entries(modes)
+            .filter(([id]) => id !== Robot.CUSTOM_MODE)
+            .map(([id, cfg]) => ({ id, label: String(cfg?.label || id), group: Robot.GAMES_GROUP }));
     }
 
     /**
-     * Every game the dashboard can list: modes (including JS index games), then JSON index
-     * games (`game:<indexId>`) and games saved in this browser (`custom:<gameId>`).
-     * The Custom mode itself is left out; its games are listed instead.
+     * Every game the dashboard can list: the active character's games (`game:<id>`, run by the
+     * Custom engine), then built-in games.
      * @returns {{ id: string, label: string, group: string }[]}
      */
     getGameCatalog() {
-        const modes = this._getModesMap();
-        if (!modes) return [];
-        const catalog = Object.entries(modes)
-            .filter(([id]) => id !== Robot.CUSTOM_MODE)
-            .map(([id, cfg]) => ({ id, label: String(cfg?.label || id), group: Robot.GAMES_GROUP }));
-        if (!this._usesGamesIndex()) return catalog;
-        for (const entry of this._gamesIndex) {
-            if (entry.type !== "json") continue;
-            catalog.push({ id: `game:${entry.id}`, label: entry.name, group: Robot.CUSTOM_GROUP });
-        }
-        for (const game of window.CustomMessagesGame.listGames()) {
-            const id = this._catalogIdForSavedGame(game);
-            if (!id.startsWith("custom:")) continue;
-            catalog.push({ id, label: game.name, group: Robot.CUSTOM_GROUP });
-        }
-        return catalog;
+        const builtIns = this._builtInGameCatalog();
+        const character = this._activeCharacter();
+        if (!character || !this._usesGamesIndex()) return builtIns;
+        const own = window.PhonebotCharacters.characterGames(character).map((g) => ({
+            id: `game:${g.id}`,
+            label: g.name,
+            group: Robot.CHARACTER_GROUP
+        }));
+        return [...own, ...builtIns];
     }
 
     /** Games in the dashboard dropdown: the active character's games plus the default mode. */
@@ -561,61 +551,54 @@ class Robot {
         return this.getGameCatalog().filter((g) => !allowed || allowed.has(g.id));
     }
 
-    /** Games a character can pick from: the whole catalog except the default mode. */
+    /** Built-in games a character can also play: all of them except the default mode. */
     getCharacterGameOptions() {
         const home = String(this.config.defaultMode || "").trim();
-        return this.getGameCatalog().filter((g) => g.id !== home);
+        return this._builtInGameCatalog().filter((g) => g.id !== home);
     }
 
     /**
-     * Whether a catalog game can finish on its own: JS games flagged `canEnd` in
-     * games/index.json, or JSON / saved games with an End game action.
-     * @param {string} gameId
-     * @returns {Promise<boolean>}
-     */
-    async gameCanEnd(gameId) {
-        const id = String(gameId || "");
-        const Game = window.CustomMessagesGame;
-        if (id.startsWith("game:") || id.startsWith("custom:")) {
-            if (typeof Game?.gameCanEnd !== "function") return false;
-            const ref = id.slice(id.indexOf(":") + 1);
-            return Game.gameCanEnd(id.startsWith("game:") ? { builtinId: ref } : { savedId: ref });
-        }
-        const gameKey = String(this._getModesMap()?.[id]?.game || id);
-        return this._gamesIndex.some((e) => e.type === "js" && e.id === gameKey && e.canEnd);
-    }
-
-    /**
-     * Where the active character goes when `endedId` finishes: its on-end choice, else their
-     * home game. "" = no game (also when there is no character or the target isn't playable).
+     * Where the active character goes when `endedId` finishes: their home game, no game, the
+     * game after it in the dashboard list (wrapping round to the first), or a particular game.
+     * "" = no game (also when there is no character or the target isn't playable).
      * @param {string} endedId
+     * @param {string} [endTo] "home", "none", "next", or a game id (`game:<id>` / built-in id)
      */
-    _gameEndTarget(endedId) {
+    _gameEndTarget(endedId, endTo = "home") {
         const character = this._activeCharacter();
-        if (!character) return "";
-        const rule = character.onGameEnd?.[endedId];
-        const target = rule == null ? character.homeGame : rule === "none" ? "" : rule;
-        if (!target || !character.games.includes(target)) return "";
-        return this.getGameCatalog().some((g) => g.id === target) ? target : "";
+        if (!character || endTo === "none") return "";
+        const playable = window.PhonebotCharacters.playableIds(character);
+        const games = this.getGameCatalog()
+            .map((g) => g.id)
+            .filter((id) => playable.has(id));
+        if (endTo === "next") {
+            if (!games.length) return "";
+            return games[(games.indexOf(endedId) + 1) % games.length];
+        }
+        const target = endTo === "home" ? character.homeGame : endTo;
+        return games.includes(target) ? target : "";
     }
 
     /**
-     * Play a dropdown entry: a mode id, or a JSON / saved game run by the Custom engine.
+     * Play a dropdown entry: a mode id, or one of the active character's games (`game:<id>`),
+     * which runs from its local copy in the Custom engine.
      * @param {string} gameId
      */
     async selectGame(gameId) {
         const id = String(gameId || "");
+        if (!id.startsWith("game:")) return this.setMode(id);
         const Game = window.CustomMessagesGame;
-        if (!id.startsWith("game:") && !id.startsWith("custom:")) return this.setMode(id);
-        if (typeof Game !== "function") return false;
-        let savedId = id.slice(id.indexOf(":") + 1);
-        if (id.startsWith("game:")) {
-            try {
-                savedId = (await Game.ensureBuiltinGame(savedId))?.id;
-            } catch (err) {
-                console.warn("Built-in game load failed:", err);
-                return false;
-            }
+        const character = this._activeCharacter();
+        if (typeof Game !== "function" || !character) return false;
+        let savedId = "";
+        try {
+            savedId = await window.PhonebotCharacters.ensureGameCopy(
+                character.id,
+                id.slice("game:".length)
+            );
+        } catch (err) {
+            console.warn("Character game load failed:", err);
+            return false;
         }
         if (!savedId || !Game.activateGame(savedId)) return false;
         return this.restartCustomGame();
@@ -639,18 +622,6 @@ class Robot {
         return true;
     }
 
-    /** Custom Games picker overlay; whatever mode is running keeps running underneath. */
-    openCustomGames() {
-        const PickerClass = window.CustomGamesPicker;
-        if (typeof PickerClass !== "function") {
-            console.error("CustomGamesPicker is unavailable. Check games/custom/customMessages.js loading.");
-            return;
-        }
-        if (typeof this._onShowDashboard === "function") this._onShowDashboard();
-        if (!this._customGamesPicker) this._customGamesPicker = new PickerClass(this);
-        this._customGamesPicker.open();
-    }
-
     /** Robot config opts in with `characters: true` (talking head). */
     _charactersEnabled() {
         return !!this.config?.characters && typeof window.PhonebotCharacters === "function";
@@ -664,11 +635,11 @@ class Robot {
         return this._charactersEnabled() ? window.PhonebotCharacters.activeCharacter() : null;
     }
 
-    /** Mode ids the active character plays, plus the default mode; null = show all. */
+    /** Game ids the active character plays, plus the default mode; null = show all. */
     _characterModeFilter() {
         const character = this._activeCharacter();
         if (!character) return null;
-        const allowed = new Set(character.games);
+        const allowed = window.PhonebotCharacters.playableIds(character);
         const home = String(this.config.defaultMode || "").trim();
         if (home) allowed.add(home);
         return allowed;
@@ -729,7 +700,8 @@ class Robot {
     dashboardGameId() {
         if (this.mode !== "custom") return String(this.mode || "");
         const active = window.CustomMessagesGame?.activeGame?.();
-        return active ? this._catalogIdForSavedGame(active) : "";
+        const character = this._activeCharacter();
+        return active && character && active.characterId === character.id ? `game:${active.slug}` : "";
     }
 
     _syncModeSelectValue() {
@@ -976,10 +948,14 @@ class Robot {
         this._localGame.start();
     }
 
-    onLocalGameEnded() {
-        const target = this._gameEndTarget(this.dashboardGameId());
-        const runsInCustom = target.startsWith("game:") || target.startsWith("custom:");
-        // Custom games restart in place, which needs a ready mode; setMode only restarts
+    /**
+     * @param {string} [_reason]
+     * @param {string} [endTo] Character games' On end choice (see _gameEndTarget); code games go home.
+     */
+    onLocalGameEnded(_reason, endTo = "home") {
+        const target = this._gameEndTarget(this.dashboardGameId(), endTo);
+        const runsInCustom = target.startsWith("game:");
+        // Character games restart in place, which needs a ready mode; setMode only restarts
         // the current mode (e.g. Simon Says again) when it is not ready.
         if (!runsInCustom) this._modeReady = false;
         if (String(this.name || "").toLowerCase() !== "talking head") return;
@@ -1666,24 +1642,20 @@ class Robot {
         const select = this._modeSelect;
         if (!select) return;
         select.replaceChildren();
-        /** @type {Map<string, HTMLOptGroupElement>} */
-        const groups = new Map();
-        for (const { id, label: text, group } of this.getDashboardGames()) {
+        const games = this.getDashboardGames();
+        // With a character, its games come first and built-in games sit in their own group.
+        const builtInGroup = games.some((g) => g.group === Robot.CHARACTER_GROUP)
+            ? document.createElement("optgroup")
+            : null;
+        if (builtInGroup) builtInGroup.label = "Built-in games";
+        for (const { id, label: text, group } of games) {
             const opt = document.createElement("option");
             opt.value = id;
             opt.textContent = text;
-            if (group === Robot.GAMES_GROUP) {
-                select.appendChild(opt);
-                continue;
-            }
-            if (!groups.has(group)) {
-                const optgroup = document.createElement("optgroup");
-                optgroup.label = group;
-                groups.set(group, optgroup);
-                select.appendChild(optgroup);
-            }
-            groups.get(group).appendChild(opt);
+            if (builtInGroup && group === Robot.GAMES_GROUP) builtInGroup.appendChild(opt);
+            else select.appendChild(opt);
         }
+        if (builtInGroup?.children.length) select.appendChild(builtInGroup);
         this._syncModeSelectValue();
     }
 
@@ -1701,15 +1673,6 @@ class Robot {
             this.container.appendChild(charactersBtn);
             this._charactersBtn = charactersBtn;
             this._syncCharactersButton();
-        }
-
-        if (this._usesGamesIndex()) {
-            const customGamesBtn = document.createElement("button");
-            customGamesBtn.type = "button";
-            customGamesBtn.className = "robot-custom-games-btn";
-            customGamesBtn.textContent = "Custom Games";
-            customGamesBtn.addEventListener("click", () => this.openCustomGames());
-            this.container.appendChild(customGamesBtn);
         }
 
         // Modes live on the dashboard when the robot has a custom/default dashboard host.

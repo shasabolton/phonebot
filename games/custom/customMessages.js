@@ -114,25 +114,37 @@ class CustomAudioStore {
 
 /**
  * Custom Messages — author audio / text / prompt clips with triggers and loops.
- * Free local talking-head game: tiles under the Game menu; editor dialog for create/edit.
- * Named "games" store separate action collections; Custom Games mode picks which to load.
+ * Runs the games that belong to characters; the character editor opens this game's editor.
+ * Each saved game is one action collection, owned by a character (`characterId` + `slug`).
  */
 class CustomMessagesGame {
     static STORAGE_KEY = "phonebot.customMessages.v2";
     static STORAGE_KEY_V1 = "phonebot.customMessages.v1";
-    /** Portable single-game backup (download / upload). */
+    /** A game folder's JSON file (and older single-file backups). */
     static EXPORT_FORMAT = "phonebot.game.v1";
     /** Older backup formats still accepted on upload. */
     static LEGACY_EXPORT_FORMATS = Object.freeze(["phonebot.character.v1"]);
     /** Fired on window whenever the game store is saved. */
     static GAME_CHANGE_EVENT = "phonebot:gamechange";
-    /** Lists every game in the games folder; `type: "json"` entries show in Custom Games. */
+    /** Code games (JS classes) the robot can run as modes. */
     static GAMES_INDEX_URL = "games/index.json";
+    static AUDIO_MIME_BY_EXT = Object.freeze({
+        wav: "audio/wav",
+        mp3: "audio/mpeg",
+        ogg: "audio/ogg",
+        opus: "audio/ogg",
+        webm: "audio/webm",
+        m4a: "audio/mp4",
+        aac: "audio/aac",
+        flac: "audio/flac"
+    });
     /** @type {Promise<GamesIndexEntry[]>|null} */
     static _builtinIndexPromise = null;
     static FACE_POLL_MS = 200;
     static SPEECH_POLL_MS = 150;
     static REPEAT_GAP_MS = 1200;
+    /** Shortest step in a run of messages, so loops through clips that end at once don't spin. */
+    static MIN_STEP_MS = 300;
     static FACE_STABLE_MS = 400;
     /** @type {string|null} Set by requestEditGame; consumed by the next start(). */
     static _pendingEditGameId = null;
@@ -144,13 +156,8 @@ class CustomMessagesGame {
         { id: "faceDetected", label: "Face detected" },
         { id: "noFaceDetected", label: "No face detected" },
         { id: "speechFinished", label: "Speech finished" },
-        { id: "playNext", label: "Play next" },
+        { id: "playNext", label: "After another message" },
         { id: "playerTurn", label: "Player turn" }
-    ]);
-
-    static LOOPS = Object.freeze([
-        { id: "once", label: "Play once" },
-        { id: "repeat", label: "Repeat" }
     ]);
 
     /** Prompt reply word limit; 0 = no limit (nothing appended). Default matches Talking Heads chat. */
@@ -173,6 +180,21 @@ class CustomMessagesGame {
     ]);
 
     /**
+     * On end values besides playing a message ("msg:<id>") or ending with a particular game
+     * ("end:game:<id>" / "end:<built-in id>"). "" waits for the next trigger.
+     */
+    static ON_END_PLAY = Object.freeze([
+        { id: "", label: "Wait for a trigger" },
+        { id: "next", label: "Play next message" },
+        { id: "first", label: "Play first message" }
+    ]);
+    static ON_END_ENDINGS = Object.freeze([
+        { id: "end:home", label: "End game, go to home game" },
+        { id: "end:none", label: "End game, no game" },
+        { id: "end:next", label: "End game, next game" }
+    ]);
+
+    /**
      * @param {object} robot
      */
     constructor(robot) {
@@ -183,13 +205,14 @@ class CustomMessagesGame {
         this._activeGameId = null;
         /** @type {string} */
         this._activeGameName = "";
-        /** Editing from Custom Games → Edit/New: no triggers run and the game is not selected. */
+        /** Editing from the character editor: no triggers run and the game is not selected. */
         this._editOnly = false;
         this._running = false;
         this._generation = 0;
         this._audioBusy = false;
         this._faceTimer = null;
-        this._faceTickBusy = false;
+        /** Face triggers whose run is still going; the other face trigger can still take over. */
+        this._faceTicksBusy = new Set();
         this._lastFacePresent = null;
         this._faceSince = 0;
         this._speechTimer = null;
@@ -200,7 +223,8 @@ class CustomMessagesGame {
         this._speechStartEpoch = 0;
         this._speechFinishEpoch = 0;
         this._firedOnceIds = new Set();
-        this._playNextQueue = [];
+        /** Bumped whenever a trigger plays a message; runs of On end / Repeat from before stop. */
+        this._chainEpoch = 0;
         /** Player messages sent since the game (or its last history-clearing prompt) started. */
         this._playerTurn = 0;
         /** A player-turn action will end the game once this turn's reply has been spoken. */
@@ -217,6 +241,9 @@ class CustomMessagesGame {
         this._editorFaceConstraint = null;
         this._editorTurnLabel = null;
         this._editorDelayLabel = null;
+        this._editorRepeatHint = null;
+        /** @type {HTMLElement[]|null} The On end dropdown and its hint. */
+        this._editorOnEnd = null;
         /** @type {HTMLAudioElement|null} Editor preview of the draft audio clip. */
         this._previewAudio = null;
         this._previewUrl = null;
@@ -226,7 +253,6 @@ class CustomMessagesGame {
         /** @type {HTMLAudioElement|null} URL clip playing outside the player (host has no CORS). */
         this._untappedAudio = null;
         this._actionsNameInput = null;
-        this._backupOverlay = null;
         this._debugConfirmOverlay = null;
         /** @type {((ok: boolean) => void)|null} */
         this._debugConfirmResolve = null;
@@ -237,7 +263,7 @@ class CustomMessagesGame {
         this._running = true;
         this._generation += 1;
         this._firedOnceIds = new Set();
-        this._playNextQueue = [];
+        this._chainEpoch = 0;
         this._playerTurn = 0;
         this._endPending = false;
         this._lastFacePresent = null;
@@ -293,8 +319,9 @@ class CustomMessagesGame {
     }
 
     /**
-     * `builtinId` is set on local copies of JSON games listed in games/index.json.
-     * @returns {{ id: string, name: string, builtinId: string }[]}
+     * `characterId` + `slug` name the owning character and the game's folder in it ("" for games
+     * saved before characters owned games). `builtinId` is left on copies of the old shared games.
+     * @returns {SavedGameSummary[]}
      */
     static listGames() {
         const store = CustomMessagesGame._loadStore();
@@ -302,14 +329,51 @@ class CustomMessagesGame {
             .map((c) => ({
                 id: String(c.id || ""),
                 name: String(c.name || "").trim() || "Untitled",
+                characterId: String(c.characterId || ""),
+                slug: String(c.slug || ""),
                 builtinId: String(c.builtinId || "")
             }))
             .filter((c) => c.id);
     }
 
+    /** @returns {SavedGameSummary|null} */
+    static findCharacterGame(characterId, slug) {
+        const owner = String(characterId || "");
+        const want = String(slug || "");
+        if (!owner || !want) return null;
+        return (
+            CustomMessagesGame.listGames().find((g) => g.characterId === owner && g.slug === want) ||
+            null
+        );
+    }
+
     /**
-     * Every games/index.json entry, JS and JSON. Resolves to [] when the index can't be
-     * fetched (e.g. opened from file://).
+     * Give a saved game to a character, as the game folder `slug`.
+     * @returns {boolean}
+     */
+    static assignGame(gameId, { characterId, slug }) {
+        const store = CustomMessagesGame._loadStore();
+        const game = (store.games || []).find((c) => c && c.id === String(gameId || ""));
+        if (!game || !characterId || !slug) return false;
+        game.characterId = String(characterId);
+        game.slug = String(slug);
+        delete game.builtinId;
+        CustomMessagesGame._saveStore(store);
+        return true;
+    }
+
+    /** Delete every game a character owns. */
+    static deleteCharacterGames(characterId) {
+        const owner = String(characterId || "");
+        if (!owner) return;
+        for (const game of CustomMessagesGame.listGames()) {
+            if (game.characterId === owner) CustomMessagesGame.deleteGame(game.id);
+        }
+    }
+
+    /**
+     * Code games from games/index.json. Resolves to [] when the index can't be fetched
+     * (e.g. opened from file://).
      * @returns {Promise<GamesIndexEntry[]>}
      */
     static loadGamesIndex() {
@@ -323,15 +387,14 @@ class CustomMessagesGame {
                 })
                 .then((index) =>
                     (Array.isArray(index?.games) ? index.games : [])
-                        .filter((g) => g && g.id && g.path)
+                        .filter((g) => g && g.id && g.path && g.type === "js")
                         .map((g) => ({
                             id: String(g.id),
                             name: String(g.name || "").trim() || String(g.id),
-                            type: g.type === "js" ? "js" : "json",
+                            type: "js",
                             path: String(g.path),
                             className: String(g.className || ""),
-                            computervisionModel: String(g.computervisionModel || ""),
-                            canEnd: g.canEnd === true
+                            computervisionModel: String(g.computervisionModel || "")
                         }))
                 )
                 .catch((err) => {
@@ -341,62 +404,6 @@ class CustomMessagesGame {
                 });
         }
         return CustomMessagesGame._builtinIndexPromise;
-    }
-
-    /**
-     * JSON games shipped in the repo (games/index.json entries with `type: "json"`).
-     * @returns {Promise<GamesIndexEntry[]>}
-     */
-    static async listBuiltinGames() {
-        return (await CustomMessagesGame.loadGamesIndex()).filter((g) => g.type === "json");
-    }
-
-    /**
-     * Local copy of a built-in JSON game, imported from the repo on first use.
-     * @param {string} builtinId
-     * @returns {Promise<{ id: string, name: string }|null>}
-     */
-    static async ensureBuiltinGame(builtinId) {
-        const want = String(builtinId || "").trim();
-        if (!want) return null;
-        const existing = CustomMessagesGame.listGames().find((g) => g.builtinId === want);
-        if (existing) return { id: existing.id, name: existing.name };
-        const entry = (await CustomMessagesGame.listBuiltinGames()).find((g) => g.id === want);
-        if (!entry) return null;
-        const res = await fetch(entry.path, { cache: "no-cache" });
-        if (!res.ok) throw new Error(`HTTP ${res.status} loading ${entry.path}`);
-        const payload = await res.json();
-        return CustomMessagesGame.importGameFromExport(payload, { builtinId: want });
-    }
-
-    /** @param {unknown} messages @returns {boolean} true when any action ends the game. */
-    static messagesCanEnd(messages) {
-        return Array.isArray(messages) && messages.some((m) => !!m?.endGame);
-    }
-
-    /**
-     * Whether a game has an End game action. A built-in JSON game is judged by the local
-     * copy that actually runs, or by its repo file before a copy has been made.
-     * @param {{ savedId?: string, builtinId?: string }} ref
-     * @returns {Promise<boolean>}
-     */
-    static async gameCanEnd({ savedId = "", builtinId = "" } = {}) {
-        const games = CustomMessagesGame._loadStore().games || [];
-        const saved = savedId
-            ? games.find((g) => g?.id === savedId)
-            : games.find((g) => builtinId && g?.builtinId === builtinId);
-        if (saved) return CustomMessagesGame.messagesCanEnd(saved.messages);
-        if (!builtinId) return false;
-        const entry = (await CustomMessagesGame.listBuiltinGames()).find((g) => g.id === builtinId);
-        if (!entry) return false;
-        try {
-            const res = await fetch(entry.path, { cache: "no-cache" });
-            if (!res.ok) return false;
-            return CustomMessagesGame.messagesCanEnd((await res.json())?.messages);
-        } catch (err) {
-            console.warn("Game end check failed:", entry.path, err);
-            return false;
-        }
     }
 
     /**
@@ -438,7 +445,7 @@ class CustomMessagesGame {
         return CustomMessagesGame.activeGame()?.name || "";
     }
 
-    /** @returns {{ id: string, name: string, builtinId: string }|null} */
+    /** @returns {SavedGameSummary|null} */
     static activeGame() {
         const store = CustomMessagesGame._loadStore();
         const activeId = store.activeGameId ? String(store.activeGameId) : null;
@@ -523,20 +530,21 @@ class CustomMessagesGame {
     }
 
     /**
-     * Copy messages into a new named game. Does not make it the active game.
+     * Create an empty game for a character (not made active).
      * @param {string} name
-     * @param {CustomMessage[]} [messages]
+     * @param {{ characterId: string, slug: string }} owner
      * @returns {{ id: string, name: string }|null}
      */
-    static saveAsNewGame(name, messages = []) {
+    static createNamedGame(name, { characterId, slug }) {
         const label = String(name || "").trim();
-        if (!label) return null;
+        if (!label || !characterId || !slug) return null;
         const store = CustomMessagesGame._loadStore();
-        const serialized = (messages || []).map((m) => CustomMessagesGame._serializeMessage(m));
         const game = {
             id: CustomMessagesGame._newGameId(),
             name: label,
-            messages: serialized
+            messages: [],
+            characterId: String(characterId),
+            slug: String(slug)
         };
         if (!Array.isArray(store.games)) store.games = [];
         store.games.push(game);
@@ -544,48 +552,18 @@ class CustomMessagesGame {
         return { id: game.id, name: game.name };
     }
 
-    /** Create an empty named game (not made active). */
-    static createNamedGame(name) {
-        return CustomMessagesGame.saveAsNewGame(name, []);
-    }
-
     /**
-     * Build a portable JSON payload for one game (includes audio as base64).
-     * @param {{ name?: string, messages?: CustomMessage[] }} source
-     * @returns {Promise<object>}
-     */
-    static async buildGameExport(source = {}) {
-        const messages = Array.isArray(source.messages) ? source.messages : [];
-        await CustomMessagesGame._loadAudio(messages);
-        for (const msg of messages) {
-            if (msg?.audioBlob && !msg._audioBase64) {
-                try {
-                    msg._audioBase64 = await CustomMessagesGame._blobToBase64(msg.audioBlob);
-                    msg._audioMime = msg.audioBlob.type || "audio/webm";
-                } catch (_) {
-                    /* keep message without audio */
-                }
-            }
-        }
-        const name = String(source.name || "").trim() || "Untitled";
-        return {
-            format: CustomMessagesGame.EXPORT_FORMAT,
-            exportedAt: new Date().toISOString(),
-            name,
-            messages: messages.map((m) =>
-                CustomMessagesGame._serializeMessage(m, { forExport: true })
-            )
-        };
-    }
-
-    /**
-     * Import a game backup file into the local store (new id; does not replace others).
+     * Save a game file into the local store for a character, replacing the game already saved
+     * under that `slug`. Relative `audioUrl`s point into the game's folder: `basePath` (the JSON
+     * file's app-relative path) turns them into app paths; `files` (paths relative to the game
+     * folder, e.g. from a zip) turns them into stored clips.
      * @param {object} payload
-     * @param {{ builtinId?: string }} [options] links the copy to a games/index.json entry
+     * @param {{ characterId: string, slug: string, basePath?: string, files?: Map<string, Blob>|null }} options
      * @returns {Promise<{ id: string, name: string }|null>}
      */
-    static async importGameFromExport(payload, { builtinId = "" } = {}) {
+    static async importGameFromExport(payload, { characterId, slug, basePath = "", files = null }) {
         if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+        if (!characterId || !slug) return null;
         const format = String(payload.format || "").trim();
         if (
             format &&
@@ -598,13 +576,17 @@ class CustomMessagesGame {
         const messages = CustomMessagesGame._deserializeMessageList(payload.messages);
         // Fresh keys so importing the same backup twice never shares (then deletes) a clip.
         for (const msg of messages) msg.audioKey = "";
+        CustomMessagesGame._rebaseAudio(messages, { basePath, files });
         await CustomMessagesGame._storeAudioInDb(messages);
+        const previous = CustomMessagesGame.findCharacterGame(characterId, slug);
+        if (previous) CustomMessagesGame.deleteGame(previous.id);
         const store = CustomMessagesGame._loadStore();
         const game = {
             id: CustomMessagesGame._newGameId(),
             name,
             messages: messages.map((m) => CustomMessagesGame._serializeMessage(m)),
-            ...(builtinId ? { builtinId: String(builtinId) } : {})
+            characterId: String(characterId),
+            slug: String(slug)
         };
         if (!Array.isArray(store.games)) store.games = [];
         store.games.push(game);
@@ -612,28 +594,139 @@ class CustomMessagesGame {
         return { id: game.id, name: game.name };
     }
 
+    /** @param {string} value @returns {boolean} true for paths with no scheme or leading slash. */
+    static _isRelativePath(value) {
+        const raw = String(value || "").trim();
+        return !!raw && !/^[a-z][a-z0-9+.-]*:/i.test(raw) && !raw.startsWith("/");
+    }
+
     /**
-     * Trigger a browser download of a JSON blob.
-     * @param {string} filename
-     * @param {object} data
+     * `relative` resolved against the file at `basePath`, both app-relative ("" if it escapes).
+     * @param {string} basePath
+     * @param {string} relative
      */
-    static downloadJsonFile(filename, data) {
-        const safeName =
-            String(filename || "game")
-                .replace(/[<>:"/\\|?*\u0000-\u001f]+/g, "_")
-                .replace(/\s+/g, "-")
-                .slice(0, 64) || "game";
-        const blob = new Blob([JSON.stringify(data, null, 2)], {
-            type: "application/json"
-        });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = `${safeName}.phonebot-game.json`;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        setTimeout(() => URL.revokeObjectURL(url), 2000);
+    static _resolveRelativePath(basePath, relative) {
+        const origin = "https://game.invalid";
+        try {
+            const url = new URL(relative, `${origin}/${String(basePath || "").replace(/^\/+/, "")}`);
+            return url.origin === origin ? decodeURIComponent(url.pathname.slice(1)) : "";
+        } catch (_) {
+            return "";
+        }
+    }
+
+    /** @param {CustomMessage[]} messages @param {{ basePath?: string, files?: Map<string, Blob>|null }} source */
+    static _rebaseAudio(messages, { basePath = "", files = null }) {
+        if (!basePath && !files) return;
+        for (const msg of messages) {
+            if (msg.kind !== "audio" || !CustomMessagesGame._isRelativePath(msg.audioUrl)) continue;
+            if (files) {
+                const path = CustomMessagesGame._resolveRelativePath("game.json", msg.audioUrl);
+                const blob = files.get(path);
+                if (!blob) console.warn("Game audio file missing:", msg.audioUrl);
+                msg.audioBlob = blob ? CustomMessagesGame._withAudioMime(blob, path) : null;
+                msg.audioUrl = "";
+                if (!msg.fileName) msg.fileName = path.split("/").pop();
+            } else {
+                msg.audioUrl = CustomMessagesGame._resolveRelativePath(basePath, msg.audioUrl);
+            }
+        }
+    }
+
+    /** Blobs from a zip have no type; the stored clip keeps the one its extension implies. */
+    static _withAudioMime(blob, path) {
+        if (blob.type) return blob;
+        const ext = String(path).split(".").pop().toLowerCase();
+        const type = CustomMessagesGame.AUDIO_MIME_BY_EXT[ext] || "audio/webm";
+        return new Blob([blob], { type });
+    }
+
+    /** @param {string} mime @param {string} fileName */
+    static _audioExtension(mime, fileName) {
+        const fromName = String(fileName || "").match(/\.([a-z0-9]{2,5})$/i)?.[1]?.toLowerCase();
+        if (fromName && CustomMessagesGame.AUDIO_MIME_BY_EXT[fromName]) return fromName;
+        const type = String(mime || "").split(";")[0].trim().toLowerCase();
+        if (type === "audio/x-wav" || type === "audio/wave") return "wav";
+        const known = Object.entries(CustomMessagesGame.AUDIO_MIME_BY_EXT).find(([, m]) => m === type);
+        return known ? known[0] : "webm";
+    }
+
+    /** @param {string} url @returns {boolean} true for URLs served by this app (same origin). */
+    static _isAppUrl(url) {
+        try {
+            return new URL(url, window.location.href).origin === window.location.origin;
+        } catch (_) {
+            return false;
+        }
+    }
+
+    /**
+     * A game as the files of its game folder: the game JSON plus clips under `audio/`, which the
+     * JSON references by relative `audioUrl`. Clips at other sites stay as URLs.
+     * @param {{ savedId?: string, payload?: object, basePath?: string }} source a saved game, or a
+     *   repo game file (`payload`) and its app-relative path
+     * @returns {Promise<{ json: object, files: { path: string, data: Blob }[] }|null>}
+     */
+    static async exportGameFolder({ savedId = "", payload = null, basePath = "" }) {
+        let name = "";
+        let messages = [];
+        if (savedId) {
+            const workspace = CustomMessagesGame.loadGameWorkspace(savedId);
+            if (!workspace.gameId) return null;
+            name = workspace.gameName;
+            messages = workspace.messages;
+            await CustomMessagesGame._loadAudio(messages);
+        } else if (payload && typeof payload === "object") {
+            name = String(payload.name || "").trim() || "Untitled";
+            messages = CustomMessagesGame._deserializeMessageList(payload.messages);
+            CustomMessagesGame._rebaseAudio(messages, { basePath });
+        } else {
+            return null;
+        }
+        /** @type {{ path: string, data: Blob }[]} */
+        const files = [];
+        const taken = new Set();
+        const addClip = (fileName, fallbackStem, blob) => {
+            const ext = CustomMessagesGame._audioExtension(blob.type, fileName);
+            const stem =
+                String(fileName || "")
+                    .replace(/\.[a-z0-9]{2,5}$/i, "")
+                    .replace(/[<>:"/\\|?*\u0000-\u001f]+/g, "_")
+                    .trim() || fallbackStem;
+            let name = `${stem}.${ext}`;
+            for (let n = 2; taken.has(name.toLowerCase()); n++) name = `${stem}-${n}.${ext}`;
+            taken.add(name.toLowerCase());
+            files.push({ path: `audio/${name}`, data: blob });
+            return `audio/${name}`;
+        };
+        const out = [];
+        for (const msg of messages) {
+            const entry = CustomMessagesGame._serializeMessage(msg, { forExport: true });
+            delete entry.audioKey;
+            delete entry.audioBase64;
+            delete entry.audioMime;
+            if (msg.kind === "audio") {
+                const url = entry.audioUrl;
+                if (!url && msg.audioBlob?.size) {
+                    entry.audioUrl = addClip(msg.fileName, msg.id, msg.audioBlob);
+                } else if (url && CustomMessagesGame._isAppUrl(url)) {
+                    try {
+                        const res = await fetch(url);
+                        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                        const name = msg.fileName || CustomMessagesGame._fileNameFromUrl(url);
+                        entry.audioUrl = addClip(name, msg.id, await res.blob());
+                    } catch (err) {
+                        console.warn("Game audio fetch for download failed:", url, err);
+                        entry.audioUrl = new URL(url, window.location.href).href;
+                    }
+                }
+            }
+            out.push(entry);
+        }
+        return {
+            json: { format: CustomMessagesGame.EXPORT_FORMAT, name, messages: out },
+            files
+        };
     }
 
     /** Show the camera-frame hold-to-talk mic while Custom is active. */
@@ -659,7 +752,6 @@ class CustomMessagesGame {
         this._stopRecording(true);
         this._closeEditor();
         this._closeActionsList();
-        this._closeBackupPrompt();
         this._closeDebugConfirm(false);
         this._hideChatHistoryEmphasis();
         const agent = this._getAgent();
@@ -710,8 +802,8 @@ class CustomMessagesGame {
                   kind: existing.kind,
                   trigger: existing.trigger,
                   turnNumber: CustomMessagesGame._normalizeTurnNumber(existing.turnNumber),
-                  endGame: !!existing.endGame,
                   loop: existing.loop,
+                  onEnd: CustomMessagesGame._normalizeOnEnd(existing.onEnd),
                   delaySec: CustomMessagesGame._normalizeDelaySec(existing.delaySec),
                   constraints: CustomMessagesGame._normalizeConstraints(existing.constraints),
                   text: existing.text || "",
@@ -730,8 +822,8 @@ class CustomMessagesGame {
                   kind: null,
                   trigger: "gameLoad",
                   turnNumber: 1,
-                  endGame: false,
                   loop: "once",
+                  onEnd: "",
                   delaySec: 0,
                   constraints: CustomMessagesGame._normalizeConstraints(null),
                   text: "",
@@ -836,6 +928,9 @@ class CustomMessagesGame {
                                       id: String(c.id || CustomMessagesGame._newGameId()),
                                       name: String(c.name || "").trim() || "Untitled",
                                       messages: Array.isArray(c.messages) ? c.messages : [],
+                                      ...(c.characterId && c.slug
+                                          ? { characterId: String(c.characterId), slug: String(c.slug) }
+                                          : {}),
                                       ...(c.builtinId ? { builtinId: String(c.builtinId) } : {})
                                   }))
                             : []
@@ -900,7 +995,15 @@ class CustomMessagesGame {
 
     static _deserializeMessageList(list) {
         if (!Array.isArray(list)) return [];
-        return list.map((entry) => CustomMessagesGame._deserializeMessage(entry)).filter(Boolean);
+        return list
+            .map((entry, i) => {
+                const msg = CustomMessagesGame._deserializeMessage(entry);
+                if (msg && entry.onEnd === undefined) {
+                    msg.onEnd = CustomMessagesGame._legacyOnEnd(entry, list[i + 1]);
+                }
+                return msg;
+            })
+            .filter(Boolean);
     }
 
     /**
@@ -917,8 +1020,8 @@ class CustomMessagesGame {
             ...(msg.trigger === "playerTurn"
                 ? { turnNumber: CustomMessagesGame._normalizeTurnNumber(msg.turnNumber) }
                 : {}),
-            endGame: !!msg.endGame,
             loop: msg.loop,
+            onEnd: CustomMessagesGame._normalizeOnEnd(msg.onEnd),
             delaySec: CustomMessagesGame._normalizeDelaySec(msg.delaySec),
             constraints,
             text: msg.text || "",
@@ -942,7 +1045,7 @@ class CustomMessagesGame {
             out.audioKey = msg.audioKey;
             out.audioMime = msg.audioBlob?.type || msg._audioMime || "audio/webm";
         } else if (hasBlob) {
-            // Export, or no IndexedDB: inline base64, filled async by _persistAll / buildGameExport.
+            // Export, or no IndexedDB: inline base64, filled async by _persistAll.
             out.audioBase64 = msg._audioBase64 || null;
             out.audioMime = msg.audioBlob.type || msg._audioMime || "audio/webm";
         }
@@ -964,8 +1067,8 @@ class CustomMessagesGame {
                 ? trigger
                 : "gameLoad",
             turnNumber: CustomMessagesGame._normalizeTurnNumber(entry.turnNumber),
-            endGame: !!entry.endGame,
             loop,
+            onEnd: CustomMessagesGame._normalizeOnEnd(entry.onEnd),
             delaySec: CustomMessagesGame._normalizeDelaySec(entry.delaySec),
             constraints: CustomMessagesGame._normalizeConstraints(entry.constraints),
             text: String(entry.text || ""),
@@ -1033,6 +1136,30 @@ class CustomMessagesGame {
     }
 
     /** @param {unknown} value @returns {number} */
+    /** @param {unknown} value @returns {string} a valid On end ("" = wait for a trigger). */
+    static _normalizeOnEnd(value) {
+        const v = String(value || "").trim();
+        if (v === "next" || v === "first") return v;
+        return /^(msg|end):./.test(v) ? v : "";
+    }
+
+    static _isEnding(onEnd) {
+        return String(onEnd || "").startsWith("end:");
+    }
+
+    /**
+     * On end for saves from before it existed: End game (plus its "Then" choice) ended the game,
+     * and a following "After another message" action played after this one.
+     * @param {object} entry @param {object|undefined} following
+     */
+    static _legacyOnEnd(entry, following) {
+        if (entry.endGame) {
+            const to = String(entry.endGameTo || "");
+            return `end:${to === "none" || to === "next" ? to : "home"}`;
+        }
+        return String(following?.trigger || "") === "playNext" ? "next" : "";
+    }
+
     static _normalizeDelaySec(value) {
         const n = Number(value);
         if (!Number.isFinite(n) || n <= 0) return 0;
@@ -1200,6 +1327,69 @@ class CustomMessagesGame {
         CustomMessagesGame._saveMessages(this.messages, this._activeGameId);
     }
 
+    /** Ids of messages some other message's On end plays. @returns {Set<string>} */
+    _messagesPlayedByOthers() {
+        const ids = new Set();
+        this.messages.forEach((msg, i) => {
+            if (msg.loop === "repeat" && msg.trigger !== "playerTurn") return;
+            const target = this._onEndMessage(msg, CustomMessagesGame._normalizeOnEnd(msg.onEnd), i);
+            if (target && target.id !== msg.id) ids.add(target.id);
+        });
+        return ids;
+    }
+
+    /**
+     * The message an On end plays, if any.
+     * @param {CustomMessage} msg @param {string} onEnd @param {number} [index] msg's position
+     */
+    _onEndMessage(msg, onEnd, index = this.messages.findIndex((m) => m.id === msg.id)) {
+        if (onEnd === "first") return this.messages[0] || null;
+        if (onEnd === "next") return index >= 0 ? this.messages[index + 1] || null : null;
+        if (onEnd.startsWith("msg:")) {
+            return this.messages.find((m) => m.id === onEnd.slice(4)) || null;
+        }
+        return null;
+    }
+
+    /** e.g. "Play next message", "Play “Hello there”", "End game, go to Chat". */
+    _onEndLabel(onEnd) {
+        const value = CustomMessagesGame._normalizeOnEnd(onEnd);
+        const fixed = [...CustomMessagesGame.ON_END_PLAY, ...CustomMessagesGame.ON_END_ENDINGS].find(
+            (o) => o.id === value
+        );
+        if (fixed) return fixed.label;
+        if (value.startsWith("msg:")) {
+            const target = this.messages.find((m) => m.id === value.slice(4));
+            return target ? `Play “${CustomMessagesGame.tileLabel(target)}”` : "Play a deleted message";
+        }
+        const game = value.slice("end:".length);
+        const choice = this._endGameChoices().find((g) => g.id === game);
+        return `End game, go to ${choice ? choice.label : game}`;
+    }
+
+    /**
+     * Games an On end can go to: the edited game's character's own games (`game:<id>`) and the
+     * built-in games they play.
+     * @returns {{ id: string, label: string }[]}
+     */
+    _endGameChoices() {
+        const Chars = window.PhonebotCharacters;
+        const owner = CustomMessagesGame.listGames().find((g) => g.id === this._activeGameId)
+            ?.characterId;
+        const character = owner && typeof Chars?.get === "function" ? Chars.get(owner) : null;
+        if (!character) return [];
+        const builtInLabels = new Map(
+            (this.robot?.getCharacterGameOptions?.() || []).map((g) => [g.id, g.label])
+        );
+        return [
+            ...Chars.characterGames(character).map((g) => ({
+                id: `${Chars.GAME_PREFIX}${g.id}`,
+                label: g.name || g.id
+            })),
+            ...character.builtInGames.map((id) => ({ id, label: builtInLabels.get(id) || id }))
+        ];
+    }
+
     static tileLabel(msg) {
         if (!msg) return "Message";
         if (msg.kind === "audio") {
@@ -1297,13 +1487,6 @@ class CustomMessagesGame {
         addBtn.textContent = "+ Add";
         addBtn.addEventListener("click", () => this.openEditor(null));
 
-        const downloadBtn = document.createElement("button");
-        downloadBtn.type = "button";
-        downloadBtn.className = "custom-messages-download secondary";
-        downloadBtn.textContent = "Download";
-        downloadBtn.title = "Save a backup file you can upload later";
-        downloadBtn.addEventListener("click", () => void this._downloadGameBackup());
-
         const doneBtn = document.createElement("button");
         doneBtn.type = "button";
         doneBtn.className = "custom-messages-cancel secondary";
@@ -1311,7 +1494,6 @@ class CustomMessagesGame {
         doneBtn.addEventListener("click", () => this._finishActionsList());
 
         actions.appendChild(addBtn);
-        actions.appendChild(downloadBtn);
         actions.appendChild(doneBtn);
         card.appendChild(actions);
 
@@ -1327,94 +1509,11 @@ class CustomMessagesGame {
         this._renderTiles();
     }
 
-    /** Done / backdrop: offer a backup, then edit-only sessions reopen the Custom Games picker. */
+    /** Done / backdrop: edit-only sessions go back to plain Custom (the character editor is underneath). */
     _finishActionsList() {
         this._closeActionsList();
-        if (this._activeGameId && this.messages.length) {
-            this._openBackupPrompt();
-            return;
-        }
-        this._leaveActionsList();
-    }
-
-    _leaveActionsList() {
         if (!this._editOnly) return;
-        const robot = this.robot;
-        if (typeof robot?.restartCustomGame === "function") robot.restartCustomGame();
-        if (typeof robot?.openCustomGames === "function") robot.openCustomGames();
-    }
-
-    /** Games live only in browser storage; nudge the player to keep a backup file. */
-    _openBackupPrompt() {
-        this._closeBackupPrompt();
-
-        const overlay = document.createElement("div");
-        overlay.className = "custom-messages-overlay custom-messages-backup-overlay";
-        overlay.setAttribute("role", "dialog");
-        overlay.setAttribute("aria-modal", "true");
-        overlay.setAttribute("aria-label", "Back up your game");
-
-        const card = document.createElement("div");
-        card.className = "custom-messages-card";
-
-        const title = document.createElement("h2");
-        title.className = "custom-messages-title";
-        title.textContent = "Back up your game?";
-        card.appendChild(title);
-
-        const body = document.createElement("p");
-        body.className = "custom-messages-hint";
-        body.textContent =
-            "Your game is stored in this browser's cache, which can be cleared. " +
-            "If you care about it, we recommend downloading a backup.";
-        card.appendChild(body);
-
-        const detail = document.createElement("p");
-        detail.className = "custom-messages-hint muted";
-        detail.textContent =
-            "The backup is a single file with all audio, text and triggers that you can upload later.";
-        card.appendChild(detail);
-
-        const actions = document.createElement("div");
-        actions.className = "custom-messages-actions";
-
-        const downloadBtn = document.createElement("button");
-        downloadBtn.type = "button";
-        downloadBtn.className = "custom-messages-submit";
-        downloadBtn.textContent = "Download";
-
-        const notNowBtn = document.createElement("button");
-        notNowBtn.type = "button";
-        notNowBtn.className = "custom-messages-cancel secondary";
-        notNowBtn.textContent = "Not now";
-
-        downloadBtn.addEventListener("click", async () => {
-            downloadBtn.disabled = true;
-            notNowBtn.disabled = true;
-            downloadBtn.textContent = "Downloading…";
-            await this._downloadGameBackup();
-            if (this._backupOverlay !== overlay) return;
-            this._closeBackupPrompt();
-            this._leaveActionsList();
-        });
-        notNowBtn.addEventListener("click", () => {
-            this._closeBackupPrompt();
-            this._leaveActionsList();
-        });
-
-        actions.appendChild(downloadBtn);
-        actions.appendChild(notNowBtn);
-        card.appendChild(actions);
-        overlay.appendChild(card);
-        document.body.appendChild(overlay);
-
-        this._backupOverlay = overlay;
-        downloadBtn.focus();
-    }
-
-    _closeBackupPrompt() {
-        if (this._backupOverlay) this._backupOverlay.remove();
-        this._backupOverlay = null;
+        if (typeof this.robot?.restartCustomGame === "function") this.robot.restartCustomGame();
     }
 
     _closeActionsList() {
@@ -1424,28 +1523,6 @@ class CustomMessagesGame {
         this._actionsOverlay = null;
         this._tileListEl = null;
         this._actionsNameInput = null;
-    }
-
-    /** Download the active game as a restoreable JSON file. */
-    async _downloadGameBackup() {
-        const nameFromInput = String(this._actionsNameInput?.value || "").trim();
-        const name =
-            nameFromInput ||
-            this._activeGameName ||
-            "Untitled";
-        try {
-            await this._persistAll();
-            const payload = await CustomMessagesGame.buildGameExport({
-                name,
-                messages: this.messages
-            });
-            CustomMessagesGame.downloadJsonFile(name, payload);
-        } catch (err) {
-            console.warn("Game download failed:", err);
-            if (typeof window.alert === "function") {
-                window.alert("Could not download game backup.");
-            }
-        }
     }
 
     _renderTiles() {
@@ -1459,6 +1536,7 @@ class CustomMessagesGame {
             list.appendChild(empty);
             return;
         }
+        const played = this._messagesPlayedByOthers();
         for (const msg of this.messages) {
             const tile = document.createElement("div");
             tile.className = "custom-messages-tile";
@@ -1485,14 +1563,25 @@ class CustomMessagesGame {
                 msg.trigger === "playerTurn"
                     ? CustomMessagesGame._playerTurnSummary(msg)
                     : msg.trigger;
-            const endNote = msg.endGame ? " · ends game" : "";
-            label.title = `${msg.kind} · ${triggerNote} · ${msg.loop}${delayNote}${cameraNote}${clearNote}${promptNote}${constraintSuffix}${endNote}`;
+            const repeats = msg.loop === "repeat" && msg.trigger !== "playerTurn";
+            const onEnd = CustomMessagesGame._normalizeOnEnd(msg.onEnd);
+            const endNote = repeats
+                ? " · repeats"
+                : onEnd
+                  ? ` · then ${this._onEndLabel(onEnd).toLowerCase()}`
+                  : "";
+            label.title = `${msg.kind} · ${triggerNote}${delayNote}${cameraNote}${clearNote}${promptNote}${constraintSuffix}${endNote}`;
             tile.appendChild(label);
 
-            if (msg.endGame) {
+            const badgeText = !repeats && CustomMessagesGame._isEnding(onEnd)
+                ? "Ends game"
+                : msg.trigger === "playNext" && !played.has(msg.id)
+                  ? "Nothing plays this"
+                  : "";
+            if (badgeText) {
                 const badge = document.createElement("span");
                 badge.className = "custom-messages-tile-badge";
-                badge.textContent = "Ends game";
+                badge.textContent = badgeText;
                 tile.appendChild(badge);
             }
 
@@ -1531,6 +1620,8 @@ class CustomMessagesGame {
         this._editorFaceConstraint = null;
         this._editorTurnLabel = null;
         this._editorDelayLabel = null;
+        this._editorRepeatHint = null;
+        this._editorOnEnd = null;
         if (this._actionsOverlay) this._renderTiles();
     }
 
@@ -1630,21 +1721,20 @@ class CustomMessagesGame {
         });
         turnLabel.appendChild(turnInput);
 
-        const loopLabel = document.createElement("label");
-        loopLabel.textContent = "Loop";
-        const loopSelect = document.createElement("select");
-        loopSelect.className = "custom-messages-loop";
-        for (const t of CustomMessagesGame.LOOPS) {
-            const opt = document.createElement("option");
-            opt.value = t.id;
-            opt.textContent = t.label;
-            loopSelect.appendChild(opt);
-        }
-        loopSelect.value = draft.loop;
-        loopSelect.addEventListener("change", () => {
-            draft.loop = loopSelect.value;
+        const repeatLabel = document.createElement("label");
+        repeatLabel.className = "custom-messages-camera-label custom-messages-end-game-label";
+        const repeatCheck = document.createElement("input");
+        repeatCheck.type = "checkbox";
+        repeatCheck.className = "custom-messages-loop";
+        repeatCheck.checked = draft.loop === "repeat";
+        repeatCheck.addEventListener("change", () => {
+            draft.loop = repeatCheck.checked ? "repeat" : "once";
+            this._syncTriggerOptions();
         });
-        loopLabel.appendChild(loopSelect);
+        repeatLabel.appendChild(repeatCheck);
+        repeatLabel.appendChild(document.createTextNode(" Repeat"));
+        const repeatHint = document.createElement("p");
+        repeatHint.className = "custom-messages-hint muted custom-messages-end-game-hint";
 
         const delayLabel = document.createElement("label");
         delayLabel.className = "custom-messages-delay-label";
@@ -1691,30 +1781,27 @@ class CustomMessagesGame {
         });
         faceConstraintLabel.appendChild(faceConstraintSelect);
 
-        const endGameLabel = document.createElement("label");
-        endGameLabel.className = "custom-messages-camera-label custom-messages-end-game-label";
-        const endGameCheck = document.createElement("input");
-        endGameCheck.type = "checkbox";
-        endGameCheck.className = "custom-messages-end-game";
-        endGameCheck.checked = !!draft.endGame;
-        endGameCheck.addEventListener("change", () => {
-            draft.endGame = !!endGameCheck.checked;
+        const onEndLabel = document.createElement("label");
+        onEndLabel.textContent = "After it ends";
+        const onEndSelect = this._buildOnEndSelect(draft);
+        onEndSelect.addEventListener("change", () => {
+            draft.onEnd = CustomMessagesGame._normalizeOnEnd(onEndSelect.value);
         });
-        endGameLabel.appendChild(endGameCheck);
-        endGameLabel.appendChild(document.createTextNode(" End game after this"));
-        const endGameHint = document.createElement("p");
-        endGameHint.className = "custom-messages-hint muted custom-messages-end-game-hint";
-        endGameHint.textContent =
-            "Ends once this finishes playing, or once the reply to a prompt has been spoken.";
+        onEndLabel.appendChild(onEndSelect);
+        const onEndHint = document.createElement("p");
+        onEndHint.className = "custom-messages-hint muted custom-messages-end-game-hint";
+        onEndHint.textContent =
+            "Once this finishes playing, or once the reply to a prompt has been spoken.";
 
         options.appendChild(triggerLabel);
         options.appendChild(turnLabel);
-        options.appendChild(loopLabel);
         options.appendChild(delayLabel);
         options.appendChild(constraintsHeading);
         options.appendChild(faceConstraintLabel);
-        options.appendChild(endGameLabel);
-        options.appendChild(endGameHint);
+        options.appendChild(repeatLabel);
+        options.appendChild(repeatHint);
+        options.appendChild(onEndLabel);
+        options.appendChild(onEndHint);
         card.appendChild(options);
 
         const actions = document.createElement("div");
@@ -1758,13 +1845,56 @@ class CustomMessagesGame {
         this._editorOptions = options;
         this._editorSubmit = submitBtn;
         this._editorTrigger = triggerSelect;
-        this._editorLoop = loopSelect;
+        this._editorLoop = repeatCheck;
         this._editorDelayInput = delayInput;
         this._editorFaceConstraint = faceConstraintSelect;
         this._editorTurnLabel = turnLabel;
         this._editorDelayLabel = delayLabel;
+        this._editorRepeatHint = repeatHint;
+        this._editorOnEnd = [onEndLabel, onEndHint];
 
         this._refreshEditorBody();
+    }
+
+    /**
+     * On end choices: wait, the next / first message, any other message, or ending the game
+     * and going to the home game, no game, the next game or a particular game.
+     * @param {object} draft
+     */
+    _buildOnEndSelect(draft) {
+        const select = document.createElement("select");
+        select.className = "custom-messages-on-end";
+        const add = (parent, value, text) => {
+            const opt = document.createElement("option");
+            opt.value = value;
+            opt.textContent = text;
+            parent.appendChild(opt);
+        };
+        const group = (label) => {
+            const el = document.createElement("optgroup");
+            el.label = label;
+            select.appendChild(el);
+            return el;
+        };
+        for (const o of CustomMessagesGame.ON_END_PLAY) add(select, o.id, o.label);
+        const others = this.messages.filter((m) => m.id !== draft.id);
+        if (others.length) {
+            const messages = group("Play message");
+            this.messages.forEach((m, i) => {
+                if (m.id !== draft.id) {
+                    add(messages, `msg:${m.id}`, `${i + 1}. ${CustomMessagesGame.tileLabel(m)}`);
+                }
+            });
+        }
+        const endings = group("End game");
+        for (const o of CustomMessagesGame.ON_END_ENDINGS) add(endings, o.id, o.label);
+        for (const g of this._endGameChoices()) add(endings, `end:${g.id}`, `End game, go to ${g.label}`);
+        const value = CustomMessagesGame._normalizeOnEnd(draft.onEnd);
+        if (value && ![...select.options].some((o) => o.value === value)) {
+            add(select, value, `${this._onEndLabel(value)} (missing)`);
+        }
+        select.value = value;
+        return select;
     }
 
     /** Prompts on the Player turn trigger ride along with the player's message. */
@@ -1772,14 +1902,25 @@ class CustomMessagesGame {
         return !!msg && msg.kind === "prompt" && msg.trigger === "playerTurn";
     }
 
-    /** Turn number only applies to Player turn; attached prompts have no delay. */
+    /**
+     * Turn number only applies to Player turn; attached prompts have no delay. On a player turn
+     * Repeat means every Nth turn; elsewhere it replays the message, so there is no On end.
+     */
     _syncTriggerOptions() {
         const draft = this._draft;
         if (!draft) return;
-        if (this._editorTurnLabel) this._editorTurnLabel.hidden = draft.trigger !== "playerTurn";
+        const playerTurn = draft.trigger === "playerTurn";
+        if (this._editorTurnLabel) this._editorTurnLabel.hidden = !playerTurn;
         if (this._editorDelayLabel) {
             this._editorDelayLabel.hidden = CustomMessagesGame._isTurnAttachment(draft);
         }
+        if (this._editorRepeatHint) {
+            this._editorRepeatHint.textContent = playerTurn
+                ? "Plays every Nth player turn instead of only on turn N."
+                : "Keeps playing it until another trigger plays something or Only fire if stops being met.";
+        }
+        const repeats = draft.loop === "repeat" && !playerTurn;
+        for (const el of this._editorOnEnd || []) el.hidden = repeats;
     }
 
     _hasDraftMedia() {
@@ -2293,8 +2434,8 @@ class CustomMessagesGame {
             kind: draft.kind,
             trigger,
             turnNumber: CustomMessagesGame._normalizeTurnNumber(draft.turnNumber),
-            endGame: !!draft.endGame,
             loop: draft.loop === "repeat" ? "repeat" : "once",
+            onEnd: CustomMessagesGame._normalizeOnEnd(draft.onEnd),
             delaySec: attachment ? 0 : CustomMessagesGame._normalizeDelaySec(draft.delaySec),
             constraints: CustomMessagesGame._normalizeConstraints(draft.constraints),
             text: String(draft.text || ""),
@@ -2337,6 +2478,9 @@ class CustomMessagesGame {
         const want = String(id || "");
         const removed = this.messages.find((m) => m.id === want);
         this.messages = this.messages.filter((m) => m.id !== want);
+        for (const m of this.messages) {
+            if (m.onEnd === `msg:${want}`) m.onEnd = "";
+        }
         this._firedOnceIds.delete(want);
         await this._persistAll();
         if (removed?.audioKey) {
@@ -2366,24 +2510,25 @@ class CustomMessagesGame {
         return true;
     }
 
-    /** Fires once each time this saved game is started (picked in Custom Games). */
+    /**
+     * Fires once each time this saved game is started (picked in the Game dropdown), one
+     * message (and whatever its On end plays) after another.
+     */
     async _runGameLoad(generation) {
         const list = this.messages.filter((m) => m.trigger === "gameLoad");
         for (const msg of list) {
             if (!this._isActive(generation)) return;
-            if (msg.loop === "once" && this._firedOnceIds.has(msg.id)) continue;
+            if (this._firedOnceIds.has(msg.id)) continue;
             if (!this._constraintsMet(msg)) continue;
-            const played = await this._playMessage(msg, generation);
-            if (played && msg.loop === "once") this._firedOnceIds.add(msg.id);
-            if (played && msg.loop === "repeat") {
-                while (this._isActive(generation)) {
-                    const gap = await this._sleep(CustomMessagesGame.REPEAT_GAP_MS, generation);
-                    if (!gap) return;
-                    if (!this._constraintsMet(msg)) continue;
-                    await this._playMessage(msg, generation);
+            let epoch = 0;
+            const played = await this._playMessage(msg, generation, {
+                onPlayed: (e) => {
+                    epoch = e;
+                    this._firedOnceIds.add(msg.id);
                 }
-                return;
-            }
+            });
+            // Another trigger took over part way through; the rest of Game load gives way to it.
+            if (played && epoch !== this._chainEpoch) return;
         }
     }
 
@@ -2406,7 +2551,7 @@ class CustomMessagesGame {
     }
 
     async _onFaceTick(generation) {
-        if (!this._isActive(generation) || this._audioBusy || this._faceTickBusy) return;
+        if (!this._isActive(generation) || this._audioBusy) return;
         if (this._endPending) return;
         const facePresent = this._isFacePresent();
         const now = Date.now();
@@ -2420,9 +2565,8 @@ class CustomMessagesGame {
         if (facePresent !== this._lastFacePresent) {
             this._lastFacePresent = facePresent;
             this._faceSince = now;
-            // Re-arm once-triggers for the condition we just left.
+            // Re-arm triggers for the condition we just left.
             for (const msg of this.messages) {
-                if (msg.loop !== "once") continue;
                 if (msg.trigger === "faceDetected" && !facePresent) this._firedOnceIds.delete(msg.id);
                 if (msg.trigger === "noFaceDetected" && facePresent) this._firedOnceIds.delete(msg.id);
             }
@@ -2432,25 +2576,24 @@ class CustomMessagesGame {
         if (now - this._faceSince < CustomMessagesGame.FACE_STABLE_MS) return;
 
         const trigger = facePresent ? "faceDetected" : "noFaceDetected";
+        if (this._faceTicksBusy.has(trigger)) return;
         const candidates = this.messages.filter(
-            (m) => m.trigger === trigger && this._constraintsMet(m)
+            (m) => m.trigger === trigger && !this._firedOnceIds.has(m.id) && this._constraintsMet(m)
         );
         if (!candidates.length) return;
 
-        this._faceTickBusy = true;
+        this._faceTicksBusy.add(trigger);
         try {
             for (const msg of candidates) {
                 if (!this._isActive(generation) || this._audioBusy) return;
-                if (msg.loop === "once" && this._firedOnceIds.has(msg.id)) continue;
+                if (this._firedOnceIds.has(msg.id)) continue;
                 if (!this._constraintsMet(msg)) continue;
-                const played = await this._playMessage(msg, generation);
-                if (played && msg.loop === "once") this._firedOnceIds.add(msg.id);
-                if (played && msg.loop === "repeat") {
-                    this._faceSince = Date.now();
-                }
+                await this._playMessage(msg, generation, {
+                    onPlayed: () => this._firedOnceIds.add(msg.id)
+                });
             }
         } finally {
-            this._faceTickBusy = false;
+            this._faceTicksBusy.delete(trigger);
         }
     }
 
@@ -2484,16 +2627,13 @@ class CustomMessagesGame {
     }
 
     /**
-     * Messages whose own speech (agent reply / repeat loop) should be allowed to
-     * re-trigger speechFinished after the in-flight play completes.
-     * Once-only text/audio clips do not — that would self-chain forever.
+     * Messages whose own speech (the agent's reply) should be allowed to re-trigger
+     * speechFinished after the in-flight play completes. Text/audio clips do not — that would
+     * self-chain forever (Repeat replays them itself).
      * @param {CustomMessage} msg
      */
     static _speechFinishedMayRetriggerFromOwnSpeech(msg) {
-        if (!msg) return false;
-        if (msg.kind === "prompt") return true;
-        if (msg.loop === "repeat") return true;
-        return false;
+        return msg?.kind === "prompt";
     }
 
     async _onSpeechTick(generation) {
@@ -2512,7 +2652,6 @@ class CustomMessagesGame {
                 audioBusy: this._audioBusy
             });
             for (const msg of this.messages) {
-                if (msg.loop !== "once") continue;
                 if (msg.trigger === "speechFinished") this._firedOnceIds.delete(msg.id);
             }
         }
@@ -2537,14 +2676,10 @@ class CustomMessagesGame {
         }
 
         const waitingOnConstraints = candidates.some(
-            (m) =>
-                !(m.loop === "once" && this._firedOnceIds.has(m.id)) &&
-                !this._constraintsMet(m)
+            (m) => !this._firedOnceIds.has(m.id) && !this._constraintsMet(m)
         );
         const runnable = candidates.filter(
-            (m) =>
-                !(m.loop === "once" && this._firedOnceIds.has(m.id)) &&
-                this._constraintsMet(m)
+            (m) => !this._firedOnceIds.has(m.id) && this._constraintsMet(m)
         );
 
         if (!runnable.length) {
@@ -2552,7 +2687,7 @@ class CustomMessagesGame {
                 "Speech finished but nothing runnable",
                 candidates.map((m) => ({
                     action: CustomMessagesGame.tileLabel(m),
-                    firedOnce: m.loop === "once" && this._firedOnceIds.has(m.id),
+                    firedOnce: this._firedOnceIds.has(m.id),
                     constraintsMet: this._constraintsMet(m),
                     constraints: CustomMessagesGame._constraintsSummary(m.constraints) || "none"
                 })),
@@ -2577,7 +2712,7 @@ class CustomMessagesGame {
                 if (!this._isActive(generation)) return;
                 if (!this._constraintsMet(msg)) continue;
                 const played = await this._playMessage(msg, generation);
-                if (played && msg.loop === "once") this._firedOnceIds.add(msg.id);
+                if (played) this._firedOnceIds.add(msg.id);
                 if (played && CustomMessagesGame._speechFinishedMayRetriggerFromOwnSpeech(msg)) {
                     mayRetrigger.push(msg);
                 }
@@ -2597,9 +2732,7 @@ class CustomMessagesGame {
                 // finish edge was already seen, pending is still true; otherwise the next
                 // falling edge sets it. Once-only text/audio clips are not re-armed —
                 // their own TTS would otherwise self-chain forever.
-                for (const msg of mayRetrigger) {
-                    if (msg.loop === "once") this._firedOnceIds.delete(msg.id);
-                }
+                for (const msg of mayRetrigger) this._firedOnceIds.delete(msg.id);
             } else if (!waitingOnConstraints) {
                 this._speechFinishedPending = false;
             }
@@ -2609,23 +2742,100 @@ class CustomMessagesGame {
     }
 
     /**
+     * Plays a message its trigger fired, then carries on as its Repeat / On end say. Resolves
+     * (true if the message played) once all of that is over.
      * @param {CustomMessage} msg
      * @param {number} generation
-     * @param {{ turnFollowUp?: boolean }} [options] turnFollowUp still plays while the
-     *   game is waiting to end after a player turn.
+     * @param {{ turnFollowUp?: boolean, onPlayed?: ((epoch: number) => void)|null }} [options]
+     *   turnFollowUp still plays while the game is waiting to end after a player turn.
+     *   onPlayed runs as soon as the message itself has played, before whatever follows.
      */
-    async _playMessage(msg, generation, { turnFollowUp = false } = {}) {
-        if (!msg || !this._isActive(generation)) return false;
-        if (!this._constraintsMet(msg)) return false;
+    async _playMessage(msg, generation, { turnFollowUp = false, onPlayed = null } = {}) {
+        let epoch = 0;
+        const played = await this._playOne(msg, generation, {
+            turnFollowUp,
+            onStart: () => {
+                epoch = ++this._chainEpoch;
+            }
+        });
+        if (!played) return false;
+        onPlayed?.(epoch);
+        await this._playAfter(msg, generation, epoch);
+        return true;
+    }
+
+    /** Whether a run of messages carries on: it stops once another trigger plays a message. */
+    _runLive(generation, epoch) {
+        return this._isActive(generation) && epoch === this._chainEpoch && !this._endPending;
+    }
+
+    /**
+     * What follows a message that has played. Repeat plays it again until stopped; otherwise its
+     * On end plays another message or ends the game. A message that can't play (Only fire if not
+     * met) is passed over to its own On end.
+     * @param {CustomMessage} msg
+     * @param {number} generation
+     * @param {number} epoch The run's `_chainEpoch`; it stops when another trigger bumps it.
+     */
+    async _playAfter(msg, generation, epoch) {
+        const live = () => this._runLive(generation, epoch);
+        let current = msg;
+        let passedOver = 0;
+        while (live()) {
+            if (current.loop === "repeat" && current.trigger !== "playerTurn") {
+                await this._repeat(current, generation, epoch);
+                return;
+            }
+            const onEnd = CustomMessagesGame._normalizeOnEnd(current.onEnd);
+            if (CustomMessagesGame._isEnding(onEnd)) {
+                this._endGame(generation, onEnd.slice("end:".length));
+                return;
+            }
+            const next = this._onEndMessage(current, onEnd);
+            if (!next) return;
+            const startedAt = Date.now();
+            const played = await this._playOne(next, generation, { stillWanted: live });
+            if (!live()) return;
+            if (played) {
+                passedOver = 0;
+                const rest = CustomMessagesGame.MIN_STEP_MS - (Date.now() - startedAt);
+                if (rest > 0 && !(await this._sleep(rest, generation))) return;
+            } else if (++passedOver > this.messages.length) {
+                return;
+            }
+            current = next;
+        }
+    }
+
+    /** Repeat: plays the message again and again until another trigger plays something or its Only fire if stops being met. */
+    async _repeat(msg, generation, epoch) {
+        const live = () => this._runLive(generation, epoch);
+        while (await this._sleep(CustomMessagesGame.REPEAT_GAP_MS, generation)) {
+            if (!live() || !this._constraintsMet(msg)) return;
+            if (!(await this._playOne(msg, generation, { stillWanted: live }))) return;
+        }
+    }
+
+    /**
+     * Plays one message: its delay, then the audio / text / prompt. Resolves true once it has
+     * finished (audio ended, text spoken, a prompt's reply spoken), false if it didn't play.
+     * @param {CustomMessage} msg
+     * @param {number} generation
+     * @param {{ turnFollowUp?: boolean, stillWanted?: (() => boolean)|null, onStart?: (() => void)|null }} [options]
+     *   stillWanted is checked again after waiting; onStart runs just before it plays.
+     */
+    async _playOne(msg, generation, { turnFollowUp = false, stillWanted = null, onStart = null } = {}) {
+        const wanted = () =>
+            this._isActive(generation) && (!stillWanted || stillWanted()) && this._constraintsMet(msg);
+        if (!msg || !wanted()) return false;
 
         while (this._audioBusy) {
             if (!this._isActive(generation)) return false;
             const waited = await this._sleep(40, generation);
             if (!waited) return false;
         }
-        if (!this._isActive(generation)) return false;
         if (this._endPending && !turnFollowUp) return false;
-        if (!this._constraintsMet(msg)) return false;
+        if (!wanted()) return false;
 
         if (CustomMessagesGame.DEBUG_CONFIRM_TRIGGERS) {
             const confirmed = await this._debugConfirmTrigger(msg, generation);
@@ -2639,10 +2849,10 @@ class CustomMessagesGame {
             const delayed = await this._sleep(delayMs, generation);
             if (!delayed) return false;
         }
-        if (!this._isActive(generation)) return false;
         // Re-check after delay — face / active game may have changed.
-        if (!this._constraintsMet(msg)) return false;
+        if (!wanted()) return false;
 
+        onStart?.();
         this._audioBusy = true;
         try {
             if (msg.kind === "audio") {
@@ -2656,13 +2866,7 @@ class CustomMessagesGame {
             this._audioBusy = false;
         }
 
-        if (!this._isActive(generation)) return false;
         // Plays above resolve only once audio / TTS / the prompt's spoken reply has finished.
-        if (msg.endGame) {
-            this._endGame(generation);
-            return true;
-        }
-        await this._playFollowingNext(msg, generation);
         return this._isActive(generation);
     }
 
@@ -2697,8 +2901,9 @@ class CustomMessagesGame {
         for (const msg of prompts) {
             if (msg.loop === "once") this._firedOnceIds.add(msg.id);
         }
-        if (prompts.some((m) => m.endGame)) this._endPending = true;
+        if (prompts.some((m) => CustomMessagesGame._isEnding(m.onEnd))) this._endPending = true;
         if (due.length) {
+            this._chainEpoch += 1;
             this._debugLog("Player turn", turn, due.map((m) => CustomMessagesGame.tileLabel(m)));
         }
         const text = prompts
@@ -2725,7 +2930,9 @@ class CustomMessagesGame {
         if (!ok) {
             if (this._playerTurn === pending.turn) this._playerTurn -= 1;
             for (const msg of pending.prompts) this._firedOnceIds.delete(msg.id);
-            if (pending.prompts.some((m) => m.endGame)) this._endPending = false;
+            if (pending.prompts.some((m) => CustomMessagesGame._isEnding(m.onEnd))) {
+                this._endPending = false;
+            }
             return;
         }
         void this._runTurnFollowUps(pending);
@@ -2738,21 +2945,32 @@ class CustomMessagesGame {
             const played = await this._playMessage(msg, generation, { turnFollowUp: true });
             if (played && msg.loop === "once") this._firedOnceIds.add(msg.id);
         }
-        if (prompts.some((m) => m.endGame)) this._endGame(generation);
+        if (!this._isActive(generation)) return;
+        const ender = prompts.find((m) => CustomMessagesGame._isEnding(m.onEnd));
+        if (ender) {
+            this._endGame(generation, ender.onEnd.slice("end:".length));
+            return;
+        }
+        // Attached prompts carry on from their On end once the reply has been spoken.
+        const chained = prompts.find((m) => CustomMessagesGame._normalizeOnEnd(m.onEnd));
+        if (chained) await this._playAfter(chained, generation, this._chainEpoch);
     }
 
-    /** Stop every trigger and hand back to the robot, which returns to its default game. */
-    _endGame(generation) {
+    /**
+     * Stop every trigger and hand back to the robot, which moves on to `endTo`.
+     * @param {number} generation
+     * @param {string} [endTo] "home", "none", "next", or a game (`game:<id>` / built-in id)
+     */
+    _endGame(generation, endTo = "home") {
         if (!this._isActive(generation)) return;
-        this._debugLog("Game ended", { activeGame: this._activeGameName || "(none)" });
+        this._debugLog("Game ended", { activeGame: this._activeGameName || "(none)", endTo });
         this._running = false;
         this._generation += 1;
         this._endPending = false;
-        this._playNextQueue = [];
         this._stopFacePoll();
         this._stopSpeechPoll();
         if (typeof this.robot?.onLocalGameEnded === "function") {
-            this.robot.onLocalGameEnded("custom_game_finished");
+            this.robot.onLocalGameEnded("custom_game_finished", String(endTo || "home"));
         }
     }
 
@@ -2797,7 +3015,8 @@ class CustomMessagesGame {
         const rows = [
             ["Trigger", triggerLabel],
             ["Action", `${kindLabel} — ${CustomMessagesGame.tileLabel(msg)}`],
-            ["Loop", msg.loop === "repeat" ? "Repeat" : "Play once"],
+            ["Repeat", msg.loop === "repeat" ? "Yes" : "No"],
+            ["After it ends", this._onEndLabel(msg.onEnd)],
             ["Delay", `${delaySec}s`],
             ["Constraints", constraints],
             ["Active game", this._activeGameName || "(none)"]
@@ -2867,31 +3086,6 @@ class CustomMessagesGame {
         this._debugConfirmResolve = null;
         if (overlay) overlay.remove();
         if (resolve) resolve(!!ok);
-    }
-
-    async _playFollowingNext(afterMsg, generation) {
-        const idx = this.messages.findIndex((m) => m.id === afterMsg.id);
-        if (idx < 0) return;
-        for (let i = idx + 1; i < this.messages.length; i++) {
-            const next = this.messages[i];
-            if (next.trigger !== "playNext") break;
-            if (!this._isActive(generation)) return;
-            if (next.loop === "once" && this._firedOnceIds.has(next.id)) continue;
-            if (!this._constraintsMet(next)) continue;
-            const played = await this._playMessage(next, generation);
-            if (played && next.loop === "once") this._firedOnceIds.add(next.id);
-            if (played && next.loop === "repeat") {
-                while (this._isActive(generation)) {
-                    const gap = await this._sleep(CustomMessagesGame.REPEAT_GAP_MS, generation);
-                    if (!gap) return;
-                    if (!this._constraintsMet(next)) continue;
-                    await this._playMessage(next, generation);
-                }
-            }
-            // Only chain the immediate contiguous playNext block once through.
-            // Nested _playMessage already continues the chain; stop here.
-            return;
-        }
     }
 
     async _playAudio(msg, generation) {
@@ -3056,11 +3250,10 @@ class CustomMessagesGame {
  * @typedef {object} GamesIndexEntry
  * @property {string} id
  * @property {string} name
- * @property {"js"|"json"} type JSON games play in the Custom engine; JS games are their own class.
+ * @property {"js"} type Code games only; JSON games live in character folders.
  * @property {string} path
- * @property {string} className Global class for JS games.
- * @property {string} computervisionModel Vision model a JS game needs ("" = robot default).
- * @property {boolean} canEnd JS games that finish on their own (JSON games use End game actions).
+ * @property {string} className Global class for the game.
+ * @property {string} computervisionModel Vision model the game needs ("" = robot default).
  */
 
 /**
@@ -3074,8 +3267,12 @@ class CustomMessagesGame {
  * @property {"audio"|"text"|"prompt"} kind
  * @property {string} trigger
  * @property {number} turnNumber Player turn trigger: fire on this turn, or every Nth turn when repeating.
- * @property {boolean} endGame End the game once this has played (prompts: once the reply is spoken).
- * @property {"once"|"repeat"} loop
+ * @property {"once"|"repeat"} loop "repeat" replays it until another trigger plays something or
+ *   its constraints stop being met; on Player turn it means every Nth turn instead.
+ * @property {string} onEnd Once it has played (prompts: once the reply is spoken): "" waits for a
+ *   trigger; "next" / "first" / "msg:<id>" play that message; "end:home" / "end:none" /
+ *   "end:next" / "end:<game id>" end the game and go to the home game, no game, the character's
+ *   next game or that game.
  * @property {number} delaySec
  * @property {CustomMessageConstraints} constraints
  * @property {string} text
@@ -3093,366 +3290,12 @@ class CustomMessagesGame {
  */
 
 /**
- * Custom Games picker — overlay to pick a saved custom-messages collection or start a new one.
+ * @typedef {object} SavedGameSummary
+ * @property {string} id Local store id.
+ * @property {string} name
+ * @property {string} characterId Owning character ("" for games saved before characters owned games).
+ * @property {string} slug The game's folder name inside its character.
+ * @property {string} builtinId Copies of the old shared games/index.json JSON games.
  */
-class CustomGamesPicker {
-    /**
-     * @param {object} robot
-     */
-    constructor(robot) {
-        this.robot = robot;
-        this._overlay = null;
-        this._nameOverlay = null;
-        this._listEl = null;
-        this._closing = false;
-        /** @type {{ id: string, name: string, path: string }[]} */
-        this._builtinGames = [];
-        this._builtinBusy = false;
-    }
-
-    open() {
-        this.close();
-        this._closing = false;
-        this._mount();
-        void CustomMessagesGame.sweepOrphanAudio();
-        void CustomMessagesGame.listBuiltinGames().then((list) => {
-            if (this._closing) return;
-            this._builtinGames = list;
-            this._renderGameList();
-        });
-    }
-
-    close() {
-        this._closing = true;
-        this._closeNamePrompt();
-        this._unmount();
-    }
-
-    _unmount() {
-        if (this._overlay?.parentElement) {
-            this._overlay.parentElement.removeChild(this._overlay);
-        }
-        this._overlay = null;
-        this._listEl = null;
-    }
-
-    _closeNamePrompt() {
-        if (this._nameOverlay?.parentElement) {
-            this._nameOverlay.parentElement.removeChild(this._nameOverlay);
-        }
-        this._nameOverlay = null;
-    }
-
-    _onNew() {
-        this._promptNewGameName();
-    }
-
-    /** Restore a game from a previously downloaded backup file. */
-    _onUpload() {
-        const input = document.createElement("input");
-        input.type = "file";
-        input.accept = ".json,application/json,.phonebot-game.json,.phonebot-character.json";
-        input.hidden = true;
-        input.addEventListener("change", async () => {
-            const file = input.files && input.files[0];
-            input.remove();
-            if (!file) return;
-            try {
-                const text = await file.text();
-                const parsed = JSON.parse(text);
-                const saved = await CustomMessagesGame.importGameFromExport(parsed);
-                if (!saved) {
-                    if (typeof window.alert === "function") {
-                        window.alert("That file is not a valid game backup.");
-                    }
-                    return;
-                }
-                this._renderGameList();
-            } catch (err) {
-                console.warn("Game upload failed:", err);
-                if (typeof window.alert === "function") {
-                    window.alert("Could not read that game backup file.");
-                }
-            }
-        });
-        document.body.appendChild(input);
-        input.click();
-        // Remove if the user cancels the picker (change never fires).
-        setTimeout(() => {
-            if (input.parentElement && !input.files?.length) input.remove();
-        }, 60_000);
-    }
-
-    /** Play / load this game (name control). */
-    _onSelect(gameId) {
-        if (this._closing) return;
-        this.close();
-        void this.robot?.selectGame?.(`custom:${gameId}`);
-    }
-
-    /** Open the messages dialog without selecting (playing) the game. */
-    _onEdit(gameId) {
-        if (this._closing) return;
-        this.close();
-        this.robot?.editCustomGame?.(gameId);
-    }
-
-    /**
-     * Copy a built-in JSON game into the local store, then play or edit that copy.
-     * @param {string} builtinId
-     * @param {"play"|"edit"} action
-     */
-    async _onBuiltin(builtinId, action) {
-        if (this._builtinBusy) return;
-        this._builtinBusy = true;
-        try {
-            const saved = await CustomMessagesGame.ensureBuiltinGame(builtinId);
-            if (this._closing) return;
-            if (!saved) throw new Error(`Built-in game not found: ${builtinId}`);
-            if (action === "edit") this._onEdit(saved.id);
-            else this._onSelect(saved.id);
-        } catch (err) {
-            console.warn("Built-in game load failed:", err);
-            if (typeof window.alert === "function") {
-                window.alert("Could not load that game.");
-            }
-        } finally {
-            this._builtinBusy = false;
-        }
-    }
-
-    _onDelete(gameId, gameName, isBuiltinCopy = false) {
-        const label = String(gameName || "this game").trim() || "this game";
-        const question = isBuiltinCopy
-            ? `Reset “${label}” to the built-in version? Your edits will be lost.`
-            : `Delete “${label}”? This cannot be undone.`;
-        const ok = typeof window.confirm === "function" ? window.confirm(question) : true;
-        if (!ok) return;
-        if (!CustomMessagesGame.deleteGame(gameId)) return;
-        this._renderGameList();
-    }
-
-    _promptNewGameName() {
-        this._closeNamePrompt();
-        const overlay = document.createElement("div");
-        overlay.className = "custom-messages-overlay custom-messages-name-overlay";
-        overlay.setAttribute("role", "dialog");
-        overlay.setAttribute("aria-modal", "true");
-        overlay.setAttribute("aria-label", "New game");
-
-        const card = document.createElement("div");
-        card.className = "custom-messages-card";
-
-        const title = document.createElement("h2");
-        title.className = "custom-messages-title";
-        title.textContent = "New game";
-        card.appendChild(title);
-
-        const hint = document.createElement("p");
-        hint.className = "custom-messages-hint muted";
-        hint.textContent = "Name this game. Existing games are kept.";
-        card.appendChild(hint);
-
-        const label = document.createElement("label");
-        label.className = "custom-messages-game-name-label";
-        label.textContent = "Game name";
-        const input = document.createElement("input");
-        input.type = "text";
-        input.className = "custom-messages-game-name";
-        input.placeholder = "e.g. Pirate guide";
-        input.autocomplete = "off";
-        input.maxLength = 48;
-        label.appendChild(input);
-        card.appendChild(label);
-
-        const actions = document.createElement("div");
-        actions.className = "custom-messages-actions";
-
-        const createBtn = document.createElement("button");
-        createBtn.type = "button";
-        createBtn.className = "custom-messages-submit";
-        createBtn.textContent = "Create";
-        const sync = () => {
-            createBtn.disabled = !String(input.value || "").trim();
-        };
-        sync();
-        input.addEventListener("input", sync);
-        input.addEventListener("keydown", (e) => {
-            if (e.key === "Enter") {
-                e.preventDefault();
-                createBtn.click();
-            }
-        });
-        createBtn.addEventListener("click", () => {
-            const name = String(input.value || "").trim();
-            if (!name) return;
-            const saved = CustomMessagesGame.createNamedGame(name);
-            if (!saved) return;
-            this._onEdit(saved.id);
-        });
-
-        const cancelBtn = document.createElement("button");
-        cancelBtn.type = "button";
-        cancelBtn.className = "custom-messages-cancel secondary";
-        cancelBtn.textContent = "Cancel";
-        cancelBtn.addEventListener("click", () => this._closeNamePrompt());
-
-        actions.appendChild(createBtn);
-        actions.appendChild(cancelBtn);
-        card.appendChild(actions);
-        overlay.appendChild(card);
-        overlay.addEventListener("click", (e) => {
-            if (e.target === overlay) this._closeNamePrompt();
-        });
-        document.body.appendChild(overlay);
-        this._nameOverlay = overlay;
-        setTimeout(() => input.focus(), 0);
-    }
-
-    _renderGameList() {
-        const list = this._listEl;
-        if (!list) return;
-        list.innerHTML = "";
-
-        const games = CustomMessagesGame.listGames();
-        const copied = new Set(games.map((g) => g.builtinId).filter(Boolean));
-        const builtins = this._builtinGames.filter((b) => !copied.has(b.id));
-        if (!games.length && !builtins.length) {
-            const empty = document.createElement("p");
-            empty.className = "custom-messages-hint muted";
-            empty.textContent = "No games yet. Tap New to create one.";
-            list.appendChild(empty);
-            return;
-        }
-
-        for (const game of games) {
-            const isBuiltinCopy = !!game.builtinId;
-            list.appendChild(
-                this._buildGameRow(game.name, {
-                    onPlay: () => this._onSelect(game.id),
-                    onEdit: () => this._onEdit(game.id),
-                    removeLabel: isBuiltinCopy ? "Reset" : "Delete",
-                    onRemove: () => this._onDelete(game.id, game.name, isBuiltinCopy)
-                })
-            );
-        }
-        // Built-ins stay repo-only until first Play/Edit copies them into the local store.
-        for (const builtin of builtins) {
-            list.appendChild(
-                this._buildGameRow(builtin.name, {
-                    onPlay: () => void this._onBuiltin(builtin.id, "play"),
-                    onEdit: () => void this._onBuiltin(builtin.id, "edit")
-                })
-            );
-        }
-    }
-
-    /**
-     * @param {string} name
-     * @param {{ onPlay: () => void, onEdit: () => void, removeLabel?: string, onRemove?: () => void }} handlers
-     */
-    _buildGameRow(name, { onPlay, onEdit, removeLabel = "", onRemove = null }) {
-        const tile = document.createElement("div");
-        tile.className = "custom-messages-tile custom-messages-game-row";
-        tile.setAttribute("role", "listitem");
-
-        const nameBtn = document.createElement("button");
-        nameBtn.type = "button";
-        nameBtn.className = "custom-messages-game-row-name";
-        nameBtn.textContent = name;
-        nameBtn.title = `Play ${name}`;
-        nameBtn.addEventListener("click", onPlay);
-        tile.appendChild(nameBtn);
-
-        const editBtn = document.createElement("button");
-        editBtn.type = "button";
-        editBtn.className = "custom-messages-tile-edit";
-        editBtn.textContent = "Edit";
-        editBtn.setAttribute("aria-label", `Edit ${name}`);
-        editBtn.addEventListener("click", (e) => {
-            e.stopPropagation();
-            onEdit();
-        });
-        tile.appendChild(editBtn);
-
-        if (onRemove) {
-            const removeBtn = document.createElement("button");
-            removeBtn.type = "button";
-            removeBtn.className = "custom-messages-tile-edit custom-messages-game-delete";
-            removeBtn.textContent = removeLabel;
-            removeBtn.setAttribute("aria-label", `${removeLabel} ${name}`);
-            removeBtn.addEventListener("click", (e) => {
-                e.stopPropagation();
-                onRemove();
-            });
-            tile.appendChild(removeBtn);
-        }
-        return tile;
-    }
-
-    _mount() {
-        const overlay = document.createElement("div");
-        overlay.className = "custom-messages-overlay custom-messages-games-overlay";
-        overlay.setAttribute("role", "dialog");
-        overlay.setAttribute("aria-modal", "true");
-        overlay.setAttribute("aria-label", "Custom Games");
-
-        const card = document.createElement("div");
-        card.className = "custom-messages-card custom-messages-actions-card";
-
-        const title = document.createElement("h2");
-        title.className = "custom-messages-title";
-        title.textContent = "Custom Games";
-        card.appendChild(title);
-
-        const hint = document.createElement("p");
-        hint.className = "custom-messages-hint muted";
-        hint.textContent =
-            "Tap a name to play, Edit for messages, Upload to restore a backup, or create a new game.";
-        card.appendChild(hint);
-
-        const list = document.createElement("div");
-        list.className = "custom-messages-tiles";
-        list.setAttribute("role", "list");
-        card.appendChild(list);
-
-        const actions = document.createElement("div");
-        actions.className = "custom-messages-actions";
-
-        const newBtn = document.createElement("button");
-        newBtn.type = "button";
-        newBtn.className = "custom-messages-add";
-        newBtn.textContent = "New";
-        newBtn.addEventListener("click", () => this._onNew());
-
-        const uploadBtn = document.createElement("button");
-        uploadBtn.type = "button";
-        uploadBtn.className = "custom-messages-upload secondary";
-        uploadBtn.textContent = "Upload";
-        uploadBtn.title = "Restore a game from a backup file";
-        uploadBtn.addEventListener("click", () => this._onUpload());
-
-        const cancelBtn = document.createElement("button");
-        cancelBtn.type = "button";
-        cancelBtn.className = "custom-messages-cancel secondary";
-        cancelBtn.textContent = "Cancel";
-        cancelBtn.addEventListener("click", () => this.close());
-
-        actions.appendChild(newBtn);
-        actions.appendChild(uploadBtn);
-        actions.appendChild(cancelBtn);
-        card.appendChild(actions);
-
-        overlay.appendChild(card);
-        overlay.addEventListener("click", (e) => {
-            if (e.target === overlay) this.close();
-        });
-        document.body.appendChild(overlay);
-        this._overlay = overlay;
-        this._listEl = list;
-        this._renderGameList();
-    }
-}
 
 window.CustomMessagesGame = CustomMessagesGame;
-window.CustomGamesPicker = CustomGamesPicker;
