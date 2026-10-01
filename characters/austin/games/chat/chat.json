@@ -20,7 +20,7 @@
       "audioKey": "",
       "audioBase64": null,
       "audioMime": "",
-      "maxWords": 50,
+      "maxWords": 20,
       "reasoningEffort": "low"
     }
   ]
