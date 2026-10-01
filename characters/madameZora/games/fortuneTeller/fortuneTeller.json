@@ -24,6 +24,27 @@
       "reasoningEffort": "low"
     },
     {
+      "id": "fortune-teller-finale",
+      "kind": "prompt",
+      "trigger": "playerTurn",
+      "turnNumber": 6,
+      "loop": "once",
+      "onEnd": "",
+      "delaySec": 0,
+      "constraints": { "face": "any" },
+      "text": "Time is up. Do the grand finale now: weave everything they've told you into one vivid, specific fortune, then give a brief mystical sign-off. No new questions.",
+      "fileName": "",
+      "sendCamera": false,
+      "clearHistory": false,
+      "audioUrl": "",
+      "audioKey": "",
+      "audioBase64": null,
+      "audioMime": "",
+      "maxWords": 75,
+      "reasoningEffort": "",
+      "speechText": ""
+    },
+    {
       "id": "fortune-teller-nudge",
       "kind": "text",
       "trigger": "noFaceDetected",

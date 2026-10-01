@@ -613,8 +613,65 @@
     .characters-editor-overlay {
       z-index: 10002;
     }
+    .characters-games-hint:empty {
+      display: none;
+    }
     .characters-own-games {
       margin: 6px 0 8px;
+    }
+    .characters-games-section {
+      margin: 6px 0;
+      padding: 12px 14px;
+      border: 1px solid #c9d8f0;
+      border-radius: 10px;
+      background: #eef4fd;
+    }
+    .characters-section-heading {
+      font-size: 1.15rem;
+      font-weight: 700;
+      color: #111;
+    }
+    .characters-fx {
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      background: #fff;
+    }
+    .characters-fx > summary {
+      cursor: pointer;
+      padding: 8px 10px;
+      list-style: none;
+      user-select: none;
+    }
+    .characters-fx > summary::-webkit-details-marker {
+      display: none;
+    }
+    .characters-fx > summary::before {
+      content: "▸";
+      display: inline-block;
+      margin-right: 8px;
+      transition: transform 0.15s ease;
+    }
+    .characters-fx[open] > summary::before {
+      transform: rotate(90deg);
+    }
+    .characters-fx-body {
+      display: grid;
+      gap: 6px;
+      padding: 0 10px 10px;
+    }
+    .characters-fx-slider {
+      display: block;
+      font-size: 0.88rem;
+      font-weight: 500;
+      color: #444;
+    }
+    .characters-fx-slider input[type="range"] {
+      display: block;
+      width: 100%;
+      margin-top: 2px;
+    }
+    .characters-fx-slider input:disabled {
+      opacity: 0.35;
     }
     .robot-dashboard-chat {
       flex: 1 1 auto;
@@ -1614,6 +1671,72 @@
       background: #f0f0f0;
       font-weight: 400;
     }
+    .play-billing-message:empty,
+    .play-billing-checkout:empty {
+      display: none;
+    }
+    .play-billing-checkout {
+      margin: 8px 0;
+      text-align: left;
+    }
+    .play-billing-overlay[data-stage="checkout"] .play-billing-card {
+      width: min(100%, 32rem);
+    }
+    .play-billing-overlay[data-stage="checkout"] .play-billing-amount,
+    .play-billing-overlay[data-stage="checkout"] .play-billing-wallets,
+    .play-billing-overlay[data-stage="checkout"] .play-billing-pay,
+    .play-billing-overlay[data-stage="checkout"] .play-billing-password-toggle,
+    .play-billing-overlay[data-stage="checkout"] .play-billing-password {
+      display: none !important;
+    }
+    .play-billing-card button.play-billing-password-toggle {
+      display: block;
+      width: auto;
+      margin: 14px auto 0;
+      padding: 4px 8px;
+      border: none;
+      background: none;
+      color: #888;
+      font-size: 0.8rem;
+      font-weight: 400;
+      text-decoration: underline;
+      cursor: pointer;
+    }
+    .play-billing-card button.play-billing-password-toggle[hidden],
+    .play-billing-password[hidden] {
+      display: none;
+    }
+    .play-billing-password {
+      margin: 14px 0 0;
+      text-align: left;
+    }
+    .play-billing-password-label {
+      display: block;
+      margin-bottom: 6px;
+      color: #666;
+      font-size: 0.85rem;
+    }
+    .play-billing-password-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .play-billing-password-row button {
+      width: auto;
+      margin: 0;
+      padding: 8px 14px;
+    }
+    .play-billing-password-input {
+      flex: 1;
+      width: auto;
+      min-width: 0;
+      margin: 0;
+      padding: 8px;
+      border: 1px solid #ccc;
+      border-radius: 8px;
+      font-size: 0.95rem;
+      box-sizing: border-box;
+    }
     .play-credit-dock {
       position: fixed;
       left: 0;
@@ -1704,6 +1827,7 @@
     "computerVision.js",
     "browserTts.js",
     "speechToText.js",
+    "voiceFx.js",
     "audioPlayer.js",
     "audioMouthFilter.js",
     "groqTts.js",

@@ -11,8 +11,8 @@
     { "id": "escapeTheWall", "name": "Story: Escape the Wall" },
     { "id": "fortuneTeller", "name": "Fortune Teller" },
     { "id": "twentyQuestions", "name": "20 Questions" },
-    { "id": "simonSaysCustom", "name": "Simon Says Custom" }
+    { "id": "simonSaysCustom", "name": "Simon Says" }
   ],
-  "builtInGames": ["parrot", "simonSaysPoseMatch"],
-  "homeGame": ""
+  "builtInGames": [],
+  "homeGame": "game:menuMode"
 }

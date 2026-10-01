@@ -37,10 +37,6 @@ export const CLIPS = [
         text: "Hey, did I mention, I can see the future. Just say the word and all will be revealed"
     },
     {
-        file: "nudge-2a.wav",
-        text: "Ok maybe you wanna hear a joke. Wana hear a joke. Ha? No."
-    },
-    {
         file: "nudge-2b.wav",
         text: "You don't like fun and frivality. Come on, just pick something from the menu"
     },

@@ -19,6 +19,9 @@ const ARCADE_AI_MARKUP = 2;
 /** Every checkout buys shared AI credit; mode_id is metadata only. */
 const ARCADE_CREDIT_MODE_ID = "aiCredit";
 
+/** `ui_mode: embedded_page` only exists from this Stripe API version; pinned so the account default doesn't matter. */
+const STRIPE_EMBEDDED_API_VERSION = "2026-03-25.dahlia";
+
 /** Pending Checkout / unpaid rows. */
 const UNUSED_TTL_MS = 30 * 60 * 1000;
 /** Paid AI credit remains reclaimable on the same device for a week of idle time. */
@@ -106,6 +109,8 @@ async function createCheckout(request, env) {
     const currency = ARCADE_CURRENCY;
     const { priceCents, aiBudgetCents } = resolveCheckoutAmounts(body, continuation);
     const returnUrl = allowedReturnUrl(body.returnUrl, request, env);
+    // Embedded Checkout pays inside the page (no reload); falls back to the hosted redirect without a publishable key.
+    const embedded = body.embedded === true && !!env.STRIPE_PUBLISHABLE_KEY;
     const playSessionId = crypto.randomUUID();
     const now = Date.now();
     const expiresAt = now + UNUSED_TTL_MS;
@@ -149,8 +154,15 @@ async function createCheckout(request, env) {
     };
     const params = new URLSearchParams();
     params.set("mode", "payment");
-    params.set("success_url", success.toString());
-    params.set("cancel_url", cancel.toString());
+    if (embedded) {
+        params.set("ui_mode", "embedded_page");
+        // Cards and wallets finish in the page; only redirect-based methods come back via return_url.
+        params.set("redirect_on_completion", "if_required");
+        params.set("return_url", success.toString());
+    } else {
+        params.set("success_url", success.toString());
+        params.set("cancel_url", cancel.toString());
+    }
     params.set("client_reference_id", playSessionId);
     params.set("line_items[0][quantity]", "1");
     params.set("line_items[0][price_data][currency]", currency);
@@ -164,7 +176,8 @@ async function createCheckout(request, env) {
     let stripeSession;
     try {
         stripeSession = await stripeRequest(env, "/v1/checkout/sessions", params, {
-            "Idempotency-Key": `phonebot-checkout-${playSessionId}`
+            "Idempotency-Key": `phonebot-checkout-${playSessionId}`,
+            ...(embedded ? { "Stripe-Version": STRIPE_EMBEDDED_API_VERSION } : {})
         });
     } catch (error) {
         await env.DB.prepare("DELETE FROM play_sessions WHERE id = ? AND status = 'pending'")
@@ -177,6 +190,15 @@ async function createCheckout(request, env) {
     )
         .bind(stripeSession.id, playSessionId)
         .run();
+    if (embedded) {
+        return json({
+            clientSecret: stripeSession.client_secret,
+            publishableKey: env.STRIPE_PUBLISHABLE_KEY,
+            playSessionId,
+            priceCents,
+            aiBudgetCents
+        });
+    }
     return json({ url: stripeSession.url, playSessionId, priceCents, aiBudgetCents });
 }
 

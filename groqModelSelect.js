@@ -232,27 +232,34 @@ const ORPHEUS_ALLOWED_DIRECTIONS = Object.freeze([
     "singsong"
 ]);
 
+/** Temporary: send every [tag] to Orpheus as typed (no allowlist, no collapsing) to audition directions. */
+const ORPHEUS_TAG_TEST_MODE = true;
+
 const LEADING_PREFIX_TAGS_RE = /^(\[(?:clearly|confident(?:ly)?)\]\s*)+/i;
 
 /**
  * Make text safe for TTS: drop emoji, markdown symbols, <tags> and any [tag] not in
  * `allowedTags`. Adjacent allowed tags collapse to the first one.
  * Returns "" when nothing speakable remains outside tags.
+ * `allowedTags = "*"` keeps every non-empty [tag] as typed and skips the collapse.
  * @param {string} text
- * @param {string[]} [allowedTags=[]]
+ * @param {string[]|"*"} [allowedTags=[]]
  * @returns {string}
  */
 function cleanSpeechText(text, allowedTags = []) {
-    const allowed = new Set((allowedTags || []).map((t) => String(t).trim().toLowerCase()));
+    const allowAll = allowedTags === "*";
+    const allowed = new Set((allowAll ? [] : allowedTags || []).map((t) => String(t).trim().toLowerCase()));
     const s = String(text || "")
         .replace(/<\/?[a-z][^<>]*>/gi, " ")
         .replace(/\[([^\[\]]*)\]/g, (_, inner) => {
-            const tag = String(inner).trim().toLowerCase();
+            const raw = String(inner).trim();
+            if (allowAll) return raw ? ` \u0001${raw}\u0002 ` : " ";
+            const tag = raw.toLowerCase();
             return allowed.has(tag) ? ` \u0001${tag}\u0002 ` : " ";
         })
         .replace(/[\[\]]/g, " ")
         .replace(/\u0001([^\u0002]*)\u0002/g, "[$1]")
-        .replace(/(\[[a-z ]+\]\s*){2,}/g, (run) => `${run.match(/\[[a-z ]+\]/)[0]} `)
+        .replace(/(\[[a-z ]+\]\s*){2,}/g, (run) => (allowAll ? run : `${run.match(/\[[a-z ]+\]/)[0]} `))
         .replace(/[\p{Extended_Pictographic}\u{1F1E6}-\u{1F1FF}\u{1F3FB}-\u{1F3FF}\u200D\uFE0F\u20E3]/gu, " ")
         .replace(/[*_#`~|^{}\\]/g, " ")
         .replace(/&/g, " and ")
@@ -266,6 +273,7 @@ function cleanSpeechText(text, allowedTags = []) {
 
 /** `cleanSpeechText` keeping only the Orpheus allowlisted directions. */
 function cleanOrpheusSpeechText(text) {
+    if (ORPHEUS_TAG_TEST_MODE) return cleanSpeechText(text, "*");
     return cleanSpeechText(String(text || "").replace(LEADING_PREFIX_TAGS_RE, ""), ORPHEUS_ALLOWED_DIRECTIONS);
 }
 

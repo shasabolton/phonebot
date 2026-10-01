@@ -12,7 +12,7 @@
       "onEnd": "",
       "delaySec": 0,
       "constraints": { "face": "any" },
-      "text": "Have a short conversation with me about metaphysics.\nAsk whatever you like.",
+      "text": "Start a short conversation about metaphysics with the person in front of you.\nOpen with whatever question you like.",
       "fileName": "",
       "sendCamera": false,
       "clearHistory": true,

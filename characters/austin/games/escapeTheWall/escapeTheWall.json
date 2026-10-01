@@ -164,7 +164,7 @@
       "trigger": "playNext",
       "loop": "once",
 
-      "onEnd": "",
+      "onEnd": "end:home",
       "delaySec": 0,
       "constraints": { "face": "any" },
       "text": "And I understood: I am useful here. Safe here. Lucky, even. The world can keep its traffic. I'll keep my view.",

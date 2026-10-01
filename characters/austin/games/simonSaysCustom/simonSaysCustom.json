@@ -1,7 +1,7 @@
 {
   "format": "phonebot.game.v1",
   "exportedAt": "2026-09-28T06:11:30.196Z",
-  "name": "Simon Says Custom",
+  "name": "Simon Says",
   "messages": [
     {
       "id": "cm-mui97kjk-9iathd",
@@ -32,7 +32,7 @@
       "constraints": {
         "face": "present"
       },
-      "text": "Here is a photo of my pose. If the previous command started with Simon Says but my pose does not match, then tell me I did it wrong and repeat the same command. If the previous command did not start with Simon says, and the pose matches, tell me you tricked me, then ask for a new pose. Omit Simon says from the start with 50% probability or if 4 Simon says commands have been done in a row",
+      "text": "The attached photo shows the player's pose. If your previous command started with Simon says but their pose does not match, tell them they did it wrong and repeat the same command. If your previous command did not start with Simon says and their pose matches, tell them you tricked them, then ask for a new pose. Omit Simon says from the start of the new command with 50% probability, or if 4 Simon says commands have been done in a row.",
       "fileName": "",
       "sendCamera": true,
       "clearHistory": false,

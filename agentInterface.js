@@ -8,6 +8,8 @@ class AgentInterface {
     static STORAGE_REMEMBER = "phonebot.agent.remember";
     /** Sentinel `<select>` value: insert live state JSON (not a file path). */
     static TEMPLATE_VALUE_STATE = "__robot_state_json__";
+    /** Heading for text a game sends, so the model never takes it for something the player said. */
+    static GAME_INSTRUCTION_LABEL = "Game instruction (not said by the player)";
 
     /**
      * @param {Robot} robot
@@ -69,12 +71,23 @@ class AgentInterface {
         /** True while conversation-mode timed mic capture / transcribe is running. */
         this._conversationListenRunning = false;
         this._billingPaused = false;
+        /**
+         * Text send blocked by missing AI credit ("Not now"); resent once a key is entered or credit is added.
+         * @type {{ text: string, typed: boolean, options: object, modeGeneration: number }|null}
+         */
+        this._pendingSend = null;
+        this._pendingKeyTimer = 0;
         this._aiBudgetEl = null;
         /** Resolved once per mode/session: { chat, vision, stt, tts }. */
         this._sessionModels = null;
         this._sessionModelsPromise = null;
-        this._aiBudgetListener = () => this._syncAiBudgetUi();
+        this._aiBudgetListener = () => {
+            this._syncAiBudgetUi();
+            void this._resumePendingSend();
+        };
         window.addEventListener("phonebot:ai-budget", this._aiBudgetListener);
+        this._passwordHandler = (password) => this._applyPasswordFromPaywall(password);
+        window.playBilling?.setPasswordHandler?.(this._passwordHandler);
         this._agentPowerBtn = null;
         /** When true, attach current camera JPEG to the last user message on send. */
         this._sendCameraImage = this.config.sendCameraImage !== false;
@@ -139,6 +152,7 @@ class AgentInterface {
     onRobotModeChanged(_modeId) {
         this._stopSpeaking();
         this._modeStartGeneration += 1;
+        this._pendingSend = null;
         this._sessionModels = null;
         this._sessionModelsPromise = null;
         this._reasoningEffort = null;
@@ -305,7 +319,7 @@ class AgentInterface {
         } else {
             this._clearPttOverlay();
         }
-        await this._onSend({ isKickoff: true, modeGeneration: generation });
+        await this._onSend({ isKickoff: true, modeGeneration: generation, text });
         if (generation !== this._modeStartGeneration) return;
         if (this._isConversationMode() && this._agentEnabled && !this._hasConversationHistory()) {
             this._armConversationPtt();
@@ -367,13 +381,109 @@ class AgentInterface {
         if (!this._useHostedAi()) return;
         const sessionBefore = window.playBilling.getActiveSessionId();
         const allowed = await window.playBilling.ensureAiCredit(this._billingContext());
+        // A password entered on the popup switches this request to the player's own key.
+        if (!allowed && this._clientApiKey()) {
+            this._billingPaused = false;
+            return;
+        }
         this._billingPaused = !allowed;
         if (!allowed) {
-            throw new Error("Top up AI credit or enter a Groq API key to continue.");
+            throw AgentInterface._creditRequiredError("Top up AI credit to continue.");
         }
         if (window.playBilling.getActiveSessionId() !== sessionBefore) {
             this._sessionModels = null;
         }
+    }
+
+    static CREDIT_REQUIRED = "AI_CREDIT_REQUIRED";
+
+    static _creditRequiredError(message) {
+        const err = new Error(message);
+        err.code = AgentInterface.CREDIT_REQUIRED;
+        return err;
+    }
+
+    /** True when a send can go out now: a key of their own, or hosted credit left. */
+    async _aiAvailableForPendingSend() {
+        if (this._clientApiKey()) {
+            if (this._isGeminiProvider()) return true;
+            if (typeof window.GroqModelSelect?.fetchAndSelectGroqModels !== "function") return true;
+            // Model lookup fails on a bad or half-typed key; keep waiting rather than burn the prompt.
+            return !!(await this.ensureSessionGroqModels());
+        }
+        if (!this._useHostedAi()) return false;
+        const session = window.playBilling.getActiveSession();
+        const budget = Math.max(0, Number(session?.aiBudgetCents) || 0);
+        const spent = Math.max(0, Number(session?.aiSpentCents) || 0);
+        return budget - spent > 0;
+    }
+
+    async _resumePendingSend() {
+        const pending = this._pendingSend;
+        if (!pending || this._sendInProgress || !this._agentEnabled) return;
+        if (pending.modeGeneration !== this._modeStartGeneration) {
+            this._pendingSend = null;
+            return;
+        }
+        if (!(await this._aiAvailableForPendingSend())) return;
+        if (this._pendingSend !== pending || this._sendInProgress || !this._agentEnabled) return;
+        if (pending.modeGeneration !== this._modeStartGeneration) {
+            this._pendingSend = null;
+            return;
+        }
+        this._pendingSend = null;
+        if (pending.typed) {
+            // Typed text stayed in the chat box; send whatever is there now (they may have edited it).
+            if (!this._readPromptText()) return;
+            await this._onSend({ ...pending.options, resumed: true });
+            return;
+        }
+        await this._onSend({
+            ...pending.options,
+            text: pending.text,
+            modeGeneration: pending.modeGeneration,
+            resumed: true
+        });
+    }
+
+    _schedulePendingResumeForKey() {
+        clearTimeout(this._pendingKeyTimer);
+        if (!this._pendingSend) return;
+        this._pendingKeyTimer = setTimeout(() => {
+            this._pendingKeyTimer = 0;
+            void this._resumePendingSend();
+        }, 800);
+    }
+
+    _setClientApiKey(key) {
+        this._apiKey = String(key || "").trim();
+        if (this._keyInput) this._keyInput.value = this._apiKey;
+        const agent = this.getSelectedAgent();
+        if (agent) this._persistKeyForAgent(agent.name, this._apiKey);
+        this._sessionModels = null;
+        this._sessionModelsPromise = null;
+        this._syncAiBudgetUi();
+    }
+
+    /**
+     * Payment popup "Password": the player's own Groq key. Checked against Groq before it replaces
+     * hosted credit; a held send then goes out on the key.
+     * @returns {Promise<{ ok: boolean, error?: string }>}
+     */
+    async _applyPasswordFromPaywall(password) {
+        const key = String(password || "").trim();
+        if (!key) return { ok: false, error: "Enter a password." };
+        if (!this._isGeminiProvider() && typeof window.GroqModelSelect?.fetchAndSelectGroqModels === "function") {
+            try {
+                await window.GroqModelSelect.fetchAndSelectGroqModels(key);
+            } catch (_) {
+                return { ok: false, error: "That password didn't work." };
+            }
+        }
+        this._setClientApiKey(key);
+        void this.ensureSessionGroqModels();
+        void this._resumePendingSend();
+        return { ok: true };
     }
 
     _syncAiBudgetUi() {
@@ -448,6 +558,7 @@ class AgentInterface {
         if (!this._agentEnabled) {
             this._stopSpeaking();
             this._modeStartGeneration += 1;
+            this._pendingSend = null;
             this._clearPttOverlay();
         } else if (this._modeHasPromptTemplate() && !this._hasConversationHistory()) {
             void this._kickOffPromptTemplateGame({ clearHistory: false });
@@ -632,7 +743,7 @@ class AgentInterface {
         }
         if (await window.playBilling?.handlePaymentRequired?.(res, this._billingContext())) {
             this._billingPaused = true;
-            throw new Error("AI budget used. Pay to continue.");
+            throw AgentInterface._creditRequiredError("AI budget used. Pay to continue.");
         }
         const rawText = await res.text();
         if (!res.ok) {
@@ -809,7 +920,7 @@ class AgentInterface {
         }
         if (await window.playBilling?.handlePaymentRequired?.(res, this._billingContext())) {
             this._billingPaused = true;
-            throw new Error("AI budget used. Pay to continue.");
+            throw AgentInterface._creditRequiredError("AI budget used. Pay to continue.");
         }
         if (!res.ok) {
             const errText = await res.text().catch(() => "");
@@ -2071,16 +2182,26 @@ class AgentInterface {
 
     /**
      * Tell the active game a player message is going out. `text` is the game's instruction
-     * for this turn, and any reasoning level it sets applies from this request on; call
-     * `finish(ok)` once the reply has been spoken.
-     * @returns {{ text: string, finish: (ok: boolean) => void }}
+     * for this turn, and any reasoning level it sets applies from this request on. The game may
+     * start a clip now, while the request is on its way: call `clipsDone()` once the reply has
+     * arrived and before adding it to the history, so the clip is heard and recorded before it.
+     * Call `finish(ok)` once the reply has been spoken.
+     * @returns {{ text: string, clipsDone: () => Promise<void>, finish: (ok: boolean) => void }}
      */
     _beginGamePlayerTurn() {
         const game = this.robot?._localGame;
         const turn = typeof game?.beginPlayerTurn === "function" ? game.beginPlayerTurn() : null;
         if (turn?.reasoningEffort) this.setReasoningEffort(turn.reasoningEffort);
+        // Speaking a clip re-arms hold-to-talk; the request is still on its way.
+        const beforeReply = Promise.resolve(turn?.beforeReply).catch(() => {}).then(() => {
+            if (this._sendInProgress && this._isConversationMode()) this._setPttState("thinking");
+        });
         return {
             text: String(turn?.text || "").trim(),
+            clipsDone: async () => {
+                await beforeReply;
+                if (typeof turn?.recordSpoken === "function") turn.recordSpoken();
+            },
             finish: typeof turn?.finish === "function" ? turn.finish : () => {}
         };
     }
@@ -2089,7 +2210,13 @@ class AgentInterface {
     _withGameTurnInstruction(content, instruction) {
         const extra = String(instruction || "").trim();
         if (!extra) return content;
-        return `${content}\n\nGame instruction (not said by the player):\n${extra}`;
+        return `${content}\n\n${AgentInterface.GAME_INSTRUCTION_LABEL}:\n${extra}`;
+    }
+
+    /** A prompt the game sent on its own, headed so it doesn't read as the player's words. */
+    _asGameInstruction(text) {
+        const body = String(text || "").trim();
+        return body ? `${AgentInterface.GAME_INSTRUCTION_LABEL}:\n${body}` : "";
     }
 
     /**
@@ -2534,12 +2661,14 @@ class AgentInterface {
         const bodyNorm = this._normalizePromptText(body);
         if (!bodyNorm) return body;
 
-        const userMatch = body.match(/(?:^|\n)(?:User said|User|Robot notice):\n([\s\S]*)$/i);
+        const userMatch = body.match(
+            /(?:^|\n)(?:User said|User|Robot notice|Game instruction \(not said by the player\)):\n([\s\S]*)$/i
+        );
         const userPart = userMatch ? this._normalizePromptText(userMatch[1]) : "";
         // Exact template-only send (textarea still holds the start prompt).
         if (userPart && userPart === head) {
             const stateMatch = body.match(
-                /Current state \(json\):\n[\s\S]*?(?=\n\n(?:User said|User|Robot notice):|$)/i
+                /Current state \(json\):\n[\s\S]*?(?=\n\n(?:User said|User|Robot notice|Game instruction \(not said by the player\)):|$)/i
             );
             const stateBlock = stateMatch ? stateMatch[0].trim() : "";
             return stateBlock ? `${head}\n\n${stateBlock}` : head;
@@ -2729,7 +2858,7 @@ class AgentInterface {
                   });
             if (await window.playBilling?.handlePaymentRequired?.(res, this._billingContext())) {
                 this._billingPaused = true;
-                throw new Error("AI budget used. Pay to continue.");
+                throw AgentInterface._creditRequiredError("AI budget used. Pay to continue.");
             }
         } catch (err) {
             if (err?.name === "AbortError") {
@@ -3213,6 +3342,7 @@ class AgentInterface {
                 fullPrompt: outboundUser,
                 at: new Date().toISOString()
             });
+            await gameTurn.clipsDone();
             this.messageHistory.push({
                 role: "assistant",
                 text: assistantTranscript,
@@ -3322,6 +3452,7 @@ class AgentInterface {
             });
             this._renderHistory();
             const reply = await this.sendPrompt("", { messages: conversationMessages });
+            await gameTurn.clipsDone();
             this.messageHistory.push({
                 role: "assistant",
                 text: reply.contentText || "",
@@ -3471,7 +3602,7 @@ class AgentInterface {
                 response = await window.playBilling.fetchHostedVoiceTurn(form, controller?.signal);
                 if (await window.playBilling.handlePaymentRequired(response, this._billingContext())) {
                     this._billingPaused = true;
-                    throw new Error("AI budget used. Pay to continue.");
+                    throw AgentInterface._creditRequiredError("AI budget used. Pay to continue.");
                 }
                 const raw = await response.text();
                 if (!response.ok) throw new Error(`HTTP ${response.status}: ${raw.slice(0, 500)}`);
@@ -3498,6 +3629,7 @@ class AgentInterface {
                 fullPrompt: outboundUser,
                 at: new Date().toISOString()
             });
+            await gameTurn.clipsDone();
             this.messageHistory.push({
                 role: "assistant",
                 text: contentText,
@@ -3596,8 +3728,12 @@ class AgentInterface {
         if (this._conversationListenRunning) {
             this._stopSpeaking();
         }
-        const text = this._readPromptText();
+        // Kickoffs and game prompts pass `text`; only the player's own typing lives in the chat box.
+        const typed = options.text == null;
+        const text = typed ? this._readPromptText() : String(options.text).trim();
         const isKickoff = !!options.isKickoff;
+        if (!options.resumed) this._pendingSend = null;
+        let heldForCredit = false;
         const modeGeneration = options.modeGeneration;
         const modeStillCurrent = () =>
             modeGeneration == null || modeGeneration === this._modeStartGeneration;
@@ -3629,16 +3765,20 @@ class AgentInterface {
             // Typed chat is a player turn; kickoffs and game-sent prompts are not.
             if (!isKickoff && !options.gameAction) gameTurn = this._beginGamePlayerTurn();
             const stateBlock = this._buildCurrentStateForIntroductionPrompt();
+            const label = options.gameAction ? AgentInterface.GAME_INSTRUCTION_LABEL : "User";
             const fullUserContent = this._withGameTurnInstruction(
-                this._buildUserTurnContent(stateBlock, "User", text),
+                this._buildUserTurnContent(stateBlock, label, text),
                 gameTurn?.text
             );
             const prior = this._buildPriorConversationMessages();
             const outboundUser = await this._mergeIntroductionIntoFirstUserMessage(fullUserContent, prior.length);
             if (!modeStillCurrent()) return;
+            const historyText = options.gameAction
+                ? this._asGameInstruction(text)
+                : this._withGameTurnInstruction(text, gameTurn?.text);
             pendingUserTurn = {
                 role: "user",
-                text: prior.length ? this._withGameTurnInstruction(text, gameTurn?.text) : outboundUser,
+                text: prior.length ? historyText : outboundUser,
                 fullPrompt: outboundUser,
                 isKickoff: isKickoff || undefined,
                 at: new Date().toISOString()
@@ -3658,6 +3798,7 @@ class AgentInterface {
                 gameTurn?.finish(false);
                 return;
             }
+            await gameTurn?.clipsDone();
             this.messageHistory.push({
                 role: "assistant",
                 text: reply.contentText || "",
@@ -3668,7 +3809,7 @@ class AgentInterface {
             if (this._voiceOn) {
                 spokenForFollowUp = this._extractSpokenText(reply.contentText, reply.rawText);
             }
-            this._clearPromptInputs();
+            this._clearSentPromptSource(options);
             if (this._statusEl && !spokenForFollowUp) {
                 this._statusEl.textContent = "Done.";
                 this._statusEl.className = "ok";
@@ -3687,7 +3828,22 @@ class AgentInterface {
             ) {
                 this.messageHistory.pop();
                 this._renderHistory();
-                if (isKickoff) this._clearPromptInputs();
+            }
+            if (!typed) this._clearSentPromptSource(options);
+            if (err?.code === AgentInterface.CREDIT_REQUIRED && modeStillCurrent() && this._agentEnabled) {
+                const { resumed: _resumed, text: _text, ...rest } = options;
+                this._pendingSend = {
+                    text,
+                    typed,
+                    options: rest,
+                    modeGeneration: this._modeStartGeneration
+                };
+                heldForCredit = true;
+                if (this._statusEl) {
+                    this._statusEl.textContent =
+                        "Waiting for AI credit — the robot will carry on automatically.";
+                    this._statusEl.className = "warn";
+                }
             }
             spokenForFollowUp = "";
             ok = false;
@@ -3711,12 +3867,23 @@ class AgentInterface {
             this._armConversationPtt();
         }
         gameTurn?.finish(ok);
+        // Credit may have been bought from the out-of-credit popup while this request was failing.
+        if (heldForCredit && !options.resumed) void this._resumePendingSend();
+    }
+
+    /** Kickoff text came from the prompt textarea; game prompts passed as `text` never touched either box. */
+    _clearSentPromptSource(options = {}) {
+        if (options.text == null) {
+            this._clearPromptInputs();
+        } else if (options.isKickoff && this._promptInput) {
+            this._promptInput.value = "";
+        }
     }
 
     /**
      * Used by external modules (e.g. SpeechToText model) to submit a prompt.
      * @param {string} text
-     * @param {{ fromSpeech?: boolean, speechTranscriber?: string, allowEmpty?: boolean, forceCameraImage?: boolean, cameraCountdownSeconds?: number, skipCameraCountdown?: boolean, cameraCountdownLabel?: string, cameraStatusPrefix?: string, cameraOverlayIsActive?: () => boolean, reasoningEffort?: "low"|"medium"|"high" }} [options] If fromSpeech, sends full user/assistant history plus current state and transcript; the introduction template is merged into the first user message only and stored in history. speechTranscriber labels the STT path for status/TTS hints. allowEmpty permits an empty prompt body. forceCameraImage attaches the current camera frame even if the checkbox is off. Camera countdown/flicker overlays run on every photo attach. reasoningEffort sets the talking-head reasoning level for this and every later send until changed.
+     * @param {{ fromSpeech?: boolean, speechTranscriber?: string, allowEmpty?: boolean, forceCameraImage?: boolean, cameraCountdownSeconds?: number, skipCameraCountdown?: boolean, cameraCountdownLabel?: string, cameraStatusPrefix?: string, cameraOverlayIsActive?: () => boolean, reasoningEffort?: "low"|"medium"|"high", gameAction?: boolean }} [options] gameAction marks text the game sent on its own: it is sent and stored as a game instruction, not as the player's words, and is not a player turn. If fromSpeech, sends full user/assistant history plus current state and transcript; the introduction template is merged into the first user message only and stored in history. speechTranscriber labels the STT path for status/TTS hints. allowEmpty permits an empty prompt body. forceCameraImage attaches the current camera frame even if the checkbox is off. Camera countdown/flicker overlays run on every photo attach. reasoningEffort sets the talking-head reasoning level for this and every later send until changed.
      * @returns {Promise<boolean>}
      */
     async submitPrompt(text, options = {}) {
@@ -3729,9 +3896,8 @@ class AgentInterface {
             return false;
         }
         if (!this._promptInput && !this._dashboardPromptInput) return false;
-        if (this._promptInput) this._promptInput.value = next;
-        if (this._dashboardPromptInput) this._dashboardPromptInput.value = next;
         const sendOpts = {
+            text: next,
             allowEmpty: options.allowEmpty === true,
             forceCameraImage: options.forceCameraImage === true,
             gameAction: options.gameAction === true
@@ -3765,7 +3931,7 @@ class AgentInterface {
 
     /**
      * Add a game action that is spoken without a request to the chat history, as a live prompt
-     * would be: its prompt (if any) as the user turn and the spoken text as the reply.
+     * would be: its prompt (if any) as a game-instruction user turn and the spoken text as the reply.
      * @param {string} spokenText
      * @param {{ prompt?: string }} [options]
      */
@@ -3778,8 +3944,8 @@ class AgentInterface {
             const stateBlock = this._buildCurrentStateForIntroductionPrompt();
             this.messageHistory.push({
                 role: "user",
-                text: ask,
-                fullPrompt: this._buildUserTurnContent(stateBlock, "User", ask),
+                text: this._asGameInstruction(ask),
+                fullPrompt: this._buildUserTurnContent(stateBlock, AgentInterface.GAME_INSTRUCTION_LABEL, ask),
                 at
             });
         }
@@ -4123,6 +4289,7 @@ class AgentInterface {
             this._sessionModelsPromise = null;
             this._syncAiBudgetUi();
             if (this._apiKey) void this.ensureSessionGroqModels();
+            this._schedulePendingResumeForKey();
         });
 
         const clearKeyBtn = document.createElement("button");
@@ -4352,6 +4519,11 @@ class AgentInterface {
     destroy() {
         this._stopSpeaking();
         window.removeEventListener("phonebot:ai-budget", this._aiBudgetListener);
+        if (window.playBilling?._passwordHandler === this._passwordHandler) {
+            window.playBilling.setPasswordHandler(null);
+        }
+        clearTimeout(this._pendingKeyTimer);
+        this._pendingSend = null;
         if (this._containerEl && this._containerEl.parentNode) {
             this._containerEl.parentNode.removeChild(this._containerEl);
         }

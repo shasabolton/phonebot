@@ -67,6 +67,17 @@ class AudioPlayerAiModel {
         this._delayNode = null;
         this._levelData = null;
 
+        /** The active character's voice effects (see voiceFx.js); null = none. */
+        this._characterFx = null;
+        /** Character editor's live settings; while set they replace the character's. */
+        this._previewFx = null;
+        /** @type {PhonebotVoiceFxChain|null} */
+        this._fxChain = null;
+        /** Pitch rendered into the loaded clip; it plays at 1 / this to restore its length. */
+        this._clipPitch = 1;
+        /** Bumped by each play and by stop, so a clip still being pitch-shifted is dropped. */
+        this._playToken = 0;
+
         /** Object URL for programmatic playback (e.g. local TTS). */
         this._ttsObjectUrl = "";
         this._playEndedWaiters = [];
@@ -119,10 +130,65 @@ class AudioPlayerAiModel {
         return this._ensureAudio();
     }
 
+    /** Effects on everything played: the editor preview while set, else the character's. */
+    voiceFx() {
+        return this._previewFx || this._characterFx;
+    }
+
+    /** @param {object|null} fx the active character's `voiceFx` */
+    setVoiceFx(fx) {
+        const Fx = window.PhonebotVoiceFx;
+        this._characterFx = fx && Fx ? Fx.forProfile(fx) : null;
+        this._applyVoiceFx();
+    }
+
+    /** @param {object|null} fx editor settings to hear live; null goes back to the character's */
+    setPreviewFx(fx) {
+        const Fx = window.PhonebotVoiceFx;
+        this._previewFx = fx && Fx ? Fx.normalize(fx) : null;
+        this._applyVoiceFx();
+    }
+
+    _applyVoiceFx() {
+        this._fxChain?.apply(this.voiceFx());
+    }
+
+    _pitch() {
+        return Number(this.voiceFx()?.pitch) || 1;
+    }
+
+    /**
+     * The clip with the current pitch rendered in, or the clip as is when pitch is 1 or
+     * shifting fails.
+     * @param {Blob} blob
+     * @returns {Promise<{ blob: Blob, pitch: number }>}
+     */
+    async _pitchShift(blob) {
+        const pitch = this._pitch();
+        if (pitch === 1 || typeof window.PhonebotVoiceFx?.pitchShiftBlob !== "function") {
+            return { blob, pitch: 1 };
+        }
+        try {
+            return { blob: await window.PhonebotVoiceFx.pitchShiftBlob(blob, pitch), pitch };
+        } catch (err) {
+            console.warn("Voice pitch shift failed; playing unshifted:", err);
+            return { blob, pitch: 1 };
+        }
+    }
+
+    /** load() resets playbackRate to defaultPlaybackRate, so set both. */
+    _applyPlaybackRate() {
+        const audio = this._audio;
+        if (!audio) return;
+        const rate = 1 / this._clipPitch;
+        audio.defaultPlaybackRate = rate;
+        audio.playbackRate = rate;
+    }
+
     /**
      * Route playback through Web Audio once so analysers can tap it.
      * Safe to call repeatedly; MediaElementSource is created only once.
-     * Graph: source → [compressor → makeup] → analyser / delay → speakers
+     * Graph: source → [voice effects] → [compressor → makeup] → analyser / delay → speakers
      * @returns {AnalyserNode|null}
      */
     ensurePlaybackTap() {
@@ -142,6 +208,10 @@ class AudioPlayerAiModel {
             this._analyserNode.fftSize = 1024;
             this._levelData = new Uint8Array(this._analyserNode.fftSize);
             this._delayNode = this._audioContext.createDelay(0.5);
+            if (window.PhonebotVoiceFx) {
+                this._fxChain = window.PhonebotVoiceFx.createChain(this._audioContext);
+                this._fxChain.apply(this.voiceFx());
+            }
             this._applyCompressorParams();
             this._applyDelayRouting();
             return this._analyserNode;
@@ -154,6 +224,7 @@ class AudioPlayerAiModel {
     _disconnectGraph() {
         for (const node of [
             this._mediaSource,
+            this._fxChain?.output,
             this._compressorNode,
             this._makeupGainNode,
             this._analyserNode,
@@ -199,7 +270,7 @@ class AudioPlayerAiModel {
      * Rewire analyser vs speakers according to delayMs.
      * delayMs ≥ 0: tap → analyser; tap → delay → destination
      * delayMs < 0: tap → destination; tap → delay → analyser
-     * When compressor is on: source → compressor → makeup → tap
+     * Before the tap: source → [voice effects] → [compressor → makeup]
      */
     _applyDelayRouting() {
         if (!this._mediaSource || !this._analyserNode || !this._delayNode || !this._audioContext) {
@@ -214,8 +285,12 @@ class AudioPlayerAiModel {
         }
 
         let tap = this._mediaSource;
+        if (this._fxChain) {
+            tap.connect(this._fxChain.input);
+            tap = this._fxChain.output;
+        }
         if (this.compressorEnabled && this._compressorNode && this._makeupGainNode) {
-            this._mediaSource.connect(this._compressorNode);
+            tap.connect(this._compressorNode);
             this._compressorNode.connect(this._makeupGainNode);
             tap = this._makeupGainNode;
             this._applyCompressorParams();
@@ -402,6 +477,9 @@ class AudioPlayerAiModel {
         if (this._audio) return this._audio;
         const audio = new Audio();
         audio.preload = "metadata";
+        audio.preservesPitch = true;
+        audio.mozPreservesPitch = true;
+        audio.webkitPreservesPitch = true;
         audio.addEventListener("ended", () => {
             this._setStatus("Playback finished.");
             this._syncTransportButtons();
@@ -415,6 +493,7 @@ class AudioPlayerAiModel {
             this._resolvePlayEndedWaiters();
         });
         this._audio = audio;
+        this._applyPlaybackRate();
         return audio;
     }
 
@@ -443,43 +522,17 @@ class AudioPlayerAiModel {
      */
     async playBlob(blob, label = "TTS") {
         if (!blob) throw new Error("No audio blob to play.");
-        const audio = this._ensureAudio();
-        this._resolvePlayEndedWaiters();
+        const token = this._beginPlay();
+        const shifted = await this._pitchShift(blob);
+        if (token !== this._playToken) return;
         this._revokeTtsUrl();
-        this._ttsObjectUrl = URL.createObjectURL(blob);
-        audio.pause();
-        try {
-            audio.currentTime = 0;
-        } catch (_) {}
-        audio.src = this._ttsObjectUrl;
-        audio.load();
-        this._loadedId = `blob:${Date.now()}`;
-        this.ensurePlaybackTap();
-        if (this._audioContext && this._audioContext.state === "suspended") {
-            await this._audioContext.resume().catch(() => {});
-        }
-        const ended = new Promise((resolve) => {
-            this._playEndedWaiters.push(resolve);
-        });
-        try {
-            await audio.play();
-            this._setStatus(`Playing: ${label}`);
-            window.__phonebotTtsSpeaking = true;
-        } catch (err) {
-            this._resolvePlayEndedWaiters();
-            window.__phonebotTtsSpeaking = false;
-            console.error("Audio playBlob failed:", err);
-            this._setStatus(`Could not play: ${err?.message || "unknown"}`, true);
-            throw err;
-        }
-        this._syncTransportButtons();
-        await ended;
-        window.__phonebotTtsSpeaking = false;
-        this._syncTransportButtons();
+        this._ttsObjectUrl = URL.createObjectURL(shifted.blob);
+        await this._playUrl(this._ttsObjectUrl, label, `blob:${Date.now()}`, shifted.pitch);
     }
 
     /**
      * Play a static URL (e.g. pre-recorded Simon Says clips) through the same tap.
+     * With a pitch set, the file is fetched and shifted first.
      * @param {string} url
      * @param {string} [label]
      * @returns {Promise<void>}
@@ -487,16 +540,54 @@ class AudioPlayerAiModel {
     async playSrc(url, label = "Audio") {
         const src = String(url || "").trim();
         if (!src) throw new Error("No audio URL to play.");
-        const audio = this._ensureAudio();
-        this._resolvePlayEndedWaiters();
+        const token = this._beginPlay();
+        if (this._pitch() !== 1) {
+            let shifted = null;
+            try {
+                const res = await fetch(src);
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                shifted = await this._pitchShift(await res.blob());
+            } catch (err) {
+                console.warn("Audio fetch for pitch shift failed; playing unshifted:", err);
+            }
+            if (token !== this._playToken) return;
+            if (shifted && shifted.pitch !== 1) {
+                this._revokeTtsUrl();
+                this._ttsObjectUrl = URL.createObjectURL(shifted.blob);
+                await this._playUrl(this._ttsObjectUrl, label, `src:${src}`, shifted.pitch);
+                return;
+            }
+        }
         this._revokeTtsUrl();
+        await this._playUrl(src, label, `src:${src}`, 1);
+    }
+
+    /** Silence what's playing and claim playback. @returns {number} token for this play */
+    _beginPlay() {
+        this._playToken += 1;
+        this._resolvePlayEndedWaiters();
+        this._ensureAudio().pause();
+        return this._playToken;
+    }
+
+    /**
+     * @param {string} src
+     * @param {string} label
+     * @param {string} loadedId
+     * @param {number} clipPitch pitch already rendered into `src`
+     * @returns {Promise<void>} Resolves when playback ends or is stopped.
+     */
+    async _playUrl(src, label, loadedId, clipPitch) {
+        const audio = this._ensureAudio();
         audio.pause();
         try {
             audio.currentTime = 0;
         } catch (_) {}
+        this._clipPitch = clipPitch;
         audio.src = src;
         audio.load();
-        this._loadedId = `src:${src}`;
+        this._applyPlaybackRate();
+        this._loadedId = loadedId;
         this.ensurePlaybackTap();
         if (this._audioContext && this._audioContext.state === "suspended") {
             await this._audioContext.resume().catch(() => {});
@@ -511,7 +602,7 @@ class AudioPlayerAiModel {
         } catch (err) {
             this._resolvePlayEndedWaiters();
             window.__phonebotTtsSpeaking = false;
-            console.error("Audio playSrc failed:", err);
+            console.error("Audio playback failed:", err);
             this._setStatus(`Could not play: ${err?.message || "unknown"}`, true);
             throw err;
         }
@@ -530,20 +621,31 @@ class AudioPlayerAiModel {
         const audio = this._ensureAudio();
         if (this._loadedId !== entry.id) {
             audio.pause();
+            this._clipPitch = 1;
             audio.src = entry.url;
             audio.load();
+            this._applyPlaybackRate();
             this._loadedId = entry.id;
         }
         return entry;
     }
 
     async play() {
-        const entry = this._loadSelected();
+        const entry = this._entryById(this._selectedId);
         if (!entry) {
             this._setStatus("Select a file first.", true);
             return;
         }
         const audio = this._ensureAudio();
+        const resuming =
+            audio.currentTime > 0 &&
+            !audio.ended &&
+            (this._loadedId === entry.id || this._loadedId === `src:${entry.url}`);
+        if (!resuming && this._pitch() !== 1) {
+            void this.playSrc(entry.url, entry.label).catch(() => {});
+            return;
+        }
+        if (!resuming) this._loadSelected();
         this.ensurePlaybackTap();
         if (this._audioContext && this._audioContext.state === "suspended") {
             await this._audioContext.resume().catch(() => {});
@@ -575,6 +677,7 @@ class AudioPlayerAiModel {
     }
 
     stop() {
+        this._playToken += 1;
         if (!this._audio) {
             this._resolvePlayEndedWaiters();
             this._syncTransportButtons();
@@ -782,6 +885,8 @@ class AudioPlayerAiModel {
         this.stop();
         this._revokeTtsUrl();
         this._disconnectGraph();
+        this._fxChain?.destroy();
+        this._fxChain = null;
         this._mediaSource = null;
         this._compressorNode = null;
         this._makeupGainNode = null;

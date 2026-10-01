@@ -42,26 +42,13 @@
       "audioUrl": "audio/nudge-1.wav"
     },
     {
-      "id": "menu-nudge-2a",
-      "kind": "audio",
-      "trigger": "playNext",
-      "loop": "once",
-
-      "onEnd": "next",
-      "delaySec": 5,
-      "constraints": { "face": "any" },
-      "text": "Ok maybe you wanna hear a joke. Wana hear a joke. Ha? No.",
-      "fileName": "nudge-2a.wav",
-      "audioUrl": "audio/nudge-2a.wav"
-    },
-    {
       "id": "menu-nudge-2b",
       "kind": "audio",
       "trigger": "playNext",
       "loop": "once",
 
       "onEnd": "next",
-      "delaySec": 0,
+      "delaySec": 5,
       "constraints": { "face": "any" },
       "text": "You don't like fun and frivality. Come on, just pick something from the menu",
       "fileName": "nudge-2b.wav",

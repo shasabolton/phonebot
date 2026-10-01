@@ -16,7 +16,9 @@ class PlayBilling {
     static AI_CREDIT_PAYWALL_MESSAGE =
         "Choose how much to pay. That full amount becomes hosted AI credit — switch games freely until it runs out. Credit lasts 7 days without use.";
     static AI_CREDIT_NEEDED_MESSAGE =
-        "You're out of hosted AI credit. Top up to continue, or enter your own Groq API key. Credit lasts 7 days without use.";
+        "You're out of hosted AI credit. Top up to continue. Credit lasts 7 days without use.";
+    /** Must match the Worker's pinned Stripe API version (dahlia: `createEmbeddedCheckoutPage`). */
+    static STRIPE_JS_URL = "https://js.stripe.com/dahlia/stripe.js";
 
     constructor() {
         const configured =
@@ -37,6 +39,13 @@ class PlayBilling {
         this._amountAction = "play";
         this._lastRobotSlug = null;
         this._creditPromise = null;
+        /** @type {((password: string) => Promise<{ ok: boolean, error?: string }>)|null} */
+        this._passwordHandler = null;
+        this._stripeJsPromise = null;
+        /** In-page Stripe Checkout while it is mounted in the popup. */
+        this._embeddedCheckout = null;
+        this._embeddedRun = null;
+        this._embeddedSettle = null;
         this._dock = null;
         this._ensureDock();
         this._syncCreditBar();
@@ -127,6 +136,8 @@ class PlayBilling {
 
     /** Worker clamps credit so balance never exceeds $10. */
     async topUpCredit(options = {}) {
+        // A second caller (e.g. the credit bar) joins the payment already open in the popup.
+        if (this._embeddedRun) return this._embeddedRun;
         const robotSlug = this._resolveRobotSlug(options.robotSlug);
         this._lastRobotSlug = robotSlug;
         const key = this._storageKey(robotSlug, null);
@@ -187,7 +198,8 @@ class PlayBilling {
                 machine: this.machineId || undefined,
                 priceCents,
                 continueSessionId: continuation ? this._active?.id || sessionId : undefined,
-                returnUrl: window.location.href
+                returnUrl: window.location.href,
+                embedded: accepted.embedded === true || undefined
             })
         }).catch((error) => {
             try {
@@ -196,7 +208,7 @@ class PlayBilling {
             this._setModalError(error.message || "Could not start Checkout.");
             return null;
         });
-        if (!checkout?.url) return false;
+        if (!checkout?.url && !checkout?.clientSecret) return false;
         localStorage.setItem(key, checkout.playSessionId);
         this._writeCreditCache({
             remainingCents: this._cachedRemainingCents(),
@@ -204,6 +216,12 @@ class PlayBilling {
             sessionId: checkout.playSessionId,
             robotSlug
         });
+        if (checkout.clientSecret) {
+            this._embeddedRun = this._runEmbeddedCheckout(checkout).finally(() => {
+                this._embeddedRun = null;
+            });
+            return this._embeddedRun;
+        }
         const checkoutWindow = this._usableCheckoutWindow(accepted.checkoutWindow);
         if (checkoutWindow) {
             this._checkoutWindow = checkoutWindow;
@@ -231,6 +249,116 @@ class PlayBilling {
         return false;
     }
 
+    /** Pays inside the popup so the page (Bluetooth link, chat, held prompt) survives. */
+    async _runEmbeddedCheckout(checkout) {
+        const settled = new Promise((resolve) => {
+            this._embeddedSettle = resolve;
+        });
+        try {
+            const StripeCtor = await this._loadStripeJs();
+            const stripe = StripeCtor(checkout.publishableKey);
+            const create =
+                typeof stripe.createEmbeddedCheckoutPage === "function"
+                    ? stripe.createEmbeddedCheckoutPage.bind(stripe)
+                    : stripe.initEmbeddedCheckout?.bind(stripe);
+            if (!create) throw new Error("Payment form is unavailable.");
+            const mount = this._enterEmbeddedUi();
+            this._embeddedCheckout = await create({
+                fetchClientSecret: async () => checkout.clientSecret,
+                onComplete: () => this._embeddedSettle?.(true)
+            });
+            // Cancelled while Stripe was still setting up.
+            if (!this._embeddedSettle) {
+                this._destroyEmbeddedCheckout();
+                this._exitEmbeddedUi();
+                return false;
+            }
+            this._embeddedCheckout.mount(mount);
+            this._modal.querySelector(".play-billing-message").textContent = "";
+        } catch (error) {
+            this._embeddedSettle = null;
+            this._destroyEmbeddedCheckout();
+            this._exitEmbeddedUi();
+            this._setModalError(error?.message || "Could not load the payment form.");
+            return false;
+        }
+
+        const completed = await settled;
+        this._embeddedSettle = null;
+        this._destroyEmbeddedCheckout();
+        if (!completed) {
+            this._exitEmbeddedUi();
+            return false;
+        }
+
+        const paidSession = await this._waitForPaid(
+            checkout.playSessionId,
+            "Payment received. Getting your credit ready…"
+        );
+        this._exitEmbeddedUi();
+        if (!paidSession) return false;
+        this._modal.hidden = true;
+        this._setActive(await this._startSession(paidSession.id));
+        return true;
+    }
+
+    _loadStripeJs() {
+        if (typeof window.Stripe === "function") return Promise.resolve(window.Stripe);
+        if (!this._stripeJsPromise) {
+            this._stripeJsPromise = new Promise((resolve, reject) => {
+                const script = document.createElement("script");
+                script.src = PlayBilling.STRIPE_JS_URL;
+                script.async = true;
+                script.onload = () =>
+                    typeof window.Stripe === "function"
+                        ? resolve(window.Stripe)
+                        : reject(new Error("Stripe.js did not load."));
+                script.onerror = () => reject(new Error("Could not load the payment form."));
+                document.head.appendChild(script);
+            }).catch((error) => {
+                this._stripeJsPromise = null;
+                throw error;
+            });
+        }
+        return this._stripeJsPromise;
+    }
+
+    _enterEmbeddedUi() {
+        const modal = this._modal;
+        modal.dataset.stage = "checkout";
+        modal.querySelector(".play-billing-error").textContent = "";
+        const message = modal.querySelector(".play-billing-message");
+        this._preCheckoutMessage = message.textContent;
+        message.textContent = "Loading secure payment form…";
+        const cancel = modal.querySelector(".play-billing-cancel");
+        if (cancel) cancel.textContent = "Cancel";
+        const mount = modal.querySelector(".play-billing-checkout");
+        mount.innerHTML = "";
+        return mount;
+    }
+
+    _exitEmbeddedUi() {
+        const modal = this._modal;
+        if (!modal || modal.dataset.stage !== "checkout") return;
+        modal.dataset.stage = "";
+        if (this._preCheckoutMessage != null) {
+            modal.querySelector(".play-billing-message").textContent = this._preCheckoutMessage;
+            this._preCheckoutMessage = null;
+        }
+        const cancel = modal.querySelector(".play-billing-cancel");
+        if (cancel) cancel.textContent = "Not now";
+        modal.querySelector(".play-billing-checkout").innerHTML = "";
+        modal.querySelector(".play-billing-pay").disabled = false;
+    }
+
+    _destroyEmbeddedCheckout() {
+        const checkout = this._embeddedCheckout;
+        this._embeddedCheckout = null;
+        try {
+            checkout?.destroy();
+        } catch (_) {}
+    }
+
     _preferSameTabCheckout() {
         try {
             if (window.matchMedia("(pointer: coarse)").matches) return true;
@@ -251,6 +379,14 @@ class PlayBilling {
             } catch (_) {}
             return null;
         }
+    }
+
+    /**
+     * The popup's "Password" field (the player's own API key) is applied by this handler; the popup
+     * closes only when it resolves `{ ok: true }`.
+     */
+    setPasswordHandler(handler) {
+        this._passwordHandler = typeof handler === "function" ? handler : null;
     }
 
     getActiveSessionId() {
@@ -494,10 +630,10 @@ class PlayBilling {
         return payload;
     }
 
-    async _waitForPaid(id) {
+    async _waitForPaid(id, statusText = "Checkout opened. Waiting for Stripe to confirm payment…") {
         const deadline = Date.now() + 30 * 60 * 1000;
         const message = this._modal?.querySelector(".play-billing-message");
-        if (message) message.textContent = "Checkout opened. Waiting for Stripe to confirm payment…";
+        if (message) message.textContent = statusText;
         while (Date.now() < deadline) {
             await new Promise((resolve) => setTimeout(resolve, 1500));
             if (this._pollCancelled) return null;
@@ -581,6 +717,9 @@ class PlayBilling {
             this._modalResolve = null;
         }
         if (!this._modal) this._buildModal();
+        this._exitEmbeddedUi();
+        // Warm up Stripe.js so Pay can open the in-page form; if it isn't ready, Pay falls back to a redirect.
+        void this._loadStripeJs().catch(() => {});
         this._pollCancelled = false;
         this._amountCurrency = currency;
         this._amountAction = action;
@@ -594,6 +733,7 @@ class PlayBilling {
         if (amountLabel) amountLabel.textContent = "Amount (AUD)";
         const cancel = this._modal.querySelector(".play-billing-cancel");
         if (cancel) cancel.hidden = false;
+        this._resetPasswordUi();
         this._modal.dataset.infoOnly = "";
         this._syncAmountUi();
         this._modal.querySelector(".play-billing-pay").disabled = false;
@@ -601,6 +741,18 @@ class PlayBilling {
         return new Promise((resolve) => {
             this._modalResolve = resolve;
         });
+    }
+
+    _resetPasswordUi() {
+        if (!this._modal) return;
+        const toggle = this._modal.querySelector(".play-billing-password-toggle");
+        const form = this._modal.querySelector(".play-billing-password");
+        const input = this._modal.querySelector(".play-billing-password-input");
+        const submit = this._modal.querySelector(".play-billing-password-submit");
+        if (toggle) toggle.hidden = false;
+        if (form) form.hidden = true;
+        if (input) input.value = "";
+        if (submit) submit.disabled = false;
     }
 
     _clampPriceCents(cents) {
@@ -688,11 +840,24 @@ class PlayBilling {
                 </div>
                 <p class="play-billing-wallets">Secure Stripe Checkout · card, Apple Pay or Google Pay when available</p>
                 <p class="play-billing-error error" aria-live="polite"></p>
+                <div class="play-billing-checkout"></div>
                 <button type="button" class="play-billing-pay"></button>
                 <button type="button" class="play-billing-cancel secondary">Not now</button>
+                <button type="button" class="play-billing-password-toggle">Have a password?</button>
+                <form class="play-billing-password" hidden>
+                    <label class="play-billing-password-label" for="playBillingPassword">Password</label>
+                    <div class="play-billing-password-row">
+                        <input id="playBillingPassword" class="play-billing-password-input" type="password" autocomplete="off" />
+                        <button type="submit" class="play-billing-password-submit secondary">Continue</button>
+                    </div>
+                </form>
             </section>`;
         const pay = overlay.querySelector(".play-billing-pay");
         const cancel = overlay.querySelector(".play-billing-cancel");
+        const passwordToggle = overlay.querySelector(".play-billing-password-toggle");
+        const passwordForm = overlay.querySelector(".play-billing-password");
+        const passwordInput = overlay.querySelector(".play-billing-password-input");
+        const passwordSubmit = overlay.querySelector(".play-billing-password-submit");
         const input = overlay.querySelector(".play-billing-amount-input");
         const down = overlay.querySelector(".play-billing-amount-down");
         const up = overlay.querySelector(".play-billing-amount-up");
@@ -712,8 +877,10 @@ class PlayBilling {
             this._amountCents = this._readAmountInputCents();
             this._syncAmountUi();
             pay.disabled = true;
+            const embedded = typeof window.Stripe === "function";
             let checkoutWindow = null;
-            if (!this._preferSameTabCheckout()) {
+            // The redirect fallback needs its window opened inside this click or popup blockers stop it.
+            if (!embedded && !this._preferSameTabCheckout()) {
                 checkoutWindow = window.open("about:blank", "phonebotStripeCheckout");
                 if (!checkoutWindow || checkoutWindow.closed) {
                     checkoutWindow = null;
@@ -721,10 +888,13 @@ class PlayBilling {
             }
             const resolve = this._modalResolve;
             this._modalResolve = null;
-            if (resolve) resolve({ checkoutWindow, priceCents: this._amountCents });
+            if (resolve) resolve({ checkoutWindow, priceCents: this._amountCents, embedded });
         });
-        cancel.addEventListener("click", () => {
+        const dismiss = () => {
             this._pollCancelled = true;
+            const settleEmbedded = this._embeddedSettle;
+            this._embeddedSettle = null;
+            if (settleEmbedded) settleEmbedded(false);
             try {
                 this._checkoutWindow?.close();
             } catch (_) {}
@@ -733,6 +903,38 @@ class PlayBilling {
             const resolve = this._modalResolve;
             this._modalResolve = null;
             if (resolve) resolve(false);
+        };
+        cancel.addEventListener("click", dismiss);
+        passwordToggle.addEventListener("click", () => {
+            passwordToggle.hidden = true;
+            passwordForm.hidden = false;
+            passwordInput.focus();
+        });
+        passwordForm.addEventListener("submit", async (e) => {
+            e.preventDefault();
+            const password = String(passwordInput.value || "").trim();
+            const errorEl = overlay.querySelector(".play-billing-error");
+            if (!password) {
+                errorEl.textContent = "Enter a password.";
+                return;
+            }
+            if (!this._passwordHandler) {
+                errorEl.textContent = "Passwords can't be used right now.";
+                return;
+            }
+            passwordSubmit.disabled = true;
+            errorEl.textContent = "";
+            let result = null;
+            try {
+                result = await this._passwordHandler(password);
+            } catch (_) {}
+            passwordSubmit.disabled = false;
+            if (result?.ok) {
+                passwordInput.value = "";
+                dismiss();
+                return;
+            }
+            errorEl.textContent = result?.error || "That password didn't work.";
         });
         document.body.appendChild(overlay);
         this._modal = overlay;

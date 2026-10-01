@@ -670,6 +670,7 @@ class Robot {
 
     _applyCharacterVoice() {
         const character = this._activeCharacter();
+        this.getProcessingByType("audioPlayer")?.setVoiceFx?.(character?.voiceFx || null);
         const voice = String(character?.voice || "").trim();
         const key = character ? `${character.id}|${voice}` : "";
         if (key === this._appliedCharacterKey) return;

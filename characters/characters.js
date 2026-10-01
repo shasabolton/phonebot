@@ -11,6 +11,8 @@
  * @property {string} name
  * @property {string} bio Prompt sent as a system message on every AI turn while active.
  * @property {string} voice TTS voice id; "" keeps whatever voice is selected.
+ * @property {object|null} voiceFx Effects on everything the character plays (see voiceFx.js);
+ *   null = none.
  * @property {CharacterGame[]} games The character's own games, in dashboard order.
  * @property {string[]} builtInGames Code games (robot mode ids such as "parrot") they also play.
  * @property {string} homeGame A playable id (`game:<id>` or a built-in game) that built-in games
@@ -153,6 +155,7 @@ class PhonebotCharacters {
             name,
             bio: String(raw.bio || "").trim(),
             voice: String(raw.voice || "").trim(),
+            voiceFx: window.PhonebotVoiceFx?.forProfile(raw.voiceFx) || null,
             games,
             builtInGames: [...new Set(builtInGames)],
             homeGame: playable.has(homeGame) ? homeGame : ""
@@ -635,6 +638,7 @@ class PhonebotCharacters {
             name: character.name,
             bio: character.bio,
             voice: character.voice,
+            ...(character.voiceFx ? { voiceFx: { ...character.voiceFx } } : {}),
             games: (character.games || []).map((g) => ({ id: g.id, name: g.name })),
             builtInGames: [...(character.builtInGames || [])],
             homeGame: character.homeGame || ""
@@ -695,6 +699,8 @@ class PhonebotCharacters {
  * characters, and manage each character's games.
  */
 class CharactersPanel {
+    static VOICE_TEST_PHRASE = "This is a test of how my voice sounds with these effects.";
+
     /**
      * @param {object} robot needs `getCharacterGameOptions()`, `editCustomGame()` and
      *   `gamesIndexReady`
@@ -1089,15 +1095,166 @@ class CharactersPanel {
         }
         voiceLabel.appendChild(voiceSelect);
 
+        const Fx = window.PhonebotVoiceFx;
+        let fx = Fx ? Fx.normalize(null) : null;
+        const getPlayer = () => this.robot?.getProcessingByType?.("audioPlayer") || null;
+        const fxSection = document.createElement("details");
+        fxSection.className = "characters-fx";
+        fxSection.hidden = !Fx;
+        const fxSummary = document.createElement("summary");
+        fxSummary.className = "custom-messages-game-meta-label";
+        fxSummary.textContent = "Voice effects";
+        const fxBody = document.createElement("div");
+        fxBody.className = "characters-fx-body";
+        /** @type {Map<string, { input: HTMLInputElement, value: HTMLElement }>} */
+        const fxSliders = new Map();
+        const presetSelect = document.createElement("select");
+        const fxStatus = hint("");
+        const previewFx = () => getPlayer()?.setPreviewFx?.(fx);
+        const syncFx = () => {
+            if (!Fx) return;
+            for (const [key, slider] of fxSliders) {
+                slider.input.value = String(fx[key]);
+                slider.value.textContent = Fx.formatValue(key, fx[key]);
+            }
+            fxSliders.get("robotFreq").input.disabled = fx.robot === 0;
+            fxSliders.get("vibratoRate").input.disabled = fx.vibrato === 0;
+        };
+        const setFx = (next) => {
+            if (!Fx) return;
+            fx = Fx.normalize(next);
+            syncFx();
+            previewFx();
+        };
+        const fxSlider = (key) => {
+            const spec = Fx.PARAMS[key];
+            const row = document.createElement("label");
+            row.className = "characters-fx-slider";
+            const value = document.createElement("span");
+            value.className = "muted";
+            const input = document.createElement("input");
+            input.type = "range";
+            input.min = String(spec.min);
+            input.max = String(spec.max);
+            input.step = String(spec.step);
+            input.addEventListener("input", () => {
+                fx = { ...fx, [key]: Number(input.value) };
+                syncFx();
+                previewFx();
+            });
+            row.append(`${spec.label} `, value, input);
+            fxSliders.set(key, { input, value });
+            return row;
+        };
+
+        /** One clip per voice, so testing again doesn't pay for TTS again. */
+        const testClips = new Map();
+        let testRun = 0;
+        /** Clip playing in a test, so a pitch change (applied per clip) can replay it. */
+        let testPlaying = null;
+        const playTest = async (makeBlob, label) => {
+            const player = getPlayer();
+            if (typeof player?.playBlob !== "function") {
+                fxStatus.textContent = "This robot has no audio player to test with.";
+                return;
+            }
+            const run = ++testRun;
+            previewFx();
+            let blob;
+            try {
+                blob = await makeBlob();
+            } catch (err) {
+                if (run === testRun) fxStatus.textContent = err?.message || "Could not make the test clip.";
+                return;
+            }
+            if (!blob || run !== testRun) return;
+            if (!Fx) fxStatus.textContent = "Playing.";
+            else if (fxSection.open) fxStatus.textContent = "Playing. Move the sliders to hear them change.";
+            else fxStatus.textContent = "Playing. Open Voice effects to change how it sounds.";
+            testPlaying = { blob, label };
+            try {
+                await player.playBlob(blob, label);
+                if (run === testRun) fxStatus.textContent = "";
+            } catch (err) {
+                if (run === testRun) fxStatus.textContent = `Could not play: ${err?.message || err}`;
+            } finally {
+                if (run === testRun) testPlaying = null;
+            }
+        };
+        const listenBtn = button("Listen to voice", "secondary", () => {
+            const agent = this.robot?.agentInterface;
+            const voice = voiceSelect.value;
+            void playTest(async () => {
+                if (voice && testClips.has(voice)) return testClips.get(voice);
+                if (typeof agent?.synthesizeSpeechFile !== "function") {
+                    throw new Error("This robot has no TTS to test with.");
+                }
+                listenBtn.disabled = true;
+                fxStatus.textContent = "Making the test clip…";
+                try {
+                    const blob = await agent.synthesizeSpeechFile(CharactersPanel.VOICE_TEST_PHRASE, {
+                        voice
+                    });
+                    if (voice) testClips.set(voice, blob);
+                    return blob;
+                } finally {
+                    listenBtn.disabled = false;
+                }
+            }, "Voice test");
+        });
+        listenBtn.title = `Say “${CharactersPanel.VOICE_TEST_PHRASE}” with this voice and these effects`;
+        const listenActions = document.createElement("div");
+        listenActions.className = "custom-messages-actions";
+        listenActions.appendChild(listenBtn);
+
+        if (Fx) {
+            presetSelect.className = "custom-messages-game-meta-name-input";
+            for (const [value, text] of [
+                ["", "Choose a preset…"],
+                ["none", "No effects"],
+                ...Fx.PRESETS.map((p) => [p.id, p.label])
+            ]) {
+                const opt = document.createElement("option");
+                opt.value = value;
+                opt.textContent = text;
+                presetSelect.appendChild(opt);
+            }
+            presetSelect.addEventListener("change", () => {
+                const id = presetSelect.value;
+                presetSelect.value = "";
+                if (id) setFx(Fx.PRESETS.find((p) => p.id === id)?.fx || null);
+            });
+            const presetLabel = label("Preset");
+            presetLabel.appendChild(presetSelect);
+
+            fxBody.append(
+                hint("Applied to everything this character says or plays: TTS, game audio and recordings."),
+                presetLabel,
+                fxSlider("pitch"),
+                fxSlider("robot"),
+                fxSlider("robotFreq"),
+                fxSlider("vibrato"),
+                fxSlider("vibratoRate")
+            );
+            fxSection.append(fxSummary, fxBody);
+            fxSliders.get("pitch").input.addEventListener("change", () => {
+                const test = testPlaying;
+                if (test) void playTest(async () => test.blob, test.label);
+            });
+        }
+
         const gamesSection = document.createElement("div");
+        gamesSection.className = "characters-games-section";
         const gamesList = document.createElement("div");
         gamesList.className = "custom-messages-tiles characters-own-games";
         gamesList.setAttribute("role", "list");
         const gamesActions = document.createElement("div");
         gamesActions.className = "custom-messages-actions";
-        gamesSection.appendChild(heading("Games"));
+        const gamesHeading = heading("Games");
+        gamesHeading.classList.add("characters-section-heading");
+        gamesSection.appendChild(gamesHeading);
         gamesSection.appendChild(
-            hint("Games save in this browser as you edit them. Save downloads the character and its games as a zip.")
+            hint("Games save in this browser as you edit them. Download backup saves the character and its games as a zip.")
         );
         gamesSection.appendChild(gamesList);
         gamesSection.appendChild(gamesActions);
@@ -1142,6 +1299,9 @@ class CharactersPanel {
         meta.appendChild(nameLabel);
         meta.appendChild(bioLabel);
         meta.appendChild(voiceLabel);
+        meta.appendChild(fxSection);
+        meta.appendChild(listenActions);
+        meta.appendChild(fxStatus);
         meta.appendChild(gamesSection);
         meta.appendChild(builtInSection);
         meta.appendChild(homeSection);
@@ -1177,6 +1337,7 @@ class CharactersPanel {
                 name: nameInput.value,
                 bio: bioInput.value,
                 voice: voiceSelect.value,
+                voiceFx: fx,
                 games: current ? current.games : [],
                 builtInGames: [...checkedBuiltIns(), ...otherBuiltIns],
                 homeGame
@@ -1271,6 +1432,7 @@ class CharactersPanel {
                 addOption(voiceSelect, voice, voice);
             }
             voiceSelect.value = voice;
+            setFx(source?.voiceFx || null);
             const builtIns = new Set(source?.builtInGames || []);
             for (const [id, check] of builtInChecks) check.checked = builtIns.has(id);
             otherBuiltIns = [...builtIns].filter((id) => !builtInIds.has(id));
@@ -1282,7 +1444,7 @@ class CharactersPanel {
         const actions = document.createElement("div");
         actions.className = "custom-messages-actions";
 
-        const saveBtn = button("Save", "custom-messages-submit", async () => {
+        const saveBtn = button("Download backup", "custom-messages-submit", async () => {
             const saved = commit();
             if (!saved) return;
             saveBtn.disabled = true;
@@ -1296,13 +1458,22 @@ class CharactersPanel {
             this._closeEditor();
         });
         saveBtn.title = "Save and download as a zip";
+        const doneBtn = button("Done", "secondary", () => {
+            if (commit()) this._closeEditor();
+        });
+        doneBtn.title = "Save changes and close";
+        const cancelBtn = button("Cancel", "secondary", () => this._closeEditor());
+        cancelBtn.title = "Close without saving character changes. Game edits are already saved.";
         const syncSave = () => {
-            saveBtn.disabled = !nameInput.value.trim();
+            const disabled = !nameInput.value.trim();
+            saveBtn.disabled = disabled;
+            doneBtn.disabled = disabled;
         };
         nameInput.addEventListener("input", syncSave);
 
         actions.appendChild(saveBtn);
-        actions.appendChild(button("Cancel", "secondary", () => this._closeEditor()));
+        actions.appendChild(doneBtn);
+        actions.appendChild(cancelBtn);
         card.appendChild(actions);
 
         overlay.appendChild(card);
@@ -1318,6 +1489,8 @@ class CharactersPanel {
         this._editorCleanup = () => {
             window.removeEventListener(PhonebotCharacters.CHANGE_EVENT, renderGames);
             if (gameEvent) window.removeEventListener(gameEvent, renderGames);
+            testRun += 1;
+            getPlayer()?.setPreviewFx?.(null);
         };
 
         fill(character);

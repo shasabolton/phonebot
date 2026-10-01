@@ -157,7 +157,8 @@ class CustomMessagesGame {
         { id: "noFaceDetected", label: "No face detected" },
         { id: "speechFinished", label: "Speech finished" },
         { id: "playNext", label: "After another message" },
-        { id: "playerTurn", label: "Player sends a message" }
+        { id: "playerTurn", label: "After the player's Nth message" },
+        { id: "characterReply", label: "After the character's Nth reply" }
     ]);
 
     /**
@@ -233,6 +234,13 @@ class CustomMessagesGame {
         this._chainEpoch = 0;
         /** Player messages sent since the game (or its last history-clearing prompt) started. */
         this._playerTurn = 0;
+        /** The character's replies to those messages that have been spoken. */
+        this._characterReplies = 0;
+        /**
+         * A player turn whose request failed after its clips played: the retry of that turn
+         * doesn't play them again. @type {{ turn: number, ids: Set<string> }|null}
+         */
+        this._failedTurnClips = null;
         /** A player-turn action will end the game once this turn's reply has been spoken. */
         this._endPending = false;
         this._tileListEl = null;
@@ -271,6 +279,8 @@ class CustomMessagesGame {
         this._firedOnceIds = new Set();
         this._chainEpoch = 0;
         this._playerTurn = 0;
+        this._characterReplies = 0;
+        this._failedTurnClips = null;
         this._endPending = false;
         this._lastFacePresent = null;
         this._faceSince = 0;
@@ -1019,7 +1029,7 @@ class CustomMessagesGame {
         const out = {
             id: msg.id,
             trigger: msg.trigger,
-            ...(msg.trigger === "playerTurn"
+            ...(CustomMessagesGame._isCountedTrigger(msg.trigger)
                 ? { turnNumber: CustomMessagesGame._normalizeTurnNumber(msg.turnNumber) }
                 : {}),
             loop: msg.loop,
@@ -1275,11 +1285,23 @@ class CustomMessagesGame {
         return parts.length ? parts.join(", ") : "";
     }
 
-    /** e.g. "player message 3" or "every 3 player messages". @param {CustomMessage} msg */
-    static _playerTurnSummary(msg) {
+    /**
+     * Triggers that fire on the Nth player message or character reply; Repeat means every Nth.
+     * @param {string} trigger
+     */
+    static _isCountedTrigger(trigger) {
+        return trigger === "playerTurn" || trigger === "characterReply";
+    }
+
+    /** e.g. "player message 3" or "every 3 character replies". @param {CustomMessage} msg */
+    static _countedTriggerSummary(msg) {
         const n = CustomMessagesGame._normalizeTurnNumber(msg?.turnNumber);
-        if (msg?.loop !== "repeat") return `player message ${n}`;
-        return n === 1 ? "every player message" : `every ${n} player messages`;
+        const [one, many] =
+            msg?.trigger === "characterReply"
+                ? ["character reply", "character replies"]
+                : ["player message", "player messages"];
+        if (msg?.loop !== "repeat") return `${one} ${n}`;
+        return n === 1 ? `every ${one}` : `every ${n} ${many}`;
     }
 
     static _newId() {
@@ -1383,7 +1405,7 @@ class CustomMessagesGame {
     _messagesPlayedByOthers() {
         const ids = new Set();
         this.messages.forEach((msg, i) => {
-            if (msg.loop === "repeat" && msg.trigger !== "playerTurn") return;
+            if (msg.loop === "repeat" && !CustomMessagesGame._isCountedTrigger(msg.trigger)) return;
             const target = this._onEndMessage(msg, CustomMessagesGame._normalizeOnEnd(msg.onEnd), i);
             if (target && target.id !== msg.id) ids.add(target.id);
         });
@@ -1463,7 +1485,7 @@ class CustomMessagesGame {
             if (name) return name;
             return (msg.audioUrl && CustomMessagesGame._fileNameFromUrl(msg.audioUrl)) || "Recording";
         }
-        return "Prompt";
+        return "Instruction";
     }
 
     /**
@@ -1502,7 +1524,7 @@ class CustomMessagesGame {
 
         const hint = document.createElement("p");
         hint.className = "custom-messages-hint muted";
-        hint.textContent = "A game is a collection of actions and triggers.";
+        hint.textContent = "A game is a collection of messages and their triggers.";
         card.appendChild(hint);
 
         const meta = document.createElement("div");
@@ -1532,6 +1554,11 @@ class CustomMessagesGame {
 
         meta.appendChild(nameLabel);
         card.appendChild(meta);
+
+        const listTitle = document.createElement("h3");
+        listTitle.className = "custom-messages-stage-title";
+        listTitle.textContent = "Messages";
+        card.appendChild(listTitle);
 
         const list = document.createElement("div");
         list.className = "custom-messages-tiles";
@@ -1592,7 +1619,7 @@ class CustomMessagesGame {
         if (!this.messages.length) {
             const empty = document.createElement("p");
             empty.className = "custom-messages-hint muted";
-            empty.textContent = "No actions yet. Tap + Add to create one.";
+            empty.textContent = "No messages yet. Tap + Add to create one.";
             list.appendChild(empty);
             return;
         }
@@ -1622,22 +1649,19 @@ class CustomMessagesGame {
             }
             const constraintNote = CustomMessagesGame._constraintsSummary(msg.constraints);
             const constraintSuffix = constraintNote ? ` · if ${constraintNote}` : "";
-            const triggerNote =
-                msg.trigger === "playerTurn"
-                    ? CustomMessagesGame._playerTurnSummary(msg)
-                    : msg.trigger;
-            const repeats = msg.loop === "repeat" && msg.trigger !== "playerTurn";
+            const counted = CustomMessagesGame._isCountedTrigger(msg.trigger);
+            const triggerNote = counted
+                ? CustomMessagesGame._countedTriggerSummary(msg)
+                : msg.trigger;
+            const repeats = msg.loop === "repeat" && !counted;
             const onEnd = CustomMessagesGame._normalizeOnEnd(msg.onEnd);
             const endNote = repeats
                 ? " · repeats"
                 : onEnd
                   ? ` · then ${this._onEndLabel(onEnd).toLowerCase()}`
                   : "";
-            const stageNote = playerTurn
-                ? stage === "prompt"
-                    ? "instruction"
-                    : `instruction + ${stage}`
-                : stage;
+            const stageNote =
+                stage === "prompt" ? "instruction" : playerTurn ? `instruction + ${stage}` : stage;
             label.title = `${stageNote} · ${triggerNote}${delayNote}${cameraNote}${clearNote}${promptNote}${constraintSuffix}${endNote}`;
             tile.appendChild(label);
 
@@ -1844,7 +1868,7 @@ class CustomMessagesGame {
         const onEndHint = document.createElement("p");
         onEndHint.className = "custom-messages-hint muted custom-messages-end-game-hint";
         onEndHint.textContent =
-            "Once this finishes playing, or once the reply to a prompt has been spoken.";
+            "Once this finishes playing, or once the reply to a game instruction has been spoken.";
 
         options.appendChild(triggerLabel);
         options.appendChild(turnLabel);
@@ -1951,7 +1975,7 @@ class CustomMessagesGame {
 
     /**
      * On the Player turn trigger the prompt rides along with the player's message; any text to
-     * speak or audio plays once the reply has been spoken.
+     * speak or audio plays while the reply is on its way, and the reply is spoken after it.
      */
     static _isTurnAttachment(msg) {
         return !!msg && msg.trigger === "playerTurn";
@@ -1988,23 +2012,32 @@ class CustomMessagesGame {
     }
 
     /**
-     * Turn number only applies to Player turn; attached prompts have no delay. On a player turn
-     * Repeat means every Nth turn; elsewhere it replays the message, so there is no On end.
+     * The number only applies to the player message / character reply triggers; attached
+     * prompts have no delay. On those triggers Repeat means every Nth; elsewhere it replays the
+     * message, so there is no On end.
      */
     _syncTriggerOptions() {
         const draft = this._draft;
         if (!draft) return;
-        const playerTurn = draft.trigger === "playerTurn";
-        if (this._editorTurnLabel) this._editorTurnLabel.hidden = !playerTurn;
+        const counted = CustomMessagesGame._isCountedTrigger(draft.trigger);
+        const reply = draft.trigger === "characterReply";
+        if (this._editorTurnLabel) {
+            this._editorTurnLabel.hidden = !counted;
+            this._editorTurnLabel.firstChild.textContent = reply
+                ? "On the character's reply number"
+                : "On the player's message number";
+        }
         if (this._editorDelayLabel) {
             this._editorDelayLabel.hidden = CustomMessagesGame._isTurnAttachment(draft);
         }
         if (this._editorRepeatHint) {
-            this._editorRepeatHint.textContent = playerTurn
-                ? "Plays on every Nth message the player sends instead of only message N."
-                : "Keeps playing it until another trigger plays something or Only fire if stops being met.";
+            this._editorRepeatHint.textContent = reply
+                ? "Plays after every Nth reply the character speaks instead of only reply N."
+                : counted
+                  ? "Plays on every Nth message the player sends instead of only message N."
+                  : "Keeps playing it until another trigger plays something or Only fire if stops being met.";
         }
-        const repeats = draft.loop === "repeat" && !playerTurn;
+        const repeats = draft.loop === "repeat" && !counted;
         for (const el of this._editorOnEnd || []) el.hidden = repeats;
     }
 
@@ -2014,7 +2047,7 @@ class CustomMessagesGame {
     }
 
     /**
-     * The editor body: chat prompt, text to speak and audio, each optional, then which of them
+     * The editor body: game instruction, text to speak and audio, each optional, then which of them
      * plays.
      */
     _refreshEditorBody() {
@@ -2089,8 +2122,10 @@ class CustomMessagesGame {
                 if (CustomMessagesGame._messageReasoningEffort(draft)) {
                     steps.push("sets the reasoning level");
                 }
-                if (stage === "audio") steps.push("plays the audio after the reply");
-                if (stage === "text") steps.push("speaks the text to speak (TTS) after the reply");
+                if (stage === "audio") steps.push("plays the audio while the reply is on its way, before it is spoken");
+                if (stage === "text") {
+                    steps.push("speaks the text to speak (TTS) while the reply is on its way, before it is spoken");
+                }
                 note.textContent = steps.length
                     ? `When triggered: ${steps.join(", ")}.`
                     : "When triggered: nothing changes. Add an instruction, word limit, reasoning level, text to speak or audio.";
@@ -2101,7 +2136,7 @@ class CustomMessagesGame {
                     ? "When triggered: plays the audio."
                     : stage === "text"
                       ? "When triggered: speaks the text to speak (TTS)."
-                      : "When triggered: sends the prompt to the agent, which replies live.";
+                      : "When triggered: sends the game instruction to the character, who replies live.";
         };
     }
 
@@ -2145,7 +2180,7 @@ class CustomMessagesGame {
         }
     }
 
-    _renderAudioEditor(body, draft, { emptyHint = "Record a clip, upload an audio file, or paste a URL." } = {}) {
+    _renderAudioEditor(body, draft, { emptyHint = "Record a clip, add an MP3 file, or paste a URL." } = {}) {
         const status = document.createElement("p");
         const showStatus = () => {
             if (CustomMessagesGame._normalizeAudioUrl(draft.audioUrl)) {
@@ -2184,7 +2219,7 @@ class CustomMessagesGame {
         const uploadBtn = document.createElement("button");
         uploadBtn.type = "button";
         uploadBtn.className = "custom-messages-upload secondary";
-        uploadBtn.textContent = "Upload";
+        uploadBtn.textContent = "Add MP3 file";
 
         const fileInput = document.createElement("input");
         fileInput.type = "file";
@@ -2290,53 +2325,24 @@ class CustomMessagesGame {
         this._syncPreviewButton();
     }
 
-    /** Upload file button that reads a .txt file into `onText`. @returns {HTMLElement} the row */
-    _textUploadRow(onText, status) {
-        const row = document.createElement("div");
-        row.className = "custom-messages-media-row";
-        const uploadBtn = document.createElement("button");
-        uploadBtn.type = "button";
-        uploadBtn.className = "custom-messages-upload secondary";
-        uploadBtn.textContent = "Upload file";
-        const fileInput = document.createElement("input");
-        fileInput.type = "file";
-        fileInput.accept = ".txt,text/plain";
-        fileInput.hidden = true;
-        fileInput.addEventListener("change", async () => {
-            const file = fileInput.files?.[0];
-            fileInput.value = "";
-            if (!file) return;
-            try {
-                onText(await file.text());
-                status.textContent = `Loaded: ${file.name || "text file"}`;
-                status.className = "custom-messages-status ok";
-                this._syncEditorState();
-            } catch (err) {
-                status.textContent = err?.message || "Could not read file.";
-                status.className = "custom-messages-status error";
-            }
-        });
-        uploadBtn.addEventListener("click", () => fileInput.click());
-        row.appendChild(uploadBtn);
-        row.appendChild(fileInput);
-        return row;
-    }
-
-    /** Chat prompt stage; on the Player turn trigger it is the turn's instruction instead. */
+    /**
+     * Game instruction stage: sent on its own, or on the Player turn trigger added to the
+     * player's message.
+     */
     _renderPromptStage(parent, draft, attachment) {
-        const body = this._stageSection(parent, attachment ? "Instruction" : "Chat prompt", true);
+        const body = this._stageSection(parent, "Game instruction", true);
         const status = document.createElement("p");
         status.className = "custom-messages-status muted";
         status.textContent = attachment
-            ? "Added to the player's message on this turn as an instruction, with the word limit, e.g. \"Wrap up the game now.\" A reasoning level applies from this reply on. Can be left empty: a word limit or reasoning level other than No change still applies, even with text to speak or audio."
-            : "Sent to the agent when triggered, unless there is text to speak or audio below. Can be left empty.";
+            ? "Added to the player's message on this turn as a game instruction, with the word limit, e.g. \"Wrap up the game now.\" A reasoning level applies from this reply on. Can be left empty: a word limit or reasoning level other than No change still applies, even with text to speak or audio."
+            : "Sent to the character as a game instruction when triggered (not as something the player said), unless there is text to speak or audio below. Can be left empty.";
 
         const input = document.createElement("textarea");
         input.className = "custom-messages-text";
         input.rows = 4;
         input.placeholder = attachment
-            ? "Instruction added to the player's message…"
-            : "Prompt text for the agent (optional)…";
+            ? "Game instruction added to the player's message…"
+            : "Tell the character what to do (optional)…";
         input.value = draft.text || "";
         input.addEventListener("input", () => {
             draft.text = input.value;
@@ -2412,17 +2418,11 @@ class CustomMessagesGame {
             body.appendChild(cameraLabel);
         }
 
-        body.appendChild(
-            this._textUploadRow((text) => {
-                draft.text = text;
-                input.value = text;
-            }, status)
-        );
         body.appendChild(status);
     }
 
     /**
-     * Text to speak stage: typed, uploaded, or generated from the prompt (the character's bio and
+     * Text to speak stage: typed or generated from the prompt (the character's bio and
      * speech guidelines, no chat history). A Player turn instruction isn't a standalone prompt,
      * so there is nothing to generate from.
      * @returns {() => void} sync
@@ -2441,8 +2441,8 @@ class CustomMessagesGame {
             draft,
             "speech",
             attachment
-                ? `What ${speaker} says after replying: type it or upload a text file. Spoken with TTS.`
-                : `What ${speaker} says: generate it from the prompt (without chat history), type it, or upload a text file. Spoken with TTS instead of sending the prompt.`
+                ? `What ${speaker} says before replying. Spoken with TTS.`
+                : `What ${speaker} says: generate it from the game instruction (without chat history) or type it. Spoken with TTS instead of sending the game instruction.`
         );
         status.textContent = idle;
         status.className = `custom-messages-status ${tone}`;
@@ -2457,7 +2457,7 @@ class CustomMessagesGame {
             generateBtn.disabled = !!draft._busy;
             generateBtn.addEventListener("click", () => {
                 if (!String(draft.text || "").trim()) {
-                    draft._stageError = { stage: "speech", message: "Type a prompt first." };
+                    draft._stageError = { stage: "speech", message: "Type a game instruction first." };
                     this._refreshEditorBody();
                     return;
                 }
@@ -2496,19 +2496,13 @@ class CustomMessagesGame {
         });
         body.appendChild(input);
 
-        body.appendChild(
-            this._textUploadRow((text) => {
-                setText(text);
-                input.value = text;
-            }, status)
-        );
         body.appendChild(status);
 
         return () => {
             if (generateBtn) {
                 generateBtn.textContent = getText().trim()
-                    ? "Regenerate from prompt"
-                    : "Generate from prompt";
+                    ? "Regenerate from instruction"
+                    : "Generate from instruction";
             }
         };
     }
@@ -2565,7 +2559,7 @@ class CustomMessagesGame {
         body.appendChild(row);
 
         const audio = this._renderAudioEditor(body, draft, {
-            emptyHint: "Generate it from the text to speak, record a clip, upload a file, or paste a URL."
+            emptyHint: "Generate it from the text to speak, record a clip, add an MP3 file, or paste a URL."
         });
         const busyHere = draft._busy?.stage === "audio";
         if (busyHere) {
@@ -3093,14 +3087,14 @@ class CustomMessagesGame {
      * (true if the message played) once all of that is over.
      * @param {CustomMessage} msg
      * @param {number} generation
-     * @param {{ turnFollowUp?: boolean, onPlayed?: ((epoch: number) => void)|null }} [options]
-     *   turnFollowUp still plays while the game is waiting to end after a player turn.
+     * @param {{ duringTurn?: boolean, onPlayed?: ((epoch: number) => void)|null }} [options]
+     *   duringTurn still plays while the game is waiting to end after a player turn.
      *   onPlayed runs as soon as the message itself has played, before whatever follows.
      */
-    async _playMessage(msg, generation, { turnFollowUp = false, onPlayed = null } = {}) {
+    async _playMessage(msg, generation, { duringTurn = false, onPlayed = null } = {}) {
         let epoch = 0;
         const played = await this._playOne(msg, generation, {
-            turnFollowUp,
+            duringTurn,
             onStart: () => {
                 epoch = ++this._chainEpoch;
             }
@@ -3129,7 +3123,7 @@ class CustomMessagesGame {
         let current = msg;
         let passedOver = 0;
         while (live()) {
-            if (current.loop === "repeat" && current.trigger !== "playerTurn") {
+            if (current.loop === "repeat" && !CustomMessagesGame._isCountedTrigger(current.trigger)) {
                 await this._repeat(current, generation, epoch);
                 return;
             }
@@ -3168,10 +3162,16 @@ class CustomMessagesGame {
      * finished (audio ended, text spoken, a prompt's reply spoken), false if it didn't play.
      * @param {CustomMessage} msg
      * @param {number} generation
-     * @param {{ turnFollowUp?: boolean, stillWanted?: (() => boolean)|null, onStart?: (() => void)|null }} [options]
+     * @param {{ duringTurn?: boolean, recordTurn?: boolean, stillWanted?: (() => boolean)|null, onStart?: (() => void)|null }} [options]
+     *   duringTurn still plays while the game is waiting to end after a player turn.
+     *   recordTurn false leaves what it says out of the chat history, for the caller to add.
      *   stillWanted is checked again after waiting; onStart runs just before it plays.
      */
-    async _playOne(msg, generation, { turnFollowUp = false, stillWanted = null, onStart = null } = {}) {
+    async _playOne(
+        msg,
+        generation,
+        { duringTurn = false, recordTurn = true, stillWanted = null, onStart = null } = {}
+    ) {
         const wanted = () =>
             this._isActive(generation) && (!stillWanted || stillWanted()) && this._constraintsMet(msg);
         if (!msg || !wanted()) return false;
@@ -3181,7 +3181,7 @@ class CustomMessagesGame {
             const waited = await this._sleep(40, generation);
             if (!waited) return false;
         }
-        if (this._endPending && !turnFollowUp) return false;
+        if (this._endPending && !duringTurn) return false;
         if (!wanted()) return false;
 
         if (CustomMessagesGame.DEBUG_CONFIRM_TRIGGERS) {
@@ -3205,7 +3205,7 @@ class CustomMessagesGame {
         try {
             // Live prompts clear it themselves, just before they are sent.
             if (msg.clearHistory && stage !== "prompt") this._clearChatHistory();
-            if (stage === "audio" || stage === "text") this._recordSpokenTurn(msg);
+            if (recordTurn && (stage === "audio" || stage === "text")) this._recordSpokenTurn(msg);
             if (stage === "audio") {
                 await this._playAudio(msg, generation);
             } else if (stage === "text") {
@@ -3230,15 +3230,28 @@ class CustomMessagesGame {
     }
 
     /**
-     * Called by the agent as a player message is about to be sent. Counts the turn and returns
-     * the text of any Player turn prompts due now (to append to that message), the reasoning
-     * level they set ("" = no change), plus `finish`, which the agent calls once the reply has
-     * been spoken, or with false if the request failed.
-     * @returns {{ text: string, reasoningEffort: string, finish: (ok: boolean) => void }}
+     * Called by the agent as a player message is about to be sent. Counts the turn and returns:
+     * - `text`: the instructions of the actions due now, to append to that message
+     * - `reasoningEffort`: the level they set ("" = no change)
+     * - `beforeReply`: resolves once their text to speak / audio has played. It starts now, while
+     *   the request is on its way; the agent speaks the reply after it.
+     * - `recordSpoken`: adds what they said to the chat history; the agent calls it after
+     *   `beforeReply`, just before adding the reply
+     * - `finish`: the agent calls it once the reply has been spoken, or with false if the
+     *   request failed
+     * @returns {{ text: string, reasoningEffort: string, beforeReply: Promise<void>, recordSpoken: () => void, finish: (ok: boolean) => void }}
      */
     beginPlayerTurn() {
         const generation = this._generation;
-        if (!this._isActive(generation) || this._endPending) return { text: "", finish: () => {} };
+        if (!this._isActive(generation) || this._endPending) {
+            return {
+                text: "",
+                reasoningEffort: "",
+                beforeReply: Promise.resolve(),
+                recordSpoken: () => {},
+                finish: () => {}
+            };
+        }
         this._playerTurn += 1;
         const turn = this._playerTurn;
         const due = this.messages.filter(
@@ -3265,21 +3278,47 @@ class CustomMessagesGame {
                 .map((m) => CustomMessagesGame._normalizeTurnReasoningEffort(m.reasoningEffort))
                 .filter(Boolean)
                 .pop() || "";
+        const skip = this._failedTurnClips?.turn === turn ? this._failedTurnClips.ids : new Set();
+        this._failedTurnClips = null;
+        const clips = due.filter((m) => CustomMessagesGame._hasSpokenContent(m) && !skip.has(m.id));
+        const played = new Set();
+        const beforeReply = this._playTurnClips(clips, generation, played);
+        let recorded = false;
         let finished = false;
         return {
             text,
             reasoningEffort,
+            beforeReply,
+            recordSpoken: () => {
+                if (recorded) return;
+                recorded = true;
+                for (const msg of clips) {
+                    if (played.has(msg.id)) this._recordSpokenTurn(msg);
+                }
+            },
             finish: (ok) => {
                 if (finished) return;
                 finished = true;
-                this._finishPlayerTurn({ turn, generation, due }, ok);
+                this._finishPlayerTurn({ turn, generation, due, clips, skip }, ok);
             }
         };
     }
 
+    /** Plays a player turn's clips one after another; `played` collects those that started. */
+    async _playTurnClips(clips, generation, played) {
+        for (const msg of clips) {
+            if (!this._isActive(generation)) return;
+            await this._playOne(msg, generation, {
+                duringTurn: true,
+                recordTurn: false,
+                onStart: () => played.add(msg.id)
+            });
+        }
+    }
+
     /**
-     * Plays the turn's text to speak / audio, then ends the game if one of its actions asked to.
-     * A failed request un-counts the turn so its actions fire on the next attempt.
+     * A failed request un-counts the turn so its actions fire on the next attempt, except its
+     * clips, which have been heard (or are still playing).
      */
     _finishPlayerTurn(pending, ok) {
         if (!this._isActive(pending.generation)) return;
@@ -3289,19 +3328,42 @@ class CustomMessagesGame {
             if (pending.due.some((m) => CustomMessagesGame._isEnding(m.onEnd))) {
                 this._endPending = false;
             }
+            this._failedTurnClips = {
+                turn: pending.turn,
+                ids: new Set([...pending.skip, ...pending.clips.map((m) => m.id)])
+            };
             return;
         }
-        void this._runTurnFollowUps(pending);
+        void this._afterCharacterReply(pending);
     }
 
-    async _runTurnFollowUps({ generation, due }) {
-        for (const msg of due) {
+    /**
+     * Once the reply has been spoken: counts it and plays the actions due on this reply, then
+     * ends the game if a player message action asked to, or carries on from its On end.
+     */
+    async _afterCharacterReply({ generation, due }) {
+        this._characterReplies += 1;
+        const reply = this._characterReplies;
+        const replyDue = this.messages.filter(
+            (m) =>
+                m.trigger === "characterReply" &&
+                CustomMessagesGame._turnDue(m, reply) &&
+                !(m.loop === "once" && this._firedOnceIds.has(m.id)) &&
+                this._constraintsMet(m)
+        );
+        if (replyDue.length) {
+            this._debugLog("Character reply", reply, replyDue.map((m) => CustomMessagesGame.tileLabel(m)));
+        }
+        const ender = due.find((m) => CustomMessagesGame._isEnding(m.onEnd));
+        for (const msg of replyDue) {
             if (!this._isActive(generation)) return;
-            if (!CustomMessagesGame._hasSpokenContent(msg)) continue;
-            await this._playOne(msg, generation, { turnFollowUp: true });
+            // Ending after this turn: just play them, without their own On end, then end.
+            const played = ender
+                ? await this._playOne(msg, generation, { duringTurn: true })
+                : await this._playMessage(msg, generation);
+            if (played && msg.loop === "once") this._firedOnceIds.add(msg.id);
         }
         if (!this._isActive(generation)) return;
-        const ender = due.find((m) => CustomMessagesGame._isEnding(m.onEnd));
         if (ender) {
             this._endGame(generation, ender.onEnd.slice("end:".length));
             return;
@@ -3360,8 +3422,8 @@ class CustomMessagesGame {
         const kindLabel =
             stage === "prompt"
                 ? msg.sendCamera
-                    ? "Prompt + camera photo"
-                    : "Prompt"
+                    ? "Game instruction + camera photo"
+                    : "Game instruction"
                 : stage === "audio"
                   ? "Audio clip"
                   : "Text (TTS)";
@@ -3578,7 +3640,7 @@ class CustomMessagesGame {
         agent.recordSpokenTurn(said, { prompt });
     }
 
-    /** Empty the agent's chat history; the player-turn count starts again with it. */
+    /** Empty the agent's chat history; the player message and reply counts start again with it. */
     _clearChatHistory() {
         const agent = this._getAgent();
         if (agent) {
@@ -3586,8 +3648,10 @@ class CustomMessagesGame {
             if (typeof agent._renderHistory === "function") agent._renderHistory();
         }
         this._playerTurn = 0;
+        this._characterReplies = 0;
+        this._failedTurnClips = null;
         for (const m of this.messages) {
-            if (m.trigger === "playerTurn") this._firedOnceIds.delete(m.id);
+            if (CustomMessagesGame._isCountedTrigger(m.trigger)) this._firedOnceIds.delete(m.id);
         }
     }
 
@@ -3642,9 +3706,11 @@ class CustomMessagesGame {
  * @typedef {object} CustomMessage
  * @property {string} id
  * @property {string} trigger
- * @property {number} turnNumber Player turn trigger: fire on this turn, or every Nth turn when repeating.
+ * @property {number} turnNumber Player message / character reply triggers: fire on this one, or
+ *   every Nth when repeating.
  * @property {"once"|"repeat"} loop "repeat" replays it until another trigger plays something or
- *   its constraints stop being met; on Player turn it means every Nth turn instead.
+ *   its constraints stop being met; on the player message / character reply triggers it means
+ *   every Nth instead.
  * @property {string} onEnd Once it has played (prompts: once the reply is spoken): "" waits for a
  *   trigger; "next" / "first" / "msg:<id>" play that message; "end:home" / "end:none" /
  *   "end:next" / "end:<game id>" end the game and go to the home game, no game, the character's
