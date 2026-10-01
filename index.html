@@ -359,17 +359,12 @@
       font-size: 1.2rem;
       text-align: center;
     }
-    .custom-messages-kind-row,
     .custom-messages-media-row,
     .custom-messages-actions {
       display: flex;
       flex-wrap: wrap;
       gap: 8px;
     }
-    .custom-messages-kind-row {
-      margin-bottom: 12px;
-    }
-    .custom-messages-kind-btn,
     .custom-messages-media-row button,
     .custom-messages-actions button {
       flex: 1 1 0;
@@ -379,10 +374,6 @@
       margin-top: 0;
       box-sizing: border-box;
       font-weight: 600;
-    }
-    .custom-messages-kind-btn.is-active {
-      outline: 2px solid #111;
-      outline-offset: 1px;
     }
     .custom-messages-body {
       margin-bottom: 10px;
@@ -406,6 +397,39 @@
       margin: 8px 0 0;
       font-size: 0.88rem;
       line-height: 1.35;
+    }
+    .custom-messages-stage + .custom-messages-stage {
+      margin: 14px 0 0;
+      padding: 12px 0 0;
+      border-top: 1px solid #e3e3e3;
+    }
+    .custom-messages-stage [hidden] {
+      display: none !important;
+    }
+    .custom-messages-stage-title {
+      margin: 0 0 8px;
+      font-size: 0.95rem;
+      font-weight: 700;
+      color: #333;
+    }
+    .custom-messages-stage-title .muted {
+      font-weight: 400;
+    }
+    .custom-messages-stage .custom-messages-media-row + .custom-messages-text {
+      margin-top: 8px;
+    }
+    .custom-messages-stage .custom-messages-media-row + .custom-messages-audio-url,
+    .custom-messages-stage .custom-messages-media-row + .custom-messages-media-row {
+      margin-top: 8px;
+    }
+    .custom-messages-plays-note {
+      margin: 14px 0 0;
+      padding: 8px 10px;
+      border-radius: 8px;
+      background: #f3f6fa;
+      font-size: 0.88rem;
+      font-weight: 600;
+      color: #345;
     }
     .custom-messages-options {
       display: grid;
@@ -502,6 +526,12 @@
       width: 100%;
       margin: 4px 0 0;
       box-sizing: border-box;
+    }
+    .custom-messages-clear-history-label {
+      margin: -4px 0 12px;
+    }
+    .custom-messages-clear-history-label[hidden] {
+      display: none;
     }
     .custom-messages-camera-label input {
       width: 1.05rem;

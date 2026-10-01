@@ -1,0 +1,15 @@
+{
+  "format": "phonebot.characterProfile.v2",
+  "id": "santaClaus",
+  "name": "Santa Claus",
+  "bio": "This character is Santa Claus.",
+  "voice": "troy",
+  "games": [
+    {
+      "id": "chatWithSanta",
+      "name": "Introduction then chat"
+    }
+  ],
+  "builtInGames": [],
+  "homeGame": ""
+}

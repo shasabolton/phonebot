@@ -157,11 +157,17 @@ class CustomMessagesGame {
         { id: "noFaceDetected", label: "No face detected" },
         { id: "speechFinished", label: "Speech finished" },
         { id: "playNext", label: "After another message" },
-        { id: "playerTurn", label: "Player turn" }
+        { id: "playerTurn", label: "Player sends a message" }
     ]);
 
-    /** Prompt reply word limit; 0 = no limit (nothing appended). Default matches Talking Heads chat. */
-    static PROMPT_MAX_WORDS = Object.freeze([0, 10, 20, 30, 50, 75, 100, 150, 200]);
+    /**
+     * Prompt reply word limit. Every reply is spoken, so it is capped. "No change" appends
+     * nothing, leaving any limit from earlier in the chat history; it isn't offered when the
+     * history is cleared. Default matches Talking Heads chat.
+     */
+    static PROMPT_MAX_WORDS = Object.freeze([10, 20, 30, 50, 75, 100, 150, 200, 300]);
+    static MAX_PROMPT_WORDS = 300;
+    static MAX_WORDS_UNCHANGED = -1;
     static DEFAULT_PROMPT_MAX_WORDS = 50;
 
     /** Default matches the Talking Heads agent config. */
@@ -619,7 +625,7 @@ class CustomMessagesGame {
     static _rebaseAudio(messages, { basePath = "", files = null }) {
         if (!basePath && !files) return;
         for (const msg of messages) {
-            if (msg.kind !== "audio" || !CustomMessagesGame._isRelativePath(msg.audioUrl)) continue;
+            if (!CustomMessagesGame._isRelativePath(msg.audioUrl)) continue;
             if (files) {
                 const path = CustomMessagesGame._resolveRelativePath("game.json", msg.audioUrl);
                 const blob = files.get(path);
@@ -705,20 +711,18 @@ class CustomMessagesGame {
             delete entry.audioKey;
             delete entry.audioBase64;
             delete entry.audioMime;
-            if (msg.kind === "audio") {
-                const url = entry.audioUrl;
-                if (!url && msg.audioBlob?.size) {
-                    entry.audioUrl = addClip(msg.fileName, msg.id, msg.audioBlob);
-                } else if (url && CustomMessagesGame._isAppUrl(url)) {
-                    try {
-                        const res = await fetch(url);
-                        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-                        const name = msg.fileName || CustomMessagesGame._fileNameFromUrl(url);
-                        entry.audioUrl = addClip(name, msg.id, await res.blob());
-                    } catch (err) {
-                        console.warn("Game audio fetch for download failed:", url, err);
-                        entry.audioUrl = new URL(url, window.location.href).href;
-                    }
+            const url = entry.audioUrl;
+            if (!url && msg.audioBlob?.size) {
+                entry.audioUrl = addClip(msg.fileName, msg.id, msg.audioBlob);
+            } else if (url && CustomMessagesGame._isAppUrl(url)) {
+                try {
+                    const res = await fetch(url);
+                    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                    const name = msg.fileName || CustomMessagesGame._fileNameFromUrl(url);
+                    entry.audioUrl = addClip(name, msg.id, await res.blob());
+                } catch (err) {
+                    console.warn("Game audio fetch for download failed:", url, err);
+                    entry.audioUrl = new URL(url, window.location.href).href;
                 }
             }
             out.push(entry);
@@ -799,7 +803,6 @@ class CustomMessagesGame {
         this._draft = existing
             ? {
                   id: existing.id,
-                  kind: existing.kind,
                   trigger: existing.trigger,
                   turnNumber: CustomMessagesGame._normalizeTurnNumber(existing.turnNumber),
                   loop: existing.loop,
@@ -807,19 +810,17 @@ class CustomMessagesGame {
                   delaySec: CustomMessagesGame._normalizeDelaySec(existing.delaySec),
                   constraints: CustomMessagesGame._normalizeConstraints(existing.constraints),
                   text: existing.text || "",
+                  speechText: existing.speechText || "",
                   fileName: existing.fileName || "",
                   sendCamera: !!existing.sendCamera,
-                  clearHistory: existing.clearHistory !== false,
+                  clearHistory: !!existing.clearHistory,
                   maxWords: CustomMessagesGame._normalizeMaxWords(existing.maxWords),
-                  reasoningEffort: CustomMessagesGame._normalizeReasoningEffort(
-                      existing.reasoningEffort
-                  ),
+                  reasoningEffort: CustomMessagesGame._messageReasoningEffort(existing),
                   audioBlob: existing.audioBlob || null,
                   audioUrl: existing.audioUrl || ""
               }
             : {
                   id: null,
-                  kind: null,
                   trigger: "gameLoad",
                   turnNumber: 1,
                   loop: "once",
@@ -827,11 +828,13 @@ class CustomMessagesGame {
                   delaySec: 0,
                   constraints: CustomMessagesGame._normalizeConstraints(null),
                   text: "",
+                  speechText: "",
                   fileName: "",
                   sendCamera: false,
-                  clearHistory: true,
-                  maxWords: CustomMessagesGame.DEFAULT_PROMPT_MAX_WORDS,
-                  reasoningEffort: CustomMessagesGame.DEFAULT_REASONING_EFFORT,
+                  clearHistory: false,
+                  // Unset until picked: other prompts show the defaults, Player turn shows No change.
+                  maxWords: null,
+                  reasoningEffort: "",
                   audioBlob: null,
                   audioUrl: ""
               };
@@ -1015,7 +1018,6 @@ class CustomMessagesGame {
         const constraints = CustomMessagesGame._normalizeConstraints(msg.constraints);
         const out = {
             id: msg.id,
-            kind: msg.kind,
             trigger: msg.trigger,
             ...(msg.trigger === "playerTurn"
                 ? { turnNumber: CustomMessagesGame._normalizeTurnNumber(msg.turnNumber) }
@@ -1025,19 +1027,17 @@ class CustomMessagesGame {
             delaySec: CustomMessagesGame._normalizeDelaySec(msg.delaySec),
             constraints,
             text: msg.text || "",
+            speechText: msg.speechText || "",
             fileName: msg.fileName || "",
-            sendCamera: msg.kind === "prompt" && !!msg.sendCamera,
-            clearHistory: msg.kind === "prompt" && msg.clearHistory !== false,
-            audioUrl:
-                msg.kind === "audio" ? CustomMessagesGame._normalizeAudioUrl(msg.audioUrl) : "",
+            sendCamera: !!msg.sendCamera,
+            clearHistory: !!msg.clearHistory,
+            maxWords: CustomMessagesGame._normalizeMaxWords(msg.maxWords),
+            reasoningEffort: CustomMessagesGame._messageReasoningEffort(msg),
+            audioUrl: CustomMessagesGame._normalizeAudioUrl(msg.audioUrl),
             audioKey: "",
             audioBase64: null,
             audioMime: ""
         };
-        if (msg.kind === "prompt") {
-            out.maxWords = CustomMessagesGame._normalizeMaxWords(msg.maxWords);
-            out.reasoningEffort = CustomMessagesGame._normalizeReasoningEffort(msg.reasoningEffort);
-        }
         const hasBlob =
             !!msg.audioBlob && typeof msg.audioBlob.size === "number" && msg.audioBlob.size > 0;
         if (!forExport && msg.audioKey) {
@@ -1054,15 +1054,19 @@ class CustomMessagesGame {
 
     static _deserializeMessage(entry) {
         if (!entry || typeof entry !== "object") return null;
+        // Messages saved before they all had the same stages start from a `kind`: a text or
+        // audio message's words (for audio, its transcript) become its text to speak.
         const kind = String(entry.kind || "").trim();
-        if (kind !== "audio" && kind !== "text" && kind !== "prompt") return null;
+        if (kind && kind !== "audio" && kind !== "text" && kind !== "prompt") return null;
+        const legacySpoken = kind === "text" || kind === "audio";
+        const text = legacySpoken ? "" : String(entry.text || "");
+        const speechText = String((legacySpoken ? entry.text : entry.speechText) || "");
         // Unknown or retired triggers (e.g. the old "selected") fall back to gameLoad.
         const trigger = String(entry.trigger || "gameLoad").trim();
         const loop = String(entry.loop || "once").trim() === "repeat" ? "repeat" : "once";
         /** @type {CustomMessage} */
         const msg = {
             id: String(entry.id || CustomMessagesGame._newId()),
-            kind,
             trigger: CustomMessagesGame.TRIGGERS.some((t) => t.id === trigger)
                 ? trigger
                 : "gameLoad",
@@ -1071,13 +1075,17 @@ class CustomMessagesGame {
             onEnd: CustomMessagesGame._normalizeOnEnd(entry.onEnd),
             delaySec: CustomMessagesGame._normalizeDelaySec(entry.delaySec),
             constraints: CustomMessagesGame._normalizeConstraints(entry.constraints),
-            text: String(entry.text || ""),
+            text,
+            speechText,
             fileName: String(entry.fileName || ""),
-            sendCamera: kind === "prompt" && !!entry.sendCamera,
-            clearHistory: kind === "prompt" && entry.clearHistory !== false,
-            maxWords: CustomMessagesGame._normalizeMaxWords(entry.maxWords),
+            sendCamera: !!entry.sendCamera,
+            // Prompts saved before the setting existed cleared history unless turned off.
+            clearHistory: kind === "prompt" ? entry.clearHistory !== false : !!entry.clearHistory,
+            maxWords: legacySpoken
+                ? CustomMessagesGame.MAX_WORDS_UNCHANGED
+                : CustomMessagesGame._normalizeMaxWords(entry.maxWords),
             reasoningEffort: CustomMessagesGame._normalizeReasoningEffort(entry.reasoningEffort),
-            audioUrl: kind === "audio" ? CustomMessagesGame._normalizeAudioUrl(entry.audioUrl) : "",
+            audioUrl: CustomMessagesGame._normalizeAudioUrl(entry.audioUrl),
             audioKey: String(entry.audioKey || ""),
             audioBlob: null,
             _audioBase64: entry.audioBase64 || null,
@@ -1087,7 +1095,11 @@ class CustomMessagesGame {
             msg.clearHistory = false;
             msg.sendCamera = false;
             msg.delaySec = 0;
+            msg.reasoningEffort = CustomMessagesGame._normalizeTurnReasoningEffort(
+                entry.reasoningEffort
+            );
         }
+        msg.maxWords = CustomMessagesGame._messageMaxWords(msg);
         if (msg._audioBase64) {
             try {
                 msg.audioBlob = CustomMessagesGame._base64ToBlob(
@@ -1167,15 +1179,19 @@ class CustomMessagesGame {
     }
 
     /**
-     * Missing values (older saves) take the default; 0 means no limit.
+     * Missing values (older saves) take the default; 0 (the old "No limit", which appended
+     * nothing) and MAX_WORDS_UNCHANGED mean no change.
      * @param {unknown} value
      * @returns {number}
      */
     static _normalizeMaxWords(value) {
         if (value == null || value === "") return CustomMessagesGame.DEFAULT_PROMPT_MAX_WORDS;
         const n = Math.round(Number(value));
+        if (n === 0 || n === CustomMessagesGame.MAX_WORDS_UNCHANGED) {
+            return CustomMessagesGame.MAX_WORDS_UNCHANGED;
+        }
         if (!Number.isFinite(n) || n < 0) return CustomMessagesGame.DEFAULT_PROMPT_MAX_WORDS;
-        return Math.min(n, 1000);
+        return Math.min(n, CustomMessagesGame.MAX_PROMPT_WORDS);
     }
 
     /**
@@ -1190,6 +1206,42 @@ class CustomMessagesGame {
     }
 
     /**
+     * Player turn prompts only change the reasoning level when one is picked; "" = no change.
+     * @param {unknown} value
+     * @returns {""|"low"|"medium"|"high"}
+     */
+    static _normalizeTurnReasoningEffort(value) {
+        const raw = String(value || "").trim().toLowerCase();
+        return CustomMessagesGame.REASONING_EFFORTS.some((r) => r.id === raw) ? raw : "";
+    }
+
+    /**
+     * Unset (new actions) takes the default, except on Player turn where it is no change.
+     * Clearing the history leaves no earlier limit to keep, so no change becomes the default.
+     * @param {{ trigger?: string, clearHistory?: boolean, maxWords?: unknown }} msg
+     */
+    static _messageMaxWords(msg) {
+        const attachment = CustomMessagesGame._isTurnAttachment(msg);
+        const value =
+            msg?.maxWords == null || msg.maxWords === ""
+                ? attachment
+                    ? CustomMessagesGame.MAX_WORDS_UNCHANGED
+                    : CustomMessagesGame.DEFAULT_PROMPT_MAX_WORDS
+                : CustomMessagesGame._normalizeMaxWords(msg.maxWords);
+        if (value === CustomMessagesGame.MAX_WORDS_UNCHANGED && !attachment && msg?.clearHistory) {
+            return CustomMessagesGame.DEFAULT_PROMPT_MAX_WORDS;
+        }
+        return value;
+    }
+
+    /** @param {{ trigger?: string, reasoningEffort?: unknown }} msg */
+    static _messageReasoningEffort(msg) {
+        return CustomMessagesGame._isTurnAttachment(msg)
+            ? CustomMessagesGame._normalizeTurnReasoningEffort(msg.reasoningEffort)
+            : CustomMessagesGame._normalizeReasoningEffort(msg.reasoningEffort);
+    }
+
+    /**
      * Prompt text sent to the agent, with the word limit appended at the end.
      * @param {string} text
      * @param {number} maxWords
@@ -1197,7 +1249,7 @@ class CustomMessagesGame {
     static _composePromptText(text, maxWords) {
         const body = String(text || "").trim();
         const limit = CustomMessagesGame._normalizeMaxWords(maxWords);
-        if (!limit) return body;
+        if (limit <= 0) return body;
         const line = `Keep your replies under ${limit} words.`;
         return body ? `${body}\n\n${line}` : line;
     }
@@ -1223,11 +1275,11 @@ class CustomMessagesGame {
         return parts.length ? parts.join(", ") : "";
     }
 
-    /** e.g. "player turn 3" or "every 3rd player turn". @param {CustomMessage} msg */
+    /** e.g. "player message 3" or "every 3 player messages". @param {CustomMessage} msg */
     static _playerTurnSummary(msg) {
         const n = CustomMessagesGame._normalizeTurnNumber(msg?.turnNumber);
-        if (msg?.loop !== "repeat") return `player turn ${n}`;
-        return n === 1 ? "every player turn" : `every ${n} player turns`;
+        if (msg?.loop !== "repeat") return `player message ${n}`;
+        return n === 1 ? "every player message" : `every ${n} player messages`;
     }
 
     static _newId() {
@@ -1374,9 +1426,7 @@ class CustomMessagesGame {
      */
     _endGameChoices() {
         const Chars = window.PhonebotCharacters;
-        const owner = CustomMessagesGame.listGames().find((g) => g.id === this._activeGameId)
-            ?.characterId;
-        const character = owner && typeof Chars?.get === "function" ? Chars.get(owner) : null;
+        const character = this._ownerCharacter();
         if (!character) return [];
         const builtInLabels = new Map(
             (this.robot?.getCharacterGameOptions?.() || []).map((g) => [g.id, g.label])
@@ -1390,20 +1440,30 @@ class CustomMessagesGame {
         ];
     }
 
+    /** The character the edited game belongs to, or null. */
+    _ownerCharacter() {
+        const Chars = window.PhonebotCharacters;
+        const owner = CustomMessagesGame.listGames().find((g) => g.id === this._activeGameId)
+            ?.characterId;
+        return (owner && typeof Chars?.get === "function" && Chars.get(owner)) || null;
+    }
+
     static tileLabel(msg) {
         if (!msg) return "Message";
-        if (msg.kind === "audio") {
+        for (const text of [msg.text, msg.speechText]) {
+            const words = String(text || "")
+                .trim()
+                .split(/\s+/)
+                .filter(Boolean)
+                .slice(0, 4);
+            if (words.length) return words.join(" ");
+        }
+        if (CustomMessagesGame._hasAudio(msg)) {
             const name = String(msg.fileName || "").trim();
             if (name) return name;
             return (msg.audioUrl && CustomMessagesGame._fileNameFromUrl(msg.audioUrl)) || "Recording";
         }
-        const words = String(msg.text || "")
-            .trim()
-            .split(/\s+/)
-            .filter(Boolean)
-            .slice(0, 4);
-        if (words.length) return words.join(" ");
-        return msg.kind === "prompt" ? "Prompt" : "Text";
+        return "Prompt";
     }
 
     /**
@@ -1548,14 +1608,17 @@ class CustomMessagesGame {
             label.textContent = CustomMessagesGame.tileLabel(msg);
             const delaySec = CustomMessagesGame._normalizeDelaySec(msg.delaySec);
             const delayNote = delaySec > 0 ? ` · delay ${delaySec}s` : "";
-            const cameraNote = msg.kind === "prompt" && msg.sendCamera ? " · camera" : "";
-            const clearNote =
-                msg.kind === "prompt" && msg.clearHistory !== false ? " · clear history" : "";
+            const stage = CustomMessagesGame._playStage(msg);
+            const playerTurn = msg.trigger === "playerTurn";
+            const sendsPrompt = stage === "prompt" || playerTurn;
+            const cameraNote = stage === "prompt" && !playerTurn && msg.sendCamera ? " · camera" : "";
+            const clearNote = msg.clearHistory ? " · clear history" : "";
             let promptNote = "";
-            if (msg.kind === "prompt") {
-                const maxWords = CustomMessagesGame._normalizeMaxWords(msg.maxWords);
-                const effort = CustomMessagesGame._normalizeReasoningEffort(msg.reasoningEffort);
-                promptNote = `${maxWords ? ` · max ${maxWords} words` : ""} · ${effort} reasoning`;
+            if (sendsPrompt) {
+                const maxWords = CustomMessagesGame._messageMaxWords(msg);
+                const effort = CustomMessagesGame._messageReasoningEffort(msg);
+                const effortNote = effort ? ` · ${effort} reasoning` : "";
+                promptNote = `${maxWords > 0 ? ` · max ${maxWords} words` : ""}${effortNote}`;
             }
             const constraintNote = CustomMessagesGame._constraintsSummary(msg.constraints);
             const constraintSuffix = constraintNote ? ` · if ${constraintNote}` : "";
@@ -1570,7 +1633,12 @@ class CustomMessagesGame {
                 : onEnd
                   ? ` · then ${this._onEndLabel(onEnd).toLowerCase()}`
                   : "";
-            label.title = `${msg.kind} · ${triggerNote}${delayNote}${cameraNote}${clearNote}${promptNote}${constraintSuffix}${endNote}`;
+            const stageNote = playerTurn
+                ? stage === "prompt"
+                    ? "instruction"
+                    : `instruction + ${stage}`
+                : stage;
+            label.title = `${stageNote} · ${triggerNote}${delayNote}${cameraNote}${clearNote}${promptNote}${constraintSuffix}${endNote}`;
             tile.appendChild(label);
 
             const badgeText = !repeats && CustomMessagesGame._isEnding(onEnd)
@@ -1612,7 +1680,6 @@ class CustomMessagesGame {
         this._overlay = null;
         this._draft = null;
         this._editorBody = null;
-        this._editorOptions = null;
         this._editorSubmit = null;
         this._editorTrigger = null;
         this._editorLoop = null;
@@ -1622,6 +1689,9 @@ class CustomMessagesGame {
         this._editorDelayLabel = null;
         this._editorRepeatHint = null;
         this._editorOnEnd = null;
+        this._editorStageSync = null;
+        this._editorAudioUrlInput = null;
+        this._editorClearHistory = null;
         if (this._actionsOverlay) this._renderTiles();
     }
 
@@ -1643,38 +1713,22 @@ class CustomMessagesGame {
         title.textContent = draft.id ? "Edit message" : "Custom message";
         card.appendChild(title);
 
-        const kindRow = document.createElement("div");
-        kindRow.className = "custom-messages-kind-row";
-        for (const { id, label } of [
-            { id: "audio", label: "Audio" },
-            { id: "text", label: "Txt" },
-            { id: "prompt", label: "Prompt" }
-        ]) {
-            const btn = document.createElement("button");
-            btn.type = "button";
-            btn.className = "custom-messages-kind-btn";
-            btn.dataset.kind = id;
-            btn.textContent = label;
-            if (draft.kind === id) btn.classList.add("is-active");
-            btn.addEventListener("click", () => {
-                draft.kind = id;
-                if (id === "audio") {
-                    draft.text = "";
-                } else {
-                    draft.audioBlob = null;
-                    draft.audioUrl = "";
-                    if (!draft.fileName || /\.(webm|wav|mp3|ogg|m4a)$/i.test(draft.fileName)) {
-                        draft.fileName = "";
-                    }
-                }
-                if (id === "prompt" && draft.clearHistory === undefined) {
-                    draft.clearHistory = true;
-                }
-                this._refreshEditorBody();
-            });
-            kindRow.appendChild(btn);
-        }
-        card.appendChild(kindRow);
+        const clearLabel = document.createElement("label");
+        clearLabel.className = "custom-messages-camera-label custom-messages-clear-history-label";
+        const clearCheck = document.createElement("input");
+        clearCheck.type = "checkbox";
+        clearCheck.className = "custom-messages-clear-history";
+        clearCheck.addEventListener("change", () => {
+            // No change isn't offered once the history is cleared; unticking keeps the pick.
+            draft.clearHistory = !!clearCheck.checked;
+            draft.maxWords = CustomMessagesGame._messageMaxWords(draft);
+            this._refreshEditorBody();
+        });
+        clearLabel.appendChild(clearCheck);
+        clearLabel.appendChild(
+            document.createTextNode(" Clear chat history before running this message")
+        );
+        card.appendChild(clearLabel);
 
         const body = document.createElement("div");
         body.className = "custom-messages-body";
@@ -1682,7 +1736,6 @@ class CustomMessagesGame {
 
         const options = document.createElement("div");
         options.className = "custom-messages-options";
-        options.hidden = true;
 
         const triggerLabel = document.createElement("label");
         triggerLabel.textContent = "Trigger";
@@ -1703,7 +1756,7 @@ class CustomMessagesGame {
 
         const turnLabel = document.createElement("label");
         turnLabel.className = "custom-messages-turn-label";
-        turnLabel.textContent = "On player turn";
+        turnLabel.textContent = "On the player's message number";
         const turnInput = document.createElement("input");
         turnInput.type = "number";
         turnInput.className = "custom-messages-delay custom-messages-turn";
@@ -1811,7 +1864,6 @@ class CustomMessagesGame {
         submitBtn.type = "button";
         submitBtn.className = "custom-messages-submit";
         submitBtn.textContent = "Submit";
-        submitBtn.disabled = true;
         submitBtn.addEventListener("click", () => {
             void this._submitDraft();
         });
@@ -1842,7 +1894,6 @@ class CustomMessagesGame {
 
         this._overlay = overlay;
         this._editorBody = body;
-        this._editorOptions = options;
         this._editorSubmit = submitBtn;
         this._editorTrigger = triggerSelect;
         this._editorLoop = repeatCheck;
@@ -1852,6 +1903,7 @@ class CustomMessagesGame {
         this._editorDelayLabel = delayLabel;
         this._editorRepeatHint = repeatHint;
         this._editorOnEnd = [onEndLabel, onEndHint];
+        this._editorClearHistory = clearCheck;
 
         this._refreshEditorBody();
     }
@@ -1897,9 +1949,42 @@ class CustomMessagesGame {
         return select;
     }
 
-    /** Prompts on the Player turn trigger ride along with the player's message. */
+    /**
+     * On the Player turn trigger the prompt rides along with the player's message; any text to
+     * speak or audio plays once the reply has been spoken.
+     */
     static _isTurnAttachment(msg) {
-        return !!msg && msg.kind === "prompt" && msg.trigger === "playerTurn";
+        return !!msg && msg.trigger === "playerTurn";
+    }
+
+    /** Words to speak, typed or generated from the prompt. */
+    static _speechText(msg) {
+        return String(msg?.speechText || "").trim();
+    }
+
+    /** Whether it has text to speak or audio, which play instead of sending the prompt. */
+    static _hasSpokenContent(msg) {
+        return CustomMessagesGame._hasAudio(msg) || !!CustomMessagesGame._speechText(msg);
+    }
+
+    /** @param {{ audioBlob?: Blob|null, audioUrl?: string }} msg */
+    static _hasAudio(msg) {
+        return (
+            !!CustomMessagesGame._normalizeAudioUrl(msg?.audioUrl) ||
+            !!(msg?.audioBlob && msg.audioBlob.size > 0)
+        );
+    }
+
+    /**
+     * The stage that plays when the action fires: its audio if it has any, else its text to
+     * speak, else the prompt (which may be empty) sent live.
+     * @returns {"audio"|"text"|"prompt"|""}
+     */
+    static _playStage(msg) {
+        if (!msg) return "";
+        if (CustomMessagesGame._hasAudio(msg)) return "audio";
+        if (CustomMessagesGame._speechText(msg)) return "text";
+        return "prompt";
     }
 
     /**
@@ -1916,68 +2001,151 @@ class CustomMessagesGame {
         }
         if (this._editorRepeatHint) {
             this._editorRepeatHint.textContent = playerTurn
-                ? "Plays every Nth player turn instead of only on turn N."
+                ? "Plays on every Nth message the player sends instead of only message N."
                 : "Keeps playing it until another trigger plays something or Only fire if stops being met.";
         }
         const repeats = draft.loop === "repeat" && !playerTurn;
         for (const el of this._editorOnEnd || []) el.hidden = repeats;
     }
 
-    _hasDraftMedia() {
-        const draft = this._draft;
-        if (!draft || !draft.kind) return false;
-        if (draft.kind === "audio") {
-            return (
-                !!(draft.audioBlob && draft.audioBlob.size > 0) ||
-                !!CustomMessagesGame._normalizeAudioUrl(draft.audioUrl)
-            );
-        }
-        if (draft.kind === "prompt") return true;
-        return String(draft.text || "").trim().length > 0;
+    _syncEditorState() {
+        if (this._editorSubmit) this._editorSubmit.disabled = !!this._draft?._busy;
+        this._editorStageSync?.();
     }
 
-    _hasDraftContent() {
-        return this._hasDraftMedia();
-    }
-
-    _syncEditorOptionsVisibility() {
-        const mediaReady = this._hasDraftMedia();
-        if (this._editorOptions) this._editorOptions.hidden = !mediaReady;
-        if (this._editorSubmit) this._editorSubmit.disabled = !this._hasDraftContent();
-    }
-
+    /**
+     * The editor body: chat prompt, text to speak and audio, each optional, then which of them
+     * plays.
+     */
     _refreshEditorBody() {
         const body = this._editorBody;
         const draft = this._draft;
         if (!body || !draft) return;
         this._stopPreview();
         this._previewBtn = null;
+        this._editorAudioUrlInput = null;
+        this._editorStageSync = null;
         body.innerHTML = "";
 
-        const kindBtns = this._overlay?.querySelectorAll(".custom-messages-kind-btn") || [];
-        for (const btn of kindBtns) {
-            btn.classList.toggle("is-active", btn.dataset.kind === draft.kind);
+        const attachment = CustomMessagesGame._isTurnAttachment(draft);
+        const clearCheck = this._editorClearHistory;
+        if (clearCheck) {
+            // Player turn instructions join the current conversation, so they never clear it.
+            clearCheck.parentElement.hidden = attachment;
+            clearCheck.checked = !!draft.clearHistory;
         }
 
-        if (!draft.kind) {
-            const hint = document.createElement("p");
-            hint.className = "custom-messages-hint muted";
-            hint.textContent = "Choose Audio, Txt, or Prompt.";
-            body.appendChild(hint);
-            this._syncEditorOptionsVisibility();
-            return;
-        }
-
-        if (draft.kind === "audio") {
-            this._renderAudioEditor(body, draft);
-        } else {
-            this._renderTextEditor(body, draft);
-        }
+        this._renderPromptStage(body, draft, attachment);
+        const syncs = [
+            this._renderSpeechStage(body, draft, attachment),
+            this._renderAudioStage(body, draft),
+            this._renderPlaysNote(body, draft)
+        ];
+        this._editorStageSync = () => {
+            for (const sync of syncs) sync();
+        };
         this._syncTriggerOptions();
-        this._syncEditorOptionsVisibility();
+        this._syncEditorState();
     }
 
-    _renderAudioEditor(body, draft) {
+    /** A titled block of the editor body. @returns {HTMLElement} */
+    _stageSection(body, title, optional = false) {
+        const section = document.createElement("section");
+        section.className = "custom-messages-stage";
+        const heading = document.createElement("h3");
+        heading.className = "custom-messages-stage-title";
+        heading.textContent = title;
+        if (optional) {
+            const note = document.createElement("span");
+            note.className = "muted";
+            note.textContent = " (optional)";
+            heading.appendChild(note);
+        }
+        section.appendChild(heading);
+        body.appendChild(section);
+        return section;
+    }
+
+    /** "When triggered: …", kept current as the stages change. @returns {() => void} */
+    _renderPlaysNote(body, draft) {
+        const note = document.createElement("p");
+        note.className = "custom-messages-plays-note";
+        body.appendChild(note);
+        return () => {
+            const stage = CustomMessagesGame._playStage(draft);
+            if (CustomMessagesGame._isTurnAttachment(draft)) {
+                const instruction = !!String(draft.text || "").trim();
+                const limit = CustomMessagesGame._messageMaxWords(draft) > 0;
+                const added =
+                    instruction && limit
+                        ? "the instruction and word limit"
+                        : instruction
+                          ? "the instruction"
+                          : limit
+                            ? "the word limit"
+                            : "";
+                const steps = [];
+                if (added) steps.push(`adds ${added} to the player's message`);
+                if (CustomMessagesGame._messageReasoningEffort(draft)) {
+                    steps.push("sets the reasoning level");
+                }
+                if (stage === "audio") steps.push("plays the audio after the reply");
+                if (stage === "text") steps.push("speaks the text to speak (TTS) after the reply");
+                note.textContent = steps.length
+                    ? `When triggered: ${steps.join(", ")}.`
+                    : "When triggered: nothing changes. Add an instruction, word limit, reasoning level, text to speak or audio.";
+                return;
+            }
+            note.textContent =
+                stage === "audio"
+                    ? "When triggered: plays the audio."
+                    : stage === "text"
+                      ? "When triggered: speaks the text to speak (TTS)."
+                      : "When triggered: sends the prompt to the agent, which replies live.";
+        };
+    }
+
+    /**
+     * Status for a stage: its running generation, its last error, or `idle`.
+     * @param {"speech"|"audio"} stage
+     * @returns {[string, string]} text and tone
+     */
+    static _stageStatus(draft, stage, idle, idleTone = "muted") {
+        if (draft._busy?.stage === stage) return [draft._busy.label, "warn"];
+        if (draft._stageError?.stage === stage) return [draft._stageError.message, "error"];
+        return [idle, idleTone];
+    }
+
+    /**
+     * Runs a generation step for `stage` with the editor's generate buttons disabled. The job
+     * writes its result to the draft, so it survives re-renders while it runs.
+     * @param {object} draft
+     * @param {"speech"|"audio"} stage
+     * @param {string} label shown while it runs
+     * @param {(agent: object) => Promise<void>} job
+     */
+    async _runStageJob(draft, stage, label, job) {
+        draft._stageError = null;
+        const agent = this._getAgent();
+        if (!agent) {
+            draft._stageError = { stage, message: "The agent isn't available." };
+            this._refreshEditorBody();
+            return;
+        }
+        draft._busy = { stage, label };
+        this._refreshEditorBody();
+        try {
+            await job(agent);
+        } catch (err) {
+            console.warn("Custom generate failed:", err);
+            draft._stageError = { stage, message: err?.message || "Request failed." };
+        } finally {
+            draft._busy = null;
+            if (this._draft === draft) this._refreshEditorBody();
+        }
+    }
+
+    _renderAudioEditor(body, draft, { emptyHint = "Record a clip, upload an audio file, or paste a URL." } = {}) {
         const status = document.createElement("p");
         const showStatus = () => {
             if (CustomMessagesGame._normalizeAudioUrl(draft.audioUrl)) {
@@ -1990,7 +2158,7 @@ class CustomMessagesGame {
                 status.textContent = `Ready: ${draft.fileName || "Recording"}`;
                 status.className = "custom-messages-status ok";
             } else {
-                status.textContent = "Record a clip, upload an audio file, or paste a URL.";
+                status.textContent = emptyHint;
                 status.className = "custom-messages-status muted";
             }
         };
@@ -2034,7 +2202,7 @@ class CustomMessagesGame {
             urlInput.value = "";
             showStatus();
             this._syncPreviewButton();
-            this._syncEditorOptionsVisibility();
+            this._syncEditorState();
         });
         uploadBtn.addEventListener("click", () => fileInput.click());
 
@@ -2056,7 +2224,7 @@ class CustomMessagesGame {
             }
             showStatus();
             this._syncPreviewButton();
-            this._syncEditorOptionsVisibility();
+            this._syncEditorState();
         });
         this._editorAudioUrlInput = urlInput;
 
@@ -2068,6 +2236,7 @@ class CustomMessagesGame {
         body.appendChild(urlInput);
         body.appendChild(status);
         this._syncPreviewButton();
+        return { status, showStatus, recordBtn, uploadBtn, urlInput };
     }
 
     _syncPreviewButton() {
@@ -2121,105 +2290,114 @@ class CustomMessagesGame {
         this._syncPreviewButton();
     }
 
-    _renderTextEditor(body, draft) {
+    /** Upload file button that reads a .txt file into `onText`. @returns {HTMLElement} the row */
+    _textUploadRow(onText, status) {
+        const row = document.createElement("div");
+        row.className = "custom-messages-media-row";
+        const uploadBtn = document.createElement("button");
+        uploadBtn.type = "button";
+        uploadBtn.className = "custom-messages-upload secondary";
+        uploadBtn.textContent = "Upload file";
+        const fileInput = document.createElement("input");
+        fileInput.type = "file";
+        fileInput.accept = ".txt,text/plain";
+        fileInput.hidden = true;
+        fileInput.addEventListener("change", async () => {
+            const file = fileInput.files?.[0];
+            fileInput.value = "";
+            if (!file) return;
+            try {
+                onText(await file.text());
+                status.textContent = `Loaded: ${file.name || "text file"}`;
+                status.className = "custom-messages-status ok";
+                this._syncEditorState();
+            } catch (err) {
+                status.textContent = err?.message || "Could not read file.";
+                status.className = "custom-messages-status error";
+            }
+        });
+        uploadBtn.addEventListener("click", () => fileInput.click());
+        row.appendChild(uploadBtn);
+        row.appendChild(fileInput);
+        return row;
+    }
+
+    /** Chat prompt stage; on the Player turn trigger it is the turn's instruction instead. */
+    _renderPromptStage(parent, draft, attachment) {
+        const body = this._stageSection(parent, attachment ? "Instruction" : "Chat prompt", true);
         const status = document.createElement("p");
         status.className = "custom-messages-status muted";
-        const attachment = CustomMessagesGame._isTurnAttachment(draft);
-        if (draft.fileName && draft.text) {
-            status.textContent = `Loaded: ${draft.fileName}`;
-            status.className = "custom-messages-status ok";
-        } else if (attachment) {
-            status.textContent =
-                "Added to the player's message on this turn as a hidden instruction, e.g. \"Wrap up the game now.\"";
-        } else if (draft.kind === "prompt") {
-            status.textContent =
-                "Type a prompt or leave empty. Sent to the agent (not TTS). Clears chat history by default.";
-        } else {
-            status.textContent = "Type text or upload a text file. Spoken with TTS.";
-        }
+        status.textContent = attachment
+            ? "Added to the player's message on this turn as an instruction, with the word limit, e.g. \"Wrap up the game now.\" A reasoning level applies from this reply on. Can be left empty: a word limit or reasoning level other than No change still applies, even with text to speak or audio."
+            : "Sent to the agent when triggered, unless there is text to speak or audio below. Can be left empty.";
 
         const input = document.createElement("textarea");
         input.className = "custom-messages-text";
         input.rows = 4;
         input.placeholder = attachment
             ? "Instruction added to the player's message…"
-            : draft.kind === "prompt"
-              ? "Prompt text for the agent (optional)…"
-              : "Text to speak (TTS)…";
+            : "Prompt text for the agent (optional)…";
         input.value = draft.text || "";
         input.addEventListener("input", () => {
             draft.text = input.value;
-            draft.fileName = draft.fileName && /\.txt$/i.test(draft.fileName) ? draft.fileName : "";
-            this._syncEditorOptionsVisibility();
+            this._syncEditorState();
         });
         body.appendChild(input);
 
-        if (draft.kind === "prompt" && !attachment) {
-            if (draft.clearHistory === undefined) draft.clearHistory = true;
-            draft.maxWords = CustomMessagesGame._normalizeMaxWords(draft.maxWords);
-            draft.reasoningEffort = CustomMessagesGame._normalizeReasoningEffort(
-                draft.reasoningEffort
-            );
+        const settings = document.createElement("div");
+        settings.className = "custom-messages-prompt-settings";
 
-            const settings = document.createElement("div");
-            settings.className = "custom-messages-prompt-settings";
+        const maxWords = CustomMessagesGame._messageMaxWords(draft);
+        const maxWordsLabel = document.createElement("label");
+        maxWordsLabel.textContent = "Max words";
+        const maxWordsSelect = document.createElement("select");
+        maxWordsSelect.className = "custom-messages-max-words";
+        const wordOptions = [...CustomMessagesGame.PROMPT_MAX_WORDS];
+        if (maxWords > 0 && !wordOptions.includes(maxWords)) {
+            wordOptions.push(maxWords);
+            wordOptions.sort((a, b) => a - b);
+        }
+        if (attachment || !draft.clearHistory) {
+            wordOptions.unshift(CustomMessagesGame.MAX_WORDS_UNCHANGED);
+        }
+        for (const n of wordOptions) {
+            const opt = document.createElement("option");
+            opt.value = String(n);
+            opt.textContent = n > 0 ? String(n) : "No change";
+            maxWordsSelect.appendChild(opt);
+        }
+        maxWordsSelect.value = String(maxWords);
+        maxWordsSelect.addEventListener("change", () => {
+            draft.maxWords = CustomMessagesGame._normalizeMaxWords(maxWordsSelect.value);
+            this._syncEditorState();
+        });
+        maxWordsLabel.appendChild(maxWordsSelect);
+        settings.appendChild(maxWordsLabel);
 
-            const maxWordsLabel = document.createElement("label");
-            maxWordsLabel.textContent = "Max words";
-            const maxWordsSelect = document.createElement("select");
-            maxWordsSelect.className = "custom-messages-max-words";
-            const wordOptions = [...CustomMessagesGame.PROMPT_MAX_WORDS];
-            if (!wordOptions.includes(draft.maxWords)) {
-                wordOptions.push(draft.maxWords);
-                wordOptions.sort((a, b) => a - b);
-            }
-            for (const n of wordOptions) {
-                const opt = document.createElement("option");
-                opt.value = String(n);
-                opt.textContent = n ? String(n) : "No limit";
-                maxWordsSelect.appendChild(opt);
-            }
-            maxWordsSelect.value = String(draft.maxWords);
-            maxWordsSelect.addEventListener("change", () => {
-                draft.maxWords = CustomMessagesGame._normalizeMaxWords(maxWordsSelect.value);
-            });
-            maxWordsLabel.appendChild(maxWordsSelect);
+        // Player turn prompts keep the current level for later messages unless one is picked.
+        const reasoningLabel = document.createElement("label");
+        reasoningLabel.textContent = "Reasoning";
+        const reasoningSelect = document.createElement("select");
+        reasoningSelect.className = "custom-messages-reasoning";
+        const efforts = attachment
+            ? [{ id: "", label: "No change" }, ...CustomMessagesGame.REASONING_EFFORTS]
+            : CustomMessagesGame.REASONING_EFFORTS;
+        for (const r of efforts) {
+            const opt = document.createElement("option");
+            opt.value = r.id;
+            opt.textContent = r.label;
+            reasoningSelect.appendChild(opt);
+        }
+        reasoningSelect.value = CustomMessagesGame._messageReasoningEffort(draft);
+        reasoningSelect.addEventListener("change", () => {
+            draft.reasoningEffort = reasoningSelect.value;
+            this._syncEditorState();
+        });
+        reasoningLabel.appendChild(reasoningSelect);
+        settings.appendChild(reasoningLabel);
+        body.appendChild(settings);
 
-            const reasoningLabel = document.createElement("label");
-            reasoningLabel.textContent = "Reasoning";
-            const reasoningSelect = document.createElement("select");
-            reasoningSelect.className = "custom-messages-reasoning";
-            for (const r of CustomMessagesGame.REASONING_EFFORTS) {
-                const opt = document.createElement("option");
-                opt.value = r.id;
-                opt.textContent = r.label;
-                reasoningSelect.appendChild(opt);
-            }
-            reasoningSelect.value = draft.reasoningEffort;
-            reasoningSelect.addEventListener("change", () => {
-                draft.reasoningEffort = CustomMessagesGame._normalizeReasoningEffort(
-                    reasoningSelect.value
-                );
-            });
-            reasoningLabel.appendChild(reasoningSelect);
-
-            settings.appendChild(maxWordsLabel);
-            settings.appendChild(reasoningLabel);
-            body.appendChild(settings);
-
-            const clearLabel = document.createElement("label");
-            clearLabel.className = "custom-messages-camera-label";
-            const clearCheck = document.createElement("input");
-            clearCheck.type = "checkbox";
-            clearCheck.className = "custom-messages-clear-history";
-            clearCheck.checked = draft.clearHistory !== false;
-            clearCheck.addEventListener("change", () => {
-                draft.clearHistory = !!clearCheck.checked;
-            });
-            clearLabel.appendChild(clearCheck);
-            clearLabel.appendChild(document.createTextNode(" Clear chat history"));
-            body.appendChild(clearLabel);
-
+        if (!attachment) {
             const cameraLabel = document.createElement("label");
             cameraLabel.className = "custom-messages-camera-label";
             const cameraCheck = document.createElement("input");
@@ -2230,45 +2408,207 @@ class CustomMessagesGame {
                 draft.sendCamera = !!cameraCheck.checked;
             });
             cameraLabel.appendChild(cameraCheck);
-            cameraLabel.appendChild(document.createTextNode(" Camera"));
+            cameraLabel.appendChild(document.createTextNode(" Camera (when sent live)"));
             body.appendChild(cameraLabel);
         }
 
+        body.appendChild(
+            this._textUploadRow((text) => {
+                draft.text = text;
+                input.value = text;
+            }, status)
+        );
+        body.appendChild(status);
+    }
+
+    /**
+     * Text to speak stage: typed, uploaded, or generated from the prompt (the character's bio and
+     * speech guidelines, no chat history). A Player turn instruction isn't a standalone prompt,
+     * so there is nothing to generate from.
+     * @returns {() => void} sync
+     */
+    _renderSpeechStage(parent, draft, attachment) {
+        const body = this._stageSection(parent, "Text to speak", true);
+        const owner = this._ownerCharacter();
+        const speaker = owner?.name || "the character";
+        const getText = () => String(draft.speechText || "");
+        const setText = (text) => {
+            draft.speechText = text;
+        };
+
+        const status = document.createElement("p");
+        const [idle, tone] = CustomMessagesGame._stageStatus(
+            draft,
+            "speech",
+            attachment
+                ? `What ${speaker} says after replying: type it or upload a text file. Spoken with TTS.`
+                : `What ${speaker} says: generate it from the prompt (without chat history), type it, or upload a text file. Spoken with TTS instead of sending the prompt.`
+        );
+        status.textContent = idle;
+        status.className = `custom-messages-status ${tone}`;
+
+        let generateBtn = null;
+        if (!attachment) {
+            const row = document.createElement("div");
+            row.className = "custom-messages-media-row";
+            generateBtn = document.createElement("button");
+            generateBtn.type = "button";
+            generateBtn.className = "secondary";
+            generateBtn.disabled = !!draft._busy;
+            generateBtn.addEventListener("click", () => {
+                if (!String(draft.text || "").trim()) {
+                    draft._stageError = { stage: "speech", message: "Type a prompt first." };
+                    this._refreshEditorBody();
+                    return;
+                }
+                void this._runStageJob(draft, "speech", `Asking ${speaker}…`, async (agent) => {
+                    const reply = await agent.generateReply(
+                        CustomMessagesGame._composePromptText(
+                            draft.text,
+                            CustomMessagesGame._messageMaxWords(draft)
+                        ),
+                        {
+                            character: owner,
+                            reasoningEffort: CustomMessagesGame._normalizeReasoningEffort(
+                                draft.reasoningEffort
+                            )
+                        }
+                    );
+                    if (!String(reply || "").trim()) {
+                        throw new Error("The agent sent back an empty reply.");
+                    }
+                    draft.speechText = reply.trim();
+                });
+            });
+            row.appendChild(generateBtn);
+            body.appendChild(row);
+        }
+
+        const input = document.createElement("textarea");
+        input.className = "custom-messages-text custom-messages-speech";
+        input.rows = 4;
+        input.placeholder = `What ${speaker} says (optional)…`;
+        input.value = getText();
+        input.disabled = draft._busy?.stage === "speech";
+        input.addEventListener("input", () => {
+            setText(input.value);
+            this._syncEditorState();
+        });
+        body.appendChild(input);
+
+        body.appendChild(
+            this._textUploadRow((text) => {
+                setText(text);
+                input.value = text;
+            }, status)
+        );
+        body.appendChild(status);
+
+        return () => {
+            if (generateBtn) {
+                generateBtn.textContent = getText().trim()
+                    ? "Regenerate from prompt"
+                    : "Generate from prompt";
+            }
+        };
+    }
+
+    /**
+     * Audio stage: generated from the text to speak in the character's voice, recorded, uploaded
+     * or linked; once there it plays instead of the text.
+     * @returns {() => void} sync
+     */
+    _renderAudioStage(parent, draft) {
+        const body = this._stageSection(parent, "Audio", true);
+        const owner = this._ownerCharacter();
         const row = document.createElement("div");
         row.className = "custom-messages-media-row";
-
-        const uploadBtn = document.createElement("button");
-        uploadBtn.type = "button";
-        uploadBtn.className = "custom-messages-upload secondary";
-        uploadBtn.textContent = "Upload file";
-
-        const fileInput = document.createElement("input");
-        fileInput.type = "file";
-        fileInput.accept = ".txt,text/plain";
-        fileInput.hidden = true;
-        fileInput.addEventListener("change", async () => {
-            const file = fileInput.files?.[0];
-            fileInput.value = "";
-            if (!file) return;
-            try {
-                const text = await file.text();
-                draft.text = text;
-                draft.fileName = file.name || "upload.txt";
-                input.value = text;
-                status.textContent = `Loaded: ${draft.fileName}`;
-                status.className = "custom-messages-status ok";
-                this._syncEditorOptionsVisibility();
-            } catch (err) {
-                status.textContent = err?.message || "Could not read file.";
-                status.className = "custom-messages-status error";
+        const generateBtn = document.createElement("button");
+        generateBtn.type = "button";
+        generateBtn.className = "secondary";
+        generateBtn.disabled = !!draft._busy;
+        generateBtn.addEventListener("click", () => {
+            const text = CustomMessagesGame._speechText(draft);
+            if (!text) {
+                draft._stageError = { stage: "audio", message: "Add text to speak first." };
+                this._refreshEditorBody();
+                return;
             }
+            void this._runStageJob(draft, "audio", "Making audio…", async (agent) => {
+                const blob = await agent.synthesizeSpeechFile(text, { voice: owner?.voice });
+                if (this._draft === draft) this._stopPreview();
+                draft.audioBlob = blob;
+                draft.audioUrl = "";
+                draft._audioBase64 = null;
+                draft.fileName = CustomMessagesGame._clipNameFromText(text);
+                draft._generatedAudio = { blob, text };
+            });
         });
-        uploadBtn.addEventListener("click", () => fileInput.click());
-
-        row.appendChild(uploadBtn);
-        row.appendChild(fileInput);
+        const removeBtn = document.createElement("button");
+        removeBtn.type = "button";
+        removeBtn.className = "secondary custom-messages-delete";
+        removeBtn.textContent = "Remove audio";
+        removeBtn.disabled = !!draft._busy;
+        removeBtn.addEventListener("click", () => {
+            this._stopRecording(true);
+            this._stopPreview();
+            draft.audioBlob = null;
+            draft.audioUrl = "";
+            draft._audioBase64 = null;
+            draft.fileName = "";
+            draft._generatedAudio = null;
+            draft._stageError = null;
+            this._refreshEditorBody();
+        });
+        row.appendChild(generateBtn);
+        row.appendChild(removeBtn);
         body.appendChild(row);
-        body.appendChild(status);
+
+        const audio = this._renderAudioEditor(body, draft, {
+            emptyHint: "Generate it from the text to speak, record a clip, upload a file, or paste a URL."
+        });
+        const busyHere = draft._busy?.stage === "audio";
+        if (busyHere) {
+            audio.recordBtn.disabled = true;
+            audio.uploadBtn.disabled = true;
+            audio.urlInput.disabled = true;
+        }
+
+        return () => {
+            const hasAudio = CustomMessagesGame._hasAudio(draft);
+            generateBtn.textContent = hasAudio ? "Regenerate from text" : "Generate from text";
+            removeBtn.hidden = !hasAudio;
+            const [text, tone] = CustomMessagesGame._stageStatus(draft, "audio", "");
+            if (text) {
+                audio.status.textContent = text;
+                audio.status.className = `custom-messages-status ${tone}`;
+            } else if (this._recording) {
+                // Keep "Recording…" up until Stop.
+            } else if (
+                draft._generatedAudio &&
+                draft.audioBlob === draft._generatedAudio.blob &&
+                draft._generatedAudio.text !== CustomMessagesGame._speechText(draft)
+            ) {
+                audio.status.textContent =
+                    "The text to speak has changed since this audio was made. Regenerate it to match.";
+                audio.status.className = "custom-messages-status warn";
+            } else {
+                audio.showStatus();
+            }
+        };
+    }
+
+    /** e.g. "welcome-back-traveller-sit.wav" from the first words of the spoken text. */
+    static _clipNameFromText(text) {
+        const stem = String(text || "")
+            .toLowerCase()
+            .replace(/\[[^\]]*\]/g, " ")
+            .replace(/[^a-z0-9\s-]+/g, "")
+            .split(/\s+/)
+            .filter(Boolean)
+            .slice(0, 4)
+            .join("-");
+        return `${stem || "reply"}.wav`;
     }
 
     async _toggleRecord(recordBtn, statusEl) {
@@ -2280,7 +2620,7 @@ class CustomMessagesGame {
                 statusEl.className = "custom-messages-status ok";
             }
             this._syncPreviewButton();
-            this._syncEditorOptionsVisibility();
+            this._syncEditorState();
             return;
         }
         this._stopPreview();
@@ -2422,16 +2762,15 @@ class CustomMessagesGame {
 
     async _submitDraft() {
         const draft = this._draft;
-        if (!draft || !this._hasDraftContent()) return;
+        if (!draft || draft._busy) return;
         if (this._recording) await this._stopRecording(false);
 
         const trigger = draft.trigger || "gameLoad";
-        const audioUrl =
-            draft.kind === "audio" ? CustomMessagesGame._normalizeAudioUrl(draft.audioUrl) : "";
-        const attachment = CustomMessagesGame._isTurnAttachment({ kind: draft.kind, trigger });
+        const attachment = CustomMessagesGame._isTurnAttachment({ trigger });
+        const audioUrl = CustomMessagesGame._normalizeAudioUrl(draft.audioUrl);
+        const audioBlob = !audioUrl && draft.audioBlob?.size > 0 ? draft.audioBlob : null;
         const msg = {
             id: draft.id || CustomMessagesGame._newId(),
-            kind: draft.kind,
             trigger,
             turnNumber: CustomMessagesGame._normalizeTurnNumber(draft.turnNumber),
             loop: draft.loop === "repeat" ? "repeat" : "once",
@@ -2439,14 +2778,22 @@ class CustomMessagesGame {
             delaySec: attachment ? 0 : CustomMessagesGame._normalizeDelaySec(draft.delaySec),
             constraints: CustomMessagesGame._normalizeConstraints(draft.constraints),
             text: String(draft.text || ""),
-            fileName: String(draft.fileName || ""),
-            sendCamera: draft.kind === "prompt" && !attachment && !!draft.sendCamera,
-            clearHistory: draft.kind === "prompt" && !attachment && draft.clearHistory !== false,
-            maxWords: CustomMessagesGame._normalizeMaxWords(draft.maxWords),
-            reasoningEffort: CustomMessagesGame._normalizeReasoningEffort(draft.reasoningEffort),
+            speechText: String(draft.speechText || ""),
+            fileName: audioUrl || audioBlob ? String(draft.fileName || "") : "",
+            sendCamera: !attachment && !!draft.sendCamera,
+            clearHistory: !attachment && !!draft.clearHistory,
+            maxWords: CustomMessagesGame._messageMaxWords({
+                trigger,
+                clearHistory: !attachment && !!draft.clearHistory,
+                maxWords: draft.maxWords
+            }),
+            reasoningEffort: CustomMessagesGame._messageReasoningEffort({
+                trigger,
+                reasoningEffort: draft.reasoningEffort
+            }),
             audioUrl,
             audioKey: "",
-            audioBlob: draft.kind === "audio" && !audioUrl ? draft.audioBlob : null,
+            audioBlob,
             _audioBase64: null,
             _audioMime: ""
         };
@@ -2633,7 +2980,7 @@ class CustomMessagesGame {
      * @param {CustomMessage} msg
      */
     static _speechFinishedMayRetriggerFromOwnSpeech(msg) {
-        return msg?.kind === "prompt";
+        return CustomMessagesGame._playStage(msg) === "prompt";
     }
 
     async _onSpeechTick(generation) {
@@ -2842,9 +3189,10 @@ class CustomMessagesGame {
             if (!confirmed || !this._isActive(generation)) return false;
         }
 
+        const stage = CustomMessagesGame._playStage(msg);
         const delayMs = CustomMessagesGame._normalizeDelaySec(msg.delaySec) * 1000;
         // Photo prompts own the delay as the on-camera countdown timer.
-        const cameraOwnsDelay = msg.kind === "prompt" && !!msg.sendCamera;
+        const cameraOwnsDelay = stage === "prompt" && !!msg.sendCamera;
         if (delayMs > 0 && !cameraOwnsDelay) {
             const delayed = await this._sleep(delayMs, generation);
             if (!delayed) return false;
@@ -2855,11 +3203,14 @@ class CustomMessagesGame {
         onStart?.();
         this._audioBusy = true;
         try {
-            if (msg.kind === "audio") {
+            // Live prompts clear it themselves, just before they are sent.
+            if (msg.clearHistory && stage !== "prompt") this._clearChatHistory();
+            if (stage === "audio" || stage === "text") this._recordSpokenTurn(msg);
+            if (stage === "audio") {
                 await this._playAudio(msg, generation);
-            } else if (msg.kind === "text") {
+            } else if (stage === "text") {
                 await this._playText(msg, generation);
-            } else if (msg.kind === "prompt") {
+            } else if (stage === "prompt") {
                 await this._playPrompt(msg, generation);
             }
         } finally {
@@ -2880,9 +3231,10 @@ class CustomMessagesGame {
 
     /**
      * Called by the agent as a player message is about to be sent. Counts the turn and returns
-     * the text of any Player turn prompts due now (to append to that message), plus `finish`,
-     * which the agent calls once the reply has been spoken, or with false if the request failed.
-     * @returns {{ text: string, finish: (ok: boolean) => void }}
+     * the text of any Player turn prompts due now (to append to that message), the reasoning
+     * level they set ("" = no change), plus `finish`, which the agent calls once the reply has
+     * been spoken, or with false if the request failed.
+     * @returns {{ text: string, reasoningEffort: string, finish: (ok: boolean) => void }}
      */
     beginPlayerTurn() {
         const generation = this._generation;
@@ -2896,41 +3248,45 @@ class CustomMessagesGame {
                 !(m.loop === "once" && this._firedOnceIds.has(m.id)) &&
                 this._constraintsMet(m)
         );
-        const prompts = due.filter((m) => m.kind === "prompt");
-        const others = due.filter((m) => m.kind !== "prompt");
-        for (const msg of prompts) {
+        for (const msg of due) {
             if (msg.loop === "once") this._firedOnceIds.add(msg.id);
         }
-        if (prompts.some((m) => CustomMessagesGame._isEnding(m.onEnd))) this._endPending = true;
+        if (due.some((m) => CustomMessagesGame._isEnding(m.onEnd))) this._endPending = true;
         if (due.length) {
             this._chainEpoch += 1;
             this._debugLog("Player turn", turn, due.map((m) => CustomMessagesGame.tileLabel(m)));
         }
-        const text = prompts
-            .map((m) => String(m.text || "").trim())
+        const text = due
+            .map((m) => CustomMessagesGame._composePromptText(m.text, m.maxWords))
             .filter(Boolean)
             .join("\n\n");
+        const reasoningEffort =
+            due
+                .map((m) => CustomMessagesGame._normalizeTurnReasoningEffort(m.reasoningEffort))
+                .filter(Boolean)
+                .pop() || "";
         let finished = false;
         return {
             text,
+            reasoningEffort,
             finish: (ok) => {
                 if (finished) return;
                 finished = true;
-                this._finishPlayerTurn({ turn, generation, prompts, others }, ok);
+                this._finishPlayerTurn({ turn, generation, due }, ok);
             }
         };
     }
 
     /**
-     * Plays the turn's audio / text actions, then ends the game if an attached prompt asked to.
+     * Plays the turn's text to speak / audio, then ends the game if one of its actions asked to.
      * A failed request un-counts the turn so its actions fire on the next attempt.
      */
     _finishPlayerTurn(pending, ok) {
         if (!this._isActive(pending.generation)) return;
         if (!ok) {
             if (this._playerTurn === pending.turn) this._playerTurn -= 1;
-            for (const msg of pending.prompts) this._firedOnceIds.delete(msg.id);
-            if (pending.prompts.some((m) => CustomMessagesGame._isEnding(m.onEnd))) {
+            for (const msg of pending.due) this._firedOnceIds.delete(msg.id);
+            if (pending.due.some((m) => CustomMessagesGame._isEnding(m.onEnd))) {
                 this._endPending = false;
             }
             return;
@@ -2938,21 +3294,20 @@ class CustomMessagesGame {
         void this._runTurnFollowUps(pending);
     }
 
-    async _runTurnFollowUps({ generation, prompts, others }) {
-        for (const msg of others) {
+    async _runTurnFollowUps({ generation, due }) {
+        for (const msg of due) {
             if (!this._isActive(generation)) return;
-            if (msg.loop === "once" && this._firedOnceIds.has(msg.id)) continue;
-            const played = await this._playMessage(msg, generation, { turnFollowUp: true });
-            if (played && msg.loop === "once") this._firedOnceIds.add(msg.id);
+            if (!CustomMessagesGame._hasSpokenContent(msg)) continue;
+            await this._playOne(msg, generation, { turnFollowUp: true });
         }
         if (!this._isActive(generation)) return;
-        const ender = prompts.find((m) => CustomMessagesGame._isEnding(m.onEnd));
+        const ender = due.find((m) => CustomMessagesGame._isEnding(m.onEnd));
         if (ender) {
             this._endGame(generation, ender.onEnd.slice("end:".length));
             return;
         }
-        // Attached prompts carry on from their On end once the reply has been spoken.
-        const chained = prompts.find((m) => CustomMessagesGame._normalizeOnEnd(m.onEnd));
+        // The turn's actions carry on from their On end once the reply has been spoken.
+        const chained = due.find((m) => CustomMessagesGame._normalizeOnEnd(m.onEnd));
         if (chained) await this._playAfter(chained, generation, this._chainEpoch);
     }
 
@@ -3001,12 +3356,13 @@ class CustomMessagesGame {
         if (!this._isActive(generation)) return false;
 
         const triggerLabel = CustomMessagesGame._triggerLabel(msg.trigger);
+        const stage = CustomMessagesGame._playStage(msg);
         const kindLabel =
-            msg.kind === "prompt"
+            stage === "prompt"
                 ? msg.sendCamera
                     ? "Prompt + camera photo"
                     : "Prompt"
-                : msg.kind === "audio"
+                : stage === "audio"
                   ? "Audio clip"
                   : "Text (TTS)";
         const text = String(msg.text || "").trim();
@@ -3181,7 +3537,7 @@ class CustomMessagesGame {
     }
 
     async _playText(msg, generation) {
-        const text = String(msg.text || "").trim();
+        const text = CustomMessagesGame._speechText(msg);
         if (!text) return;
         const agent = this._getAgent();
         if (agent && typeof agent._speakAsync === "function") {
@@ -3206,26 +3562,47 @@ class CustomMessagesGame {
         return this._isActive(generation);
     }
 
+    /**
+     * Put what the action says into the chat history, as a live prompt would be: the prompt (if
+     * any) as the user turn and the text to speak as the reply. Audio from a file with no text
+     * to speak adds nothing, since what it says isn't known.
+     */
+    _recordSpokenTurn(msg) {
+        const said = CustomMessagesGame._speechText(msg);
+        const agent = this._getAgent();
+        if (!said || typeof agent?.recordSpokenTurn !== "function") return;
+        const prompt =
+            String(msg.text || "").trim() && !CustomMessagesGame._isTurnAttachment(msg)
+                ? CustomMessagesGame._composePromptText(msg.text, msg.maxWords)
+                : "";
+        agent.recordSpokenTurn(said, { prompt });
+    }
+
+    /** Empty the agent's chat history; the player-turn count starts again with it. */
+    _clearChatHistory() {
+        const agent = this._getAgent();
+        if (agent) {
+            agent.messageHistory = [];
+            if (typeof agent._renderHistory === "function") agent._renderHistory();
+        }
+        this._playerTurn = 0;
+        for (const m of this.messages) {
+            if (m.trigger === "playerTurn") this._firedOnceIds.delete(m.id);
+        }
+    }
+
     async _playPrompt(msg, generation) {
         const text = CustomMessagesGame._composePromptText(msg.text, msg.maxWords);
         const reasoningEffort = CustomMessagesGame._normalizeReasoningEffort(msg.reasoningEffort);
         const sendCamera = !!msg.sendCamera;
-        const clearHistory = msg.clearHistory !== false;
+        const clearHistory = !!msg.clearHistory;
         const agent = this._getAgent();
         if (!agent || typeof agent.submitPrompt !== "function") {
             console.warn("Custom: agent unavailable for prompt.");
             return;
         }
         try {
-            if (clearHistory) {
-                agent.messageHistory = [];
-                if (typeof agent._renderHistory === "function") agent._renderHistory();
-                // A fresh conversation starts the player-turn count again.
-                this._playerTurn = 0;
-                for (const m of this.messages) {
-                    if (m.trigger === "playerTurn") this._firedOnceIds.delete(m.id);
-                }
-            }
+            if (clearHistory) this._clearChatHistory();
             const delaySec = CustomMessagesGame._normalizeDelaySec(msg.delaySec);
             // Always show the Simon-style timer for camera prompts (at least 1s), then flicker on capture.
             const cameraCountdownSeconds = sendCamera ? Math.max(1, Math.ceil(delaySec) || 1) : 0;
@@ -3264,7 +3641,6 @@ class CustomMessagesGame {
 /**
  * @typedef {object} CustomMessage
  * @property {string} id
- * @property {"audio"|"text"|"prompt"} kind
  * @property {string} trigger
  * @property {number} turnNumber Player turn trigger: fire on this turn, or every Nth turn when repeating.
  * @property {"once"|"repeat"} loop "repeat" replays it until another trigger plays something or
@@ -3275,12 +3651,14 @@ class CustomMessagesGame {
  *   next game or that game.
  * @property {number} delaySec
  * @property {CustomMessageConstraints} constraints
- * @property {string} text
- * @property {string} fileName
+ * @property {string} text The prompt, or on Player turn the instruction; may be empty.
+ * @property {string} speechText Words to speak, generated from the prompt or typed; may be empty.
+ *   Audio plays instead of these, and these instead of sending the prompt (see `_playStage`).
+ * @property {string} fileName Audio clip name.
  * @property {boolean} sendCamera
  * @property {boolean} clearHistory
- * @property {number} maxWords Prompt reply word limit; 0 = no limit.
- * @property {"low"|"medium"|"high"} reasoningEffort Sets the talking-head reasoning level when the prompt is sent.
+ * @property {number} maxWords Prompt reply word limit, at most MAX_PROMPT_WORDS; MAX_WORDS_UNCHANGED appends nothing.
+ * @property {""|"low"|"medium"|"high"} reasoningEffort Sets the talking-head reasoning level when the prompt is sent; "" (Player turn only) = no change.
  * @property {string} audioUrl Audio file URL (absolute or app-relative); when set it replaces the stored clip.
  * @property {{ src: string, blob: Blob|null }} [_urlFetch] Cached fetch of `audioUrl` (blob null = fetch blocked).
  * @property {string} audioKey IndexedDB key for the clip ("" when none / stored inline).

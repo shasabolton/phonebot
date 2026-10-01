@@ -685,8 +685,9 @@ class AgentInterface {
     /**
      * Cross-model reasoning_effort (low|medium|high). Prefer "low" for Talking Head.
      */
-    _resolveReasoningEffort(agent, _modelId) {
-        const raw = this._reasoningEffort || agent?.reasoningEffort || agent?.reasoning_effort || "low";
+    _resolveReasoningEffort(agent, _modelId, override = null) {
+        const raw =
+            override || this._reasoningEffort || agent?.reasoningEffort || agent?.reasoning_effort || "low";
         if (typeof window.GroqModelSelect?.normalizeReasoningEffort === "function") {
             return window.GroqModelSelect.normalizeReasoningEffort(raw);
         }
@@ -819,6 +820,83 @@ class AgentInterface {
             throw new Error("TTS returned empty audio.");
         }
         return new Blob([buf], { type: "audio/wav" });
+    }
+
+    /**
+     * All of `text` as one WAV Blob, for saving as a clip. Groq TTS takes ~200 characters per
+     * request, so longer text is synthesized in parts and joined.
+     * @param {string} text
+     * @param {{ voice?: string }} [options] voice defaults to the selected voice.
+     * @returns {Promise<Blob>}
+     */
+    async synthesizeSpeechFile(text, options = {}) {
+        const voice = String(options.voice || "").trim() || this._ttsVoice;
+        if (this._isBrowserTtsVoice(voice)) {
+            throw new Error("Web TTS can't make an audio file. Choose a different voice.");
+        }
+        const content = String(text || "").trim();
+        const chunks = this._isGeminiProvider()
+            ? [this._cleanSpeechText(content)].filter(Boolean)
+            : typeof window.GroqTts?.splitInput === "function"
+              ? window.GroqTts.splitInput(content)
+              : [content].filter(Boolean);
+        if (!chunks.length) throw new Error("Nothing to speak.");
+        const blobs = [];
+        for (const chunk of chunks) blobs.push(await this.synthesizeSpeechBlob(chunk, { voice }));
+        return blobs.length === 1 ? blobs[0] : this._joinAudioBlobs(blobs);
+    }
+
+    /** Decode clips and join them end to end as one mono 16-bit WAV. @param {Blob[]} blobs */
+    async _joinAudioBlobs(blobs) {
+        const Ctx = window.AudioContext || window.webkitAudioContext;
+        if (typeof Ctx !== "function") throw new Error("This browser can't join audio clips.");
+        const ctx = new Ctx();
+        try {
+            const decoded = [];
+            for (const blob of blobs) {
+                decoded.push(await ctx.decodeAudioData((await blob.arrayBuffer()).slice(0)));
+            }
+            const pcm = new Int16Array(decoded.reduce((n, b) => n + b.length, 0));
+            let offset = 0;
+            for (const buffer of decoded) {
+                const channels = Array.from({ length: buffer.numberOfChannels || 1 }, (_, c) =>
+                    buffer.getChannelData(c)
+                );
+                for (let i = 0; i < buffer.length; i++) {
+                    let sum = 0;
+                    for (const data of channels) sum += data[i] || 0;
+                    const x = Math.max(-1, Math.min(1, sum / channels.length));
+                    pcm[offset++] = x < 0 ? Math.round(x * 0x8000) : Math.round(x * 0x7fff);
+                }
+            }
+            return AgentInterface._pcm16ToWavBlob(pcm, ctx.sampleRate);
+        } finally {
+            try {
+                await ctx.close();
+            } catch (_) {}
+        }
+    }
+
+    /** Mono 16-bit PCM samples as a WAV Blob. @param {Int16Array} pcm @param {number} sampleRate */
+    static _pcm16ToWavBlob(pcm, sampleRate) {
+        const header = new DataView(new ArrayBuffer(44));
+        const writeStr = (offset, s) => {
+            for (let i = 0; i < s.length; i++) header.setUint8(offset + i, s.charCodeAt(i));
+        };
+        writeStr(0, "RIFF");
+        header.setUint32(4, 36 + pcm.byteLength, true);
+        writeStr(8, "WAVE");
+        writeStr(12, "fmt ");
+        header.setUint32(16, 16, true);
+        header.setUint16(20, 1, true);
+        header.setUint16(22, 1, true);
+        header.setUint32(24, sampleRate, true);
+        header.setUint32(28, sampleRate * 2, true);
+        header.setUint16(32, 2, true);
+        header.setUint16(34, 16, true);
+        writeStr(36, "data");
+        header.setUint32(40, pcm.byteLength, true);
+        return new Blob([header.buffer, pcm.buffer], { type: "audio/wav" });
     }
 
     _stopSpeaking() {
@@ -1992,30 +2070,38 @@ class AgentInterface {
     }
 
     /**
-     * Tell the active game a player message is going out. `text` is the game's hidden
-     * instruction for this turn; call `finish(ok)` once the reply has been spoken.
+     * Tell the active game a player message is going out. `text` is the game's instruction
+     * for this turn, and any reasoning level it sets applies from this request on; call
+     * `finish(ok)` once the reply has been spoken.
      * @returns {{ text: string, finish: (ok: boolean) => void }}
      */
     _beginGamePlayerTurn() {
         const game = this.robot?._localGame;
         const turn = typeof game?.beginPlayerTurn === "function" ? game.beginPlayerTurn() : null;
+        if (turn?.reasoningEffort) this.setReasoningEffort(turn.reasoningEffort);
         return {
             text: String(turn?.text || "").trim(),
             finish: typeof turn?.finish === "function" ? turn.finish : () => {}
         };
     }
 
-    /** Append a game's hidden per-turn instruction to an outbound user message. */
+    /** Append a game's per-turn instruction to a user message, as sent and as shown in the chat. */
     _withGameTurnInstruction(content, instruction) {
         const extra = String(instruction || "").trim();
         if (!extra) return content;
         return `${content}\n\nGame instruction (not said by the player):\n${extra}`;
     }
 
-    /** Active character's bio for robots with `characters: true`; "" when none. */
-    _characterPrompt() {
-        if (!this.robot?.config?.characters) return "";
-        const character = window.PhonebotCharacters?.activeCharacter?.();
+    /**
+     * Character bio prompt: `character` when given, else the active character for robots with
+     * `characters: true`; "" when none.
+     * @param {{ name?: string, bio?: string }|null} [character]
+     */
+    _characterPrompt(character = null) {
+        if (!character) {
+            if (!this.robot?.config?.characters) return "";
+            character = window.PhonebotCharacters?.activeCharacter?.();
+        }
         if (!character) return "";
         return [
             `You are ${character.name}. Stay in character in every reply, including while running games.`,
@@ -2049,8 +2135,10 @@ class AgentInterface {
     }
 
     /** Speech rules plus the character bio (when any), sent as one system message. */
-    _systemPrompt() {
-        return [this._speechStylePrompt(), this._characterPrompt()].filter(Boolean).join("\n\n");
+    _systemPrompt(character = null) {
+        return [this._speechStylePrompt(), this._characterPrompt(character)]
+            .filter(Boolean)
+            .join("\n\n");
     }
 
     /** Prepend the system prompt; rebuilt per request, never stored in history. */
@@ -2472,9 +2560,11 @@ class AgentInterface {
 
     /**
      * @param {string} userText
-     * @param {{ singleTurn?: boolean, messages?: Array<{role:string,content:string|unknown}> }} [options]
+     * @param {{ singleTurn?: boolean, messages?: Array<{role:string,content:string|unknown}>, systemPrompt?: string, reasoningEffort?: string }} [options]
      * If `messages` is provided, it is sent as-is (then the last user message gets the current camera image if available).
      * If singleTurn, only `userText` is sent as one user message.
+     * systemPrompt replaces the usual speech rules + active character bio ("" sends none).
+     * reasoningEffort applies to this request only.
      */
     async sendPrompt(userText, options = {}) {
         await this._ensureHostedAiCredit();
@@ -2531,7 +2621,12 @@ class AgentInterface {
                 conversationMessages.push({ role: "user", content: prompt });
             }
         }
-        conversationMessages = this._withSystemPrompt(conversationMessages);
+        if (typeof options.systemPrompt === "string") {
+            const system = options.systemPrompt.trim();
+            if (system) conversationMessages.unshift({ role: "system", content: system });
+        } else {
+            conversationMessages = this._withSystemPrompt(conversationMessages);
+        }
 
         let sendCameraImage;
         if (options.forceCameraImage === true) {
@@ -2595,7 +2690,7 @@ class AgentInterface {
         if (responseFormat) {
             body.response_format = responseFormat;
         }
-        const reasoningEffort = this._resolveReasoningEffort(agent, model);
+        const reasoningEffort = this._resolveReasoningEffort(agent, model, options.reasoningEffort);
         if (reasoningEffort) {
             body.reasoning_effort = reasoningEffort;
         }
@@ -3105,11 +3200,16 @@ class AgentInterface {
                 gameTurn.finish(false);
                 return false;
             }
-            const fullUserContent = this._buildUserTurnContent(stateBlock, "User said", userTranscript);
+            const fullUserContent = this._withGameTurnInstruction(
+                this._buildUserTurnContent(stateBlock, "User said", userTranscript),
+                gameTurn.text
+            );
             const outboundUser = await this._mergeIntroductionIntoFirstUserMessage(fullUserContent, prior.length);
             this.messageHistory.push({
                 role: "user",
-                text: prior.length ? userTranscript : outboundUser,
+                text: prior.length
+                    ? this._withGameTurnInstruction(userTranscript, gameTurn.text)
+                    : outboundUser,
                 fullPrompt: outboundUser,
                 at: new Date().toISOString()
             });
@@ -3216,7 +3316,7 @@ class AgentInterface {
             const conversationMessages = [...prior, { role: "user", content: outboundUser }];
             this.messageHistory.push({
                 role: "user",
-                text: prior.length ? text : outboundUser,
+                text: prior.length ? this._withGameTurnInstruction(text, gameTurn.text) : outboundUser,
                 fullPrompt: outboundUser,
                 at: new Date().toISOString()
             });
@@ -3392,7 +3492,9 @@ class AgentInterface {
             const rawText = JSON.stringify(result?.chat || {});
             this.messageHistory.push({
                 role: "user",
-                text: prior.length ? transcript : outboundUser,
+                text: prior.length
+                    ? this._withGameTurnInstruction(transcript, gameTurn.text)
+                    : outboundUser,
                 fullPrompt: outboundUser,
                 at: new Date().toISOString()
             });
@@ -3536,7 +3638,7 @@ class AgentInterface {
             if (!modeStillCurrent()) return;
             pendingUserTurn = {
                 role: "user",
-                text: prior.length ? text : outboundUser,
+                text: prior.length ? this._withGameTurnInstruction(text, gameTurn?.text) : outboundUser,
                 fullPrompt: outboundUser,
                 isKickoff: isKickoff || undefined,
                 at: new Date().toISOString()
@@ -3638,6 +3740,51 @@ class AgentInterface {
         if (options.reasoningEffort) this.setReasoningEffort(options.reasoningEffort);
         await this._onSend(sendOpts);
         return true;
+    }
+
+    /**
+     * One-off reply to `prompt` as `character` would say it: sends only the speech rules, the
+     * character's bio and the prompt — no chat history, state, intro template or camera — and
+     * stores nothing. Works with the agent turned off.
+     * @param {string} prompt
+     * @param {{ character?: { name?: string, bio?: string }|null, reasoningEffort?: string }} [options]
+     *   character defaults to the active one.
+     * @returns {Promise<string>} The text the robot would speak.
+     */
+    async generateReply(prompt, { character = null, reasoningEffort = null } = {}) {
+        const text = String(prompt || "").trim();
+        if (!text) throw new Error("Enter a prompt.");
+        const reply = await this.sendPrompt("", {
+            messages: [{ role: "user", content: text }],
+            systemPrompt: this._systemPrompt(character),
+            reasoningEffort,
+            skipVisionAttachment: true
+        });
+        return this._extractSpokenText(reply.contentText, reply.rawText);
+    }
+
+    /**
+     * Add a game action that is spoken without a request to the chat history, as a live prompt
+     * would be: its prompt (if any) as the user turn and the spoken text as the reply.
+     * @param {string} spokenText
+     * @param {{ prompt?: string }} [options]
+     */
+    recordSpokenTurn(spokenText, { prompt = "" } = {}) {
+        const said = String(spokenText || "").trim();
+        if (!said) return;
+        const at = new Date().toISOString();
+        const ask = String(prompt || "").trim();
+        if (ask) {
+            const stateBlock = this._buildCurrentStateForIntroductionPrompt();
+            this.messageHistory.push({
+                role: "user",
+                text: ask,
+                fullPrompt: this._buildUserTurnContent(stateBlock, "User", ask),
+                at
+            });
+        }
+        this.messageHistory.push({ role: "assistant", text: said, at });
+        this._renderHistory();
     }
 
     /**

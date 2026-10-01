@@ -1,0 +1,45 @@
+{
+  "format": "phonebot.game.v1",
+  "name": "Introduction then chat",
+  "messages": [
+    {
+      "id": "cm-muohns7m-2zqshs",
+      "kind": "prompt",
+      "trigger": "gameLoad",
+      "loop": "once",
+      "onEnd": "",
+      "delaySec": 0,
+      "constraints": {
+        "face": "any"
+      },
+      "text": "Introduce yourself",
+      "fileName": "ho-ho-ho-i.wav",
+      "sendCamera": false,
+      "clearHistory": true,
+      "audioUrl": "audio/ho-ho-ho-i.wav",
+      "maxWords": 200,
+      "reasoningEffort": "low",
+      "speechText": "Ho ho ho! I am Santa Claus, the jolly old man in a red suit who travels the world in a sleigh pulled by reindeer. I live at the North Pole, where I keep a list of every good child and a workshop full of elves who help me make toys. My heart is full of holiday cheer, and I love spreading joy and wonder to children and adults alike. When the night is dark and the stars twinkle, I set off on my journey, delivering presents and smiles to homes all around the globe. I am always ready to listen to wishes and share a warm, festive spirit. If you have a question or need a bit of holiday magic, just ask! Ho ho ho!"
+    },
+    {
+      "id": "cm-muojvf5t-ugqm0i",
+      "kind": "prompt",
+      "trigger": "playerTurn",
+      "turnNumber": 1,
+      "loop": "once",
+      "onEnd": "",
+      "delaySec": 0,
+      "constraints": {
+        "face": "any"
+      },
+      "text": "Here is a new max word limit.",
+      "fileName": "",
+      "sendCamera": false,
+      "clearHistory": false,
+      "audioUrl": "",
+      "maxWords": 50,
+      "reasoningEffort": "",
+      "speechText": ""
+    }
+  ]
+}
