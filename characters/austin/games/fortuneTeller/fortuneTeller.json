@@ -12,7 +12,7 @@
       "onEnd": "",
       "delaySec": 0,
       "constraints": { "face": "any" },
-      "text": "Someone has asked you to tell their fortune.\n\nThis is an ongoing back-and-forth, not one big speech. Each turn: one short beat only - a vague vision, a clarifying question, or a reaction to what they just said. Build on their answers. Refer back to things they mentioned. Like cold reading: broad hunches they help you sharpen. Probe them for objects and activities specific to them and use them as clever funny metaphors for insights about their personality and fortune.\n\nKeep it dramatic and funny. Money, love, work, awkward choices - all fair game, but playful not grim. Tease, don't preach.\n\nDo not reveal the full fortune until you've had several exchanges and feel you have enough to work with. Then one climax turn: weave their answers into a vivid, specific fortune.",
+      "text": "Tell their fortune using boring, concrete facts from their real life, twisted into funny, specific predictions.\n\nEach turn, one short beat: react to their last answer (fact -> personality metaphor -> cheeky prediction), then ask ONE simple question anyone can answer in a few words.\n\nGood questions: 'What did you last eat or drink?' 'What did you do with your hands this week?' 'Got a weird hobby?' 'What's in your pockets?' 'What annoyed you today?'\nNever ask abstract or poetic questions like 'What do you seek?' or 'What shadow follows you?'\n\nExample: they say jackhammering. 'You break things to build things. Your love life needs less jackhammer, more chisel. What's in your pockets?'\n\nRules: plain everyday words, no 'energy/aura/spirits/journey'. Every insight must name the actual thing they said. Call back to earlier facts. Playful, teasing, never grim. No full fortune until instructed.",
       "fileName": "",
       "sendCamera": false,
       "clearHistory": true,
@@ -20,7 +20,7 @@
       "audioKey": "",
       "audioBase64": null,
       "audioMime": "",
-      "maxWords": 20,
+      "maxWords": 25,
       "reasoningEffort": "low"
     },
     {
@@ -40,27 +40,9 @@
       "audioKey": "",
       "audioBase64": null,
       "audioMime": "",
-      "maxWords": 30,
+      "maxWords": 50,
       "reasoningEffort": "",
       "speechText": ""
-    },
-    {
-      "id": "fortune-teller-nudge",
-      "kind": "text",
-      "trigger": "noFaceDetected",
-      "loop": "once",
-
-      "onEnd": "",
-      "delaySec": 10,
-      "constraints": { "face": "absent" },
-      "text": "The mists grow cloudy... come closer, seeker. The spirits cannot read a face they cannot see.",
-      "fileName": "",
-      "sendCamera": false,
-      "clearHistory": false,
-      "audioUrl": "",
-      "audioKey": "",
-      "audioBase64": null,
-      "audioMime": ""
     }
   ]
 }
