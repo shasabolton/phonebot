@@ -401,12 +401,9 @@ class PlayBilling {
         if (!this._active?.id) {
             throw new Error("No active arcade play session.");
         }
-        const response = await fetch(`${this.apiBaseUrl}/ai/chat`, {
+        const response = await fetch(this._hostedAiUrl("chat"), {
             method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-                "X-Play-Session": this._active.id
-            },
+            headers: { "Content-Type": "application/json" },
             body: JSON.stringify(body),
             signal
         });
@@ -418,11 +415,8 @@ class PlayBilling {
         if (!this._active?.id) {
             throw new Error("No active arcade play session.");
         }
-        const response = await fetch(`${this.apiBaseUrl}/ai/transcribe`, {
+        const response = await fetch(this._hostedAiUrl("transcribe"), {
             method: "POST",
-            headers: {
-                "X-Play-Session": this._active.id
-            },
             body: formData
         });
         this._applyAiChargeResponse(response);
@@ -433,12 +427,9 @@ class PlayBilling {
         if (!this._active?.id) {
             throw new Error("No active arcade play session.");
         }
-        const response = await fetch(`${this.apiBaseUrl}/ai/speech`, {
+        const response = await fetch(this._hostedAiUrl("speech"), {
             method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-                "X-Play-Session": this._active.id
-            },
+            headers: { "Content-Type": "application/json" },
             body: JSON.stringify(body)
         });
         this._applyAiChargeResponse(response);
@@ -449,14 +440,16 @@ class PlayBilling {
         if (!this._active?.id) {
             throw new Error("No active arcade play session.");
         }
-        return fetch(`${this.apiBaseUrl}/ai/voice-turn`, {
+        return fetch(this._hostedAiUrl("voice-turn"), {
             method: "POST",
-            headers: {
-                "X-Play-Session": this._active.id
-            },
             body: formData,
             signal
         });
+    }
+
+    /** Session rides in the query string: a custom header would force a CORS preflight on every turn. */
+    _hostedAiUrl(endpoint) {
+        return `${this.apiBaseUrl}/ai/${endpoint}?session=${encodeURIComponent(this._active.id)}`;
     }
 
     async handlePaymentRequired(response, context = {}) {

@@ -28,7 +28,7 @@ const UNUSED_TTL_MS = 30 * 60 * 1000;
 const CREDIT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 export default {
-    async fetch(request, env) {
+    async fetch(request, env, ctx) {
         try {
             if (request.method === "OPTIONS") return corsResponse(request, env, null, 204);
             const url = new URL(request.url);
@@ -43,19 +43,19 @@ export default {
             }
             if (path === "/api/ai/chat" && request.method === "POST") {
                 assertAllowedOrigin(request, env);
-                return corsResponse(request, env, await proxyGroqChat(request, env));
+                return corsResponse(request, env, await proxyGroqChat(request, env, ctx));
             }
             if (path === "/api/ai/transcribe" && request.method === "POST") {
                 assertAllowedOrigin(request, env);
-                return corsResponse(request, env, await proxyGroqTranscribe(request, env));
+                return corsResponse(request, env, await proxyGroqTranscribe(request, env, ctx));
             }
             if (path === "/api/ai/speech" && request.method === "POST") {
                 assertAllowedOrigin(request, env);
-                return corsResponse(request, env, await proxyGroqSpeech(request, env));
+                return corsResponse(request, env, await proxyGroqSpeech(request, env, ctx));
             }
             if (path === "/api/ai/voice-turn" && request.method === "POST") {
                 assertAllowedOrigin(request, env);
-                return corsResponse(request, env, await proxyGroqVoiceTurn(request, env));
+                return corsResponse(request, env, await proxyGroqVoiceTurn(request, env, ctx));
             }
 
             const match = path.match(/^\/api\/session\/([0-9a-f-]+)(?:\/(start|complete))?$/i);
@@ -426,7 +426,7 @@ async function completeSession(request, env, id) {
     return json(publicSession(session));
 }
 
-async function proxyGroqChat(request, env) {
+async function proxyGroqChat(request, env, ctx) {
     const gate = await requireActiveAiSession(request, env);
     if (gate instanceof Response) return gate;
     const { id, session } = gate;
@@ -455,7 +455,7 @@ async function proxyGroqChat(request, env) {
         const salvaged = trySalvageGroqChatError(upstream.status, raw, body.model);
         if (salvaged) {
             const charge = calculateChatCharge(salvaged.payload.usage, body.model, env, session);
-            await debitAiBudget(env, id, charge);
+            deferAiDebit(ctx, env, id, charge);
             return new Response(JSON.stringify(salvaged.payload), {
                 status: 200,
                 headers: {
@@ -472,7 +472,7 @@ async function proxyGroqChat(request, env) {
     }
     const payload = JSON.parse(raw);
     const charge = calculateChatCharge(payload.usage, body.model, env, session);
-    await debitAiBudget(env, id, charge);
+    deferAiDebit(ctx, env, id, charge);
     return new Response(raw, {
         status: 200,
         headers: {
@@ -482,7 +482,7 @@ async function proxyGroqChat(request, env) {
     });
 }
 
-async function proxyGroqTranscribe(request, env) {
+async function proxyGroqTranscribe(request, env, ctx) {
     const gate = await requireActiveAiSession(request, env);
     if (gate instanceof Response) return gate;
     const { id, session } = gate;
@@ -515,7 +515,7 @@ async function proxyGroqTranscribe(request, env) {
         });
     }
     const charge = applyArcadeMarkup(Number(env.GROQ_TRANSCRIBE_CENTS) || 1, env);
-    await debitAiBudget(env, id, charge);
+    deferAiDebit(ctx, env, id, charge);
     return new Response(raw, {
         status: 200,
         headers: {
@@ -525,7 +525,7 @@ async function proxyGroqTranscribe(request, env) {
     });
 }
 
-async function proxyGroqSpeech(request, env) {
+async function proxyGroqSpeech(request, env, ctx) {
     const gate = await requireActiveAiSession(request, env);
     if (gate instanceof Response) return gate;
     const { id, session } = gate;
@@ -559,7 +559,7 @@ async function proxyGroqSpeech(request, env) {
         });
     }
     const charge = applyArcadeMarkup(Number(env.GROQ_SPEECH_CENTS) || 1, env);
-    await debitAiBudget(env, id, charge);
+    deferAiDebit(ctx, env, id, charge);
     const audio = await upstream.arrayBuffer();
     return new Response(audio, {
         status: 200,
@@ -570,7 +570,7 @@ async function proxyGroqSpeech(request, env) {
     });
 }
 
-async function proxyGroqVoiceTurn(request, env) {
+async function proxyGroqVoiceTurn(request, env, ctx) {
     const startedAt = Date.now();
     const gate = await requireActiveAiSession(request, env);
     if (gate instanceof Response) return gate;
@@ -675,8 +675,6 @@ async function proxyGroqVoiceTurn(request, env) {
     }
     const chatMs = Date.now() - chatStartedAt;
 
-    let audioBase64 = "";
-    let audioType = "";
     const audioChunks = [];
     let speechMs = 0;
     let speechCharge = 0;
@@ -717,24 +715,18 @@ async function proxyGroqVoiceTurn(request, env) {
             speechCharge += applyArcadeMarkup(Number(env.GROQ_SPEECH_CENTS) || 1, env);
         }
         speechMs = Date.now() - speechStartedAt;
-        if (audioChunks.length) {
-            audioBase64 = audioChunks[0].base64;
-            audioType = audioChunks[0].type;
-        }
     }
 
     const transcribeCharge = applyArcadeMarkup(Number(env.GROQ_TRANSCRIBE_CENTS) || 1, env);
     const chatCharge = calculateChatCharge(chatPayload.usage, chatBody.model, env, session);
     const totalCharge = transcribeCharge + chatCharge + speechCharge;
-    await debitAiBudget(env, id, totalCharge);
+    deferAiDebit(ctx, env, id, totalCharge);
 
     return json({
         transcript,
         contentText,
         spokenText,
         chat: chatPayload,
-        audioBase64,
-        audioType,
         audioChunks,
         chargeCents: totalCharge,
         timingsMs: {
@@ -847,9 +839,12 @@ function arrayBufferToBase64(buffer) {
 
 async function requireActiveAiSession(request, env) {
     if (!env.GROQ_API_KEY) throw httpError(503, "Hosted AI is not configured.");
-    const id = cleanMetadata(request.headers.get("X-Play-Session"), 64);
-    await expireSessionIfNeeded(env, id);
-    const session = await selectSession(env, id);
+    const id = playSessionIdFromRequest(request);
+    let session = await selectSession(env, id);
+    if (session && sessionPastExpiry(session)) {
+        await expireSessionIfNeeded(env, id);
+        session = await selectSession(env, id);
+    }
     if (!session || session.status !== "active") {
         return json(
             { error: "A valid active play session is required.", session: session && publicSession(session) },
@@ -862,6 +857,28 @@ async function requireActiveAiSession(request, env) {
         return json({ error: "AI budget exhausted.", session: publicSession(paused) }, 402);
     }
     return { id, session };
+}
+
+/** Query param keeps multipart AI posts CORS-simple (no preflight); the header is for older clients. */
+function playSessionIdFromRequest(request) {
+    const fromQuery = new URL(request.url).searchParams.get("session");
+    return cleanMetadata(fromQuery || request.headers.get("X-Play-Session"), 64);
+}
+
+function sessionPastExpiry(session) {
+    return (
+        ["pending", "paid", "active", "paused_for_payment"].includes(session.status) &&
+        session.expires_at != null &&
+        Number(session.expires_at) <= Date.now()
+    );
+}
+
+function deferAiDebit(ctx, env, id, charge) {
+    const debit = debitAiBudget(env, id, charge).catch((err) => {
+        console.error(JSON.stringify({ event: "ai_debit_failed", sessionId: id, charge, message: err?.message }));
+    });
+    if (ctx?.waitUntil) ctx.waitUntil(debit);
+    return debit;
 }
 
 async function debitAiBudget(env, id, charge) {
@@ -1045,6 +1062,7 @@ function corsResponse(request, env, response, status) {
         result.headers.set("Access-Control-Allow-Headers", "Content-Type, X-Play-Session");
         result.headers.set("Access-Control-Expose-Headers", "X-Phonebot-AI-Charge-Cents");
         result.headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+        result.headers.set("Access-Control-Max-Age", "7200");
     }
     return result;
 }
