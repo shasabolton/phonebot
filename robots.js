@@ -329,7 +329,7 @@ window.ROBOTS_DATA = {
                         model: "openai/gpt-oss-20b",
                         transcriptionModel: "whisper-large-v3",
                         speechModel: "canopylabs/orpheus-v1-english",
-                        temperature: 0.3,
+                        temperature: 0.9,
                         maxTokens: 256,
                         reasoningEffort: "low"
                     }
