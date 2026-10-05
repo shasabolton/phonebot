@@ -344,6 +344,84 @@ function extractAssistantContentText(payload) {
         .trim();
 }
 
+/**
+ * Read a streamed (SSE) chat completion back into one chat.completion object.
+ * gpt-oss can finish a reply with `<|end|>` instead of `<|return|>` and carry on with more
+ * assistant messages, which Groq joins into one reply with nothing between them. Reasoning
+ * that arrives after content has started is the start of such a message, so the stream is
+ * cancelled there and only the first reply is kept (`cut: true`).
+ * `usage` is null when cut: Groq only sends it in the last chunk.
+ * @param {Response} response
+ * @param {string} [model]
+ * @returns {Promise<{ json?: object, cut?: boolean, errorText?: string }>}
+ */
+async function readChatCompletionStream(response, model = "") {
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let content = "";
+    let reasoning = "";
+    let finishReason = null;
+    let usage = null;
+    let meta = null;
+    let done = false;
+    let cut = false;
+    try {
+        while (!done && !cut) {
+            const { value, done: ended } = await reader.read();
+            if (ended) break;
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split("\n");
+            buffer = lines.pop();
+            for (const line of lines) {
+                const data = line.startsWith("data:") ? line.slice(5).trim() : "";
+                if (!data) continue;
+                if (data === "[DONE]") {
+                    done = true;
+                    break;
+                }
+                let chunk;
+                try {
+                    chunk = JSON.parse(data);
+                } catch (_) {
+                    continue;
+                }
+                if (chunk.error) return { errorText: JSON.stringify(chunk) };
+                if (!meta && chunk.id) meta = chunk;
+                const chunkUsage = chunk.x_groq?.usage || chunk.usage;
+                if (chunkUsage) usage = chunkUsage;
+                const choice = chunk.choices?.[0];
+                if (!choice) continue;
+                const delta = choice.delta || {};
+                const think = delta.reasoning || delta.reasoning_content || "";
+                if (think && content.trim()) {
+                    cut = true;
+                    break;
+                }
+                reasoning += think;
+                if (delta.content) content += delta.content;
+                if (choice.finish_reason) finishReason = choice.finish_reason;
+            }
+        }
+    } finally {
+        if (!done) reader.cancel().catch(() => {});
+    }
+
+    const message = { role: "assistant", content };
+    if (reasoning) message.reasoning = reasoning;
+    const json = {
+        id: meta?.id || "",
+        object: "chat.completion",
+        created: meta?.created,
+        model: meta?.model || model,
+        choices: [{ index: 0, message, finish_reason: cut ? "stop" : finishReason }],
+        usage,
+        x_groq: meta?.x_groq
+    };
+    if (cut) json.phonebot_cut_at_second_message = true;
+    return { json, cut };
+}
+
 const api = {
     salvageGroqToolUseFailedText,
     extractTextFromFailedGeneration,
@@ -352,6 +430,7 @@ const api = {
     messagesIncludeVisionImage,
     ensureVisionMaxTokens,
     extractAssistantContentText,
+    readChatCompletionStream,
     MIN_VISION_MAX_TOKENS
 };
 
@@ -367,6 +446,7 @@ export {
     messagesIncludeVisionImage,
     ensureVisionMaxTokens,
     extractAssistantContentText,
+    readChatCompletionStream,
     MIN_VISION_MAX_TOKENS
 };
 export default api;

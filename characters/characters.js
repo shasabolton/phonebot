@@ -23,15 +23,16 @@
  * @typedef {object} CharacterGameEntry
  * @property {string} id
  * @property {string} name
- * @property {string} savedId This browser's copy in the game store ("" = none yet).
- * @property {string} repoPath The repo version's JSON path ("" = the game only exists locally).
+ * @property {string} savedId The game saved in this browser ("" for repo games).
+ * @property {string} repoPath The repo game's JSON path ("" = the game is saved in this browser).
  */
 
 /**
  * Robot characters. Each is a folder: `characters/<id>/<id>.json` plus `games/<game>/<game>.json`
  * (and any `audio/`) for every game it owns. Repo characters are listed in characters/index.json;
- * edits and uploads live in this browser and replace a repo character with the same id. Games run
- * from a local copy in the game store, made from the repo file the first time they're needed.
+ * edits and uploads live in this browser and replace a repo character with the same id. Repo games
+ * are read only: they're fetched from the repo each time they're played and never saved here.
+ * Games added in this browser are saved in the game store.
  */
 class PhonebotCharacters {
     static INDEX_URL = "characters/index.json";
@@ -49,10 +50,8 @@ class PhonebotCharacters {
     static _builtins = [];
     /** @type {Promise<Character[]>|null} */
     static _builtinsPromise = null;
-    /** @type {Map<string, Promise<object>>} Repo game files by path. */
-    static _repoGameFiles = new Map();
-    /** @type {Map<string, Promise<string>>} In-flight local copies by `characterId/slug`. */
-    static _copying = new Map();
+    /** @type {Map<string, Promise<string>>} In-flight game loads by `characterId/slug`. */
+    static _loading = new Map();
     static _migrating = false;
 
     /**
@@ -89,6 +88,7 @@ class PhonebotCharacters {
                         })
                     );
                     PhonebotCharacters._builtins = loaded.filter(Boolean);
+                    PhonebotCharacters._dropRepoGameCopies();
                     PhonebotCharacters._emitChange();
                     return PhonebotCharacters._builtins;
                 })
@@ -99,6 +99,24 @@ class PhonebotCharacters {
                 });
         }
         return PhonebotCharacters._builtinsPromise;
+    }
+
+    /** @returns {Set<string>} Folder names of the repo character's games (empty if none). */
+    static _repoGameSlugs(characterId) {
+        const repo = PhonebotCharacters._builtins.find((c) => c.id === characterId);
+        return new Set((repo?.games || []).map((g) => g.id));
+    }
+
+    /** Browser copies of repo games (made by older versions) would hide the repo's changes. */
+    static _dropRepoGameCopies() {
+        const Game = window.CustomMessagesGame;
+        if (typeof Game?.listGames !== "function") return;
+        for (const saved of Game.listGames()) {
+            if (saved.repo || !saved.characterId) continue;
+            if (PhonebotCharacters._repoGameSlugs(saved.characterId).has(saved.slug)) {
+                Game.deleteGame(saved.id);
+            }
+        }
     }
 
     /** Old `game:<id>` references, renamed where the game's folder changed. */
@@ -197,10 +215,9 @@ class PhonebotCharacters {
 
     /** A folder name for a new game that no game of this character (or its repo version) uses. */
     static _uniqueGameSlug(character, name) {
-        const repo = PhonebotCharacters._builtins.find((c) => c.id === character?.id);
         const taken = new Set([
             ...(character?.games || []).map((g) => g.id),
-            ...(repo?.games || []).map((g) => g.id)
+            ...PhonebotCharacters._repoGameSlugs(character?.id)
         ]);
         return PhonebotCharacters._unique(PhonebotCharacters._slug(name, "game"), taken);
     }
@@ -418,7 +435,8 @@ class PhonebotCharacters {
     // —— Games ——————————————————————————————————————————————————————
 
     /**
-     * The character's games that can be played: each has a local copy, a repo file, or both.
+     * The character's games that can be played: the repo character's games (read only), then
+     * games saved in this browser.
      * @param {Character} character
      * @returns {CharacterGameEntry[]}
      */
@@ -426,64 +444,62 @@ class PhonebotCharacters {
         if (!character) return [];
         const Game = window.CustomMessagesGame;
         const repo = PhonebotCharacters._builtins.find((c) => c.id === character.id);
-        const out = [];
+        const out = (repo?.games || [])
+            .filter((g) => g.path)
+            .map((g) => ({ id: g.id, name: g.name || g.id, savedId: "", repoPath: g.path }));
         for (const game of character.games || []) {
+            if (out.some((g) => g.id === game.id)) continue;
             const saved = Game?.findCharacterGame?.(character.id, game.id) || null;
-            const repoGame = repo?.games.find((g) => g.id === game.id) || null;
-            if (!saved && !repoGame?.path) continue;
+            if (!saved) continue;
             out.push({
                 id: game.id,
-                name: saved?.name || repoGame?.name || game.name || game.id,
-                savedId: saved?.id || "",
-                repoPath: repoGame?.path || ""
+                name: saved.name || game.name || game.id,
+                savedId: saved.id,
+                repoPath: ""
             });
         }
         return out;
     }
 
     /** @param {string} path @returns {Promise<object>} */
-    static _fetchRepoGame(path) {
-        if (!PhonebotCharacters._repoGameFiles.has(path)) {
-            const pending = fetch(path, { cache: "no-cache" })
-                .then((res) => {
-                    if (!res.ok) throw new Error(`HTTP ${res.status} loading ${path}`);
-                    return res.json();
-                })
-                .catch((err) => {
-                    PhonebotCharacters._repoGameFiles.delete(path);
-                    throw err;
-                });
-            PhonebotCharacters._repoGameFiles.set(path, pending);
-        }
-        return PhonebotCharacters._repoGameFiles.get(path);
+    static async _fetchRepoGame(path) {
+        const res = await fetch(path, { cache: "no-cache" });
+        if (!res.ok) throw new Error(`HTTP ${res.status} loading ${path}`);
+        return res.json();
     }
 
     /**
-     * Store id of the local copy that runs and is edited, copied from the repo if needed.
-     * Resolves to "" when the character has no such game.
+     * Game store id to play or open a character's game. Repo games are fetched again each time
+     * (falling back to the version already loaded if the fetch fails). Resolves to "" when the
+     * character has no such game.
      * @returns {Promise<string>}
      */
-    static ensureGameCopy(characterId, slug) {
-        const Game = window.CustomMessagesGame;
-        const existing = Game.findCharacterGame(characterId, slug);
-        if (existing) return Promise.resolve(existing.id);
+    static loadGame(characterId, slug) {
+        const character = PhonebotCharacters.get(characterId);
+        const game = PhonebotCharacters.characterGames(character).find((g) => g.id === slug);
+        if (!game?.repoPath) return Promise.resolve(game?.savedId || "");
         const key = `${characterId}/${slug}`;
-        if (!PhonebotCharacters._copying.has(key)) {
+        if (!PhonebotCharacters._loading.has(key)) {
+            const Game = window.CustomMessagesGame;
             const pending = (async () => {
-                const character = PhonebotCharacters.get(characterId);
-                const game = PhonebotCharacters.characterGames(character).find((g) => g.id === slug);
-                if (!game?.repoPath) return "";
-                const payload = await PhonebotCharacters._fetchRepoGame(game.repoPath);
-                const saved = await Game.importGameFromExport(payload, {
-                    characterId,
-                    slug,
-                    basePath: game.repoPath
-                });
-                return saved?.id || "";
-            })().finally(() => PhonebotCharacters._copying.delete(key));
-            PhonebotCharacters._copying.set(key, pending);
+                try {
+                    const payload = await PhonebotCharacters._fetchRepoGame(game.repoPath);
+                    const loaded = Game.loadRepoGame(payload, {
+                        characterId,
+                        slug,
+                        basePath: game.repoPath
+                    });
+                    return loaded?.id || "";
+                } catch (err) {
+                    const id = Game.repoGameId(characterId, slug);
+                    if (!Game.isRepoGame(id)) throw err;
+                    console.warn("Repo game reload failed; using the version already loaded:", err);
+                    return id;
+                }
+            })().finally(() => PhonebotCharacters._loading.delete(key));
+            PhonebotCharacters._loading.set(key, pending);
         }
-        return PhonebotCharacters._copying.get(key);
+        return PhonebotCharacters._loading.get(key);
     }
 
     /** @param {Character} character @param {CharacterGame[]} games */
@@ -526,15 +542,11 @@ class PhonebotCharacters {
         return { slug, savedId: saved.id };
     }
 
-    /** Drop a game's local copy so its repo version plays again. */
-    static resetGame(characterId, slug) {
+    /** Remove a game saved in this browser from a character. Repo games can't be removed. */
+    static deleteGame(characterId, slug) {
+        if (PhonebotCharacters._repoGameSlugs(characterId).has(slug)) return;
         const saved = window.CustomMessagesGame.findCharacterGame(characterId, slug);
         if (saved) window.CustomMessagesGame.deleteGame(saved.id);
-    }
-
-    /** Remove a game from a character, with its local copy. */
-    static deleteGame(characterId, slug) {
-        PhonebotCharacters.resetGame(characterId, slug);
         const character = PhonebotCharacters.get(characterId);
         if (!character) return;
         PhonebotCharacters._saveGames(
@@ -573,7 +585,7 @@ class PhonebotCharacters {
 
     /**
      * Upload a character zip: `<id>/<id>.json` plus `<id>/games/<game>/…`. Replaces the character
-     * (and its games) if that id already exists.
+     * (and its games) if that id already exists. Games the repo character has play from the repo.
      * @param {Blob} file
      * @returns {Promise<Character|null>}
      */
@@ -597,8 +609,13 @@ class PhonebotCharacters {
         if (!found) return null;
         const { character } = found;
         const root = found.path.slice(0, found.path.lastIndexOf("/") + 1);
+        const repoSlugs = PhonebotCharacters._repoGameSlugs(character.id);
         const games = [];
         for (const game of character.games) {
+            if (repoSlugs.has(game.id)) {
+                games.push({ id: game.id, name: game.name });
+                continue;
+            }
             const folder = `${root}games/${game.id}/`;
             const json = files.get(`${folder}${game.id}.json`);
             if (!json) {
@@ -798,7 +815,7 @@ class CharactersPanel {
 
     _onRemove(character) {
         const question = character.builtin
-            ? `Reset “${character.name}” to the built-in version? Your edits and game changes will be lost.`
+            ? `Reset “${character.name}” to the built-in version? Your edits and the games you added will be lost.`
             : `Delete “${character.name}” and all its games? This cannot be undone.`;
         const ok = typeof window.confirm === "function" ? window.confirm(question) : true;
         if (ok) PhonebotCharacters.remove(character.id);
@@ -895,9 +912,12 @@ class CharactersPanel {
 
     /**
      * @param {string} name
-     * @param {{ active?: boolean, onSelect: () => void, onEdit?: (() => void)|null, removeLabel?: string, onRemove?: (() => void)|null }} handlers
+     * @param {{ active?: boolean, onSelect: () => void, onEdit?: (() => void)|null, editLabel?: string, removeLabel?: string, onRemove?: (() => void)|null }} handlers
      */
-    _buildRow(name, { active = false, onSelect, onEdit = null, removeLabel = "", onRemove = null }) {
+    _buildRow(
+        name,
+        { active = false, onSelect, onEdit = null, editLabel = "Edit", removeLabel = "", onRemove = null }
+    ) {
         const tile = document.createElement("div");
         tile.className = "custom-messages-tile custom-messages-game-row characters-row";
         tile.classList.toggle("is-active", active);
@@ -915,8 +935,8 @@ class CharactersPanel {
             const editBtn = document.createElement("button");
             editBtn.type = "button";
             editBtn.className = "custom-messages-tile-edit";
-            editBtn.textContent = "Edit";
-            editBtn.setAttribute("aria-label", `Edit ${name}`);
+            editBtn.textContent = editLabel;
+            editBtn.setAttribute("aria-label", `${editLabel} ${name}`);
             editBtn.addEventListener("click", onEdit);
             tile.appendChild(editBtn);
         }
@@ -1254,7 +1274,7 @@ class CharactersPanel {
         gamesHeading.classList.add("characters-section-heading");
         gamesSection.appendChild(gamesHeading);
         gamesSection.appendChild(
-            hint("Games save in this browser as you edit them. Download backup saves the character and its games as a zip.")
+            hint("Repo games are read only and always load the latest version from the repo. Games you add here save in this browser as you edit them. Download backup saves the character and its games as a zip.")
         );
         gamesSection.appendChild(gamesList);
         gamesSection.appendChild(gamesActions);
@@ -1357,27 +1377,22 @@ class CharactersPanel {
             return false;
         };
         const editGame = async (slug) => {
-            let savedId = "";
+            let gameId = "";
             try {
-                savedId = await PhonebotCharacters.ensureGameCopy(characterId, slug);
+                gameId = await PhonebotCharacters.loadGame(characterId, slug);
             } catch (err) {
                 console.warn("Game load failed:", err);
             }
-            if (!savedId) {
+            if (!gameId) {
                 window.alert?.("Could not load that game.");
                 return;
             }
-            this.robot?.editCustomGame?.(savedId);
+            this.robot?.editCustomGame?.(gameId);
         };
         const removeGame = (game) => {
-            const reset = !!(game.repoPath && game.savedId);
-            const question = reset
-                ? `Reset “${game.name}” to the built-in version? Your edits will be lost.`
-                : `Delete “${game.name}” from this character? This cannot be undone.`;
+            const question = `Delete “${game.name}” from this character? This cannot be undone.`;
             const ok = typeof window.confirm === "function" ? window.confirm(question) : true;
-            if (!ok) return;
-            if (reset) PhonebotCharacters.resetGame(characterId, game.id);
-            else PhonebotCharacters.deleteGame(characterId, game.id);
+            if (ok) PhonebotCharacters.deleteGame(characterId, game.id);
         };
         const renderGames = () => {
             const current = characterId ? PhonebotCharacters.get(characterId) : null;
@@ -1394,8 +1409,9 @@ class CharactersPanel {
                     this._buildRow(game.name, {
                         onSelect: () => void editGame(game.id),
                         onEdit: () => void editGame(game.id),
-                        removeLabel: game.repoPath && game.savedId ? "Reset" : "Delete",
-                        onRemove: () => removeGame(game)
+                        editLabel: game.repoPath ? "View" : "Edit",
+                        removeLabel: "Delete",
+                        onRemove: game.repoPath ? null : () => removeGame(game)
                     })
                 );
             }

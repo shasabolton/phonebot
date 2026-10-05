@@ -6,10 +6,19 @@
 class AgentInterface {
     static STORAGE_KEY_PREFIX = "phonebot.agent.";
     static STORAGE_REMEMBER = "phonebot.agent.remember";
+    /** Manual Groq chat model for BYOK; empty = automatic pick. */
+    static STORAGE_CHAT_MODEL = "phonebot.agent.chatModel";
+    /** Per-model sampling temperatures, used only for manually picked models. First match wins. */
+    static MODEL_TEMPERATURES = [
+        { match: /gpt-oss/i, temperature: 0.7 },
+        { match: /qwen/i, temperature: 0.6 }
+    ];
     /** Sentinel `<select>` value: insert live state JSON (not a file path). */
     static TEMPLATE_VALUE_STATE = "__robot_state_json__";
     /** Heading for text a game sends, so the model never takes it for something the player said. */
     static GAME_INSTRUCTION_LABEL = "Game instruction (not said by the player)";
+    /** Appended to the outgoing user message only; never stored in history. */
+    static SINGLE_TURN_REMINDER = "Reply with one turn only, then stop and wait for the player's answer.";
 
     /**
      * @param {Robot} robot
@@ -52,7 +61,15 @@ class AgentInterface {
         this._voiceSelect = null;
         this._voiceSelectLabel = null;
         this._voiceStatusEl = null;
-        this._modelOverrideInput = null;
+        this._chatModelRow = null;
+        this._chatModelSelect = null;
+        this._chatModelRefreshBtn = null;
+        this._chatModelHintEl = null;
+        this._chatModelChoice = this._loadChatModelChoice();
+        /** Last BYOK model list: options for the picker and the automatic pick's id. */
+        this._chatModelOptions = [];
+        this._chatModelAutoId = null;
+        this._chatModelListError = "";
         this._templateSelect = null;
         this._insertTemplateBtn = null;
         this._promptInput = null;
@@ -181,7 +198,9 @@ class AgentInterface {
         if (this._sessionModelsPromise) return this._sessionModelsPromise;
 
         this._sessionModelsPromise = (async () => {
-            const hosted = window.playBilling?.getActiveSession?.()?.groqModels;
+            const apiKey = this._clientApiKey();
+            // The player's own key wins over a hosted credit session still active on this page.
+            const hosted = apiKey ? null : window.playBilling?.getActiveSession?.()?.groqModels;
             if (hosted?.chat || hosted?.stt || hosted?.tts) {
                 this._sessionModels = {
                     chat: hosted.chat || null,
@@ -193,12 +212,19 @@ class AgentInterface {
                 return this._sessionModels;
             }
 
-            const apiKey = this._clientApiKey();
-            if (!apiKey || typeof window.GroqModelSelect?.fetchAndSelectGroqModels !== "function") {
+            const select = window.GroqModelSelect;
+            if (!apiKey || typeof select?.fetchGroqModels !== "function") {
                 return null;
             }
             try {
-                const selected = await window.GroqModelSelect.fetchAndSelectGroqModels(apiKey);
+                const models = await select.fetchGroqModels(apiKey);
+                this._chatModelOptions = select.listChatModelOptions(models);
+                this._chatModelAutoId = select.selectGroqModels(models).chat;
+                this._chatModelListError = "";
+                this._renderChatModelOptions();
+                this._syncChatModelUi();
+                const choice = this._chatModelChoice;
+                const selected = select.selectGroqModels(models, { overrides: { chat: choice } });
                 this._sessionModels = {
                     chat: selected.chat || null,
                     vision: selected.vision || null,
@@ -213,12 +239,16 @@ class AgentInterface {
                         this._sessionModels.stt && `stt ${this._sessionModels.stt}`,
                         this._sessionModels.tts && `tts ${this._sessionModels.tts}`
                     ].filter(Boolean);
-                    this._statusEl.textContent = `Groq models: ${bits.join(" · ")}`;
+                    const missing =
+                        choice && selected.chat !== choice ? ` (${choice} unavailable, using automatic pick)` : "";
+                    this._statusEl.textContent = `Groq models: ${bits.join(" · ")}${missing}`;
                 }
                 return this._sessionModels;
             } catch (err) {
+                this._chatModelListError = String(err?.message || err);
+                this._syncChatModelUi();
                 if (this._statusEl) {
-                    this._statusEl.textContent = `Groq model select failed: ${err?.message || err}`;
+                    this._statusEl.textContent = `Groq model select failed: ${this._chatModelListError}`;
                 }
                 return null;
             }
@@ -463,6 +493,7 @@ class AgentInterface {
         this._sessionModels = null;
         this._sessionModelsPromise = null;
         this._syncAiBudgetUi();
+        this._syncChatModelUi();
     }
 
     /**
@@ -618,6 +649,73 @@ class AgentInterface {
         } catch (_) {}
     }
 
+    _loadChatModelChoice() {
+        try {
+            return String(localStorage.getItem(AgentInterface.STORAGE_CHAT_MODEL) || "").trim();
+        } catch (_) {
+            return "";
+        }
+    }
+
+    _setChatModelChoice(id) {
+        this._chatModelChoice = String(id || "").trim();
+        try {
+            if (this._chatModelChoice) {
+                localStorage.setItem(AgentInterface.STORAGE_CHAT_MODEL, this._chatModelChoice);
+            } else {
+                localStorage.removeItem(AgentInterface.STORAGE_CHAT_MODEL);
+            }
+        } catch (_) {}
+        this._sessionModels = null;
+        this._sessionModelsPromise = null;
+        void this.ensureSessionGroqModels();
+    }
+
+    _renderChatModelOptions() {
+        const selectEl = this._chatModelSelect;
+        if (!selectEl) return;
+        const price = (usd) => `$${usd.toFixed(2)}`;
+        selectEl.replaceChildren();
+        const auto = document.createElement("option");
+        auto.value = "";
+        auto.textContent = this._chatModelAutoId ? `Automatic (${this._chatModelAutoId})` : "Automatic (cheapest)";
+        selectEl.appendChild(auto);
+        for (const m of this._chatModelOptions) {
+            const opt = document.createElement("option");
+            opt.value = m.id;
+            opt.textContent =
+                `${m.id} — ${price(m.inputUsdPerMillion)} in / ${price(m.outputUsdPerMillion)} out per M` +
+                (m.vision ? " · vision" : "");
+            selectEl.appendChild(opt);
+        }
+        const choice = this._chatModelChoice;
+        if (choice && !this._chatModelOptions.some((m) => m.id === choice)) {
+            const opt = document.createElement("option");
+            opt.value = choice;
+            opt.textContent = this._chatModelOptions.length ? `${choice} (not available)` : `${choice} (saved)`;
+            selectEl.appendChild(opt);
+        }
+        selectEl.value = choice;
+    }
+
+    /** The picker only applies to the player's own Groq key; hosted credit keeps the Worker's pick. */
+    _syncChatModelUi() {
+        if (!this._chatModelSelect) return;
+        if (this._chatModelRow) this._chatModelRow.hidden = this._isGeminiProvider();
+        const byok = !!this._clientApiKey();
+        this._chatModelSelect.disabled = !byok;
+        if (this._chatModelRefreshBtn) this._chatModelRefreshBtn.disabled = !byok;
+        if (this._chatModelHintEl) {
+            this._chatModelHintEl.textContent = !byok
+                ? "Enter your own Groq key to choose a model. Hosted credit uses the automatic pick."
+                : this._chatModelListError
+                  ? `Couldn't load the model list: ${this._chatModelListError}`
+                  : !this._chatModelOptions.length
+                    ? "Model list not loaded yet. Click Refresh models."
+                    : "Applies to this browser's Groq key. Vision-capable picks also handle camera turns.";
+        }
+    }
+
     getSelectedAgent() {
         const idx = this._agentSelect ? Number(this._agentSelect.value) : 0;
         if (!Number.isFinite(idx) || idx < 0) return null;
@@ -763,8 +861,6 @@ class AgentInterface {
     }
 
     _resolveModel(agent, options = {}) {
-        const override = this._modelOverrideInput?.value?.trim();
-        if (override) return override;
         const wantVision =
             options.wantVision != null
                 ? !!options.wantVision
@@ -795,8 +891,10 @@ class AgentInterface {
 
     /**
      * Cross-model reasoning_effort (low|medium|high). Prefer "low" for Talking Head.
+     * Qwen gets "none": its thinking outgrows small max_tokens and Groq's per-minute output cap.
      */
-    _resolveReasoningEffort(agent, _modelId, override = null) {
+    _resolveReasoningEffort(agent, modelId, override = null) {
+        if (/qwen/i.test(String(modelId || ""))) return "none";
         const raw =
             override || this._reasoningEffort || agent?.reasoningEffort || agent?.reasoning_effort || "low";
         if (typeof window.GroqModelSelect?.normalizeReasoningEffort === "function") {
@@ -2167,17 +2265,19 @@ class AgentInterface {
      * User-turn body for chat/voice. Only includes Current state when there is real state JSON —
      * talking head has no stateMachine, so we must not inject a fake `[]` (models echo it; TTS
      * then voices the brackets).
+     * The player's own words go unlabeled (the user role already says who is speaking); a
+     * transcript-style "User said:" label invites the model to write the player's next line.
+     * Game instructions and robot notices keep their heading.
      * @param {unknown} stateBlock
-     * @param {string} label e.g. "User", "User said"
+     * @param {string|null} label null for the player's words, else e.g. GAME_INSTRUCTION_LABEL
      * @param {string} body
      * @returns {string}
      */
     _buildUserTurnContent(stateBlock, label, body) {
         const state = String(stateBlock || "").trim();
         const text = String(body ?? "");
-        const tag = String(label || "User");
-        if (state) return `Current state (json):\n${state}\n\n${tag}:\n${text}`;
-        return `${tag}:\n${text}`;
+        if (state) return `Current state (json):\n${state}\n\n${label || "User said"}:\n${text}`;
+        return label ? `${label}:\n${text}` : text;
     }
 
     /**
@@ -2211,6 +2311,17 @@ class AgentInterface {
         const extra = String(instruction || "").trim();
         if (!extra) return content;
         return `${content}\n\n${AgentInterface.GAME_INSTRUCTION_LABEL}:\n${extra}`;
+    }
+
+    /** Request messages with the single-turn reminder added to the last user message. */
+    _withSingleTurnReminder(messages) {
+        const last = messages[messages.length - 1];
+        if (last?.role !== "user") return messages;
+        const reminder = AgentInterface.SINGLE_TURN_REMINDER;
+        const content = Array.isArray(last.content)
+            ? [...last.content, { type: "text", text: `${AgentInterface.GAME_INSTRUCTION_LABEL}:\n${reminder}` }]
+            : this._withGameTurnInstruction(last.content, reminder);
+        return [...messages.slice(0, -1), { ...last, content }];
     }
 
     /** A prompt the game sent on its own, headed so it doesn't read as the player's words. */
@@ -2261,9 +2372,22 @@ class AgentInterface {
         ].join(" ");
     }
 
-    /** Speech rules plus the character bio (when any), sent as one system message. */
+    /**
+     * Turn-taking rules every game gets for free, so game authors don't have to spell out
+     * that a real person answers between replies.
+     */
+    _conversationPrompt() {
+        return [
+            "This is a live spoken conversation: after each of your replies, the player answers out loud.",
+            "Write only your own next turn, then stop.",
+            "Never write, guess or react to an answer the player hasn't given yet, and never play both sides.",
+            `Text headed "${AgentInterface.GAME_INSTRUCTION_LABEL}" comes from the game, not the player; follow it without mentioning it.`
+        ].join(" ");
+    }
+
+    /** Conversation and speech rules plus the character bio (when any), sent as one system message. */
     _systemPrompt(character = null) {
-        return [this._speechStylePrompt(), this._characterPrompt(character)]
+        return [this._conversationPrompt(), this._speechStylePrompt(), this._characterPrompt(character)]
             .filter(Boolean)
             .join("\n\n");
     }
@@ -2272,6 +2396,33 @@ class AgentInterface {
     _withSystemPrompt(messages) {
         const prompt = this._systemPrompt();
         return prompt ? [{ role: "system", content: prompt }, ...messages] : messages;
+    }
+
+    /**
+     * Chat-template shape: one system message first, then user/assistant turns that alternate.
+     * Back-to-back same-role turns (a failed send left a user turn, a game clip recorded next
+     * to a reply) are merged; empty turns are dropped.
+     * @param {Array<{ role: string, content: unknown }>} messages
+     */
+    _toChatTemplate(messages) {
+        const isEmpty = (c) => (Array.isArray(c) ? c.length === 0 : !String(c ?? "").trim());
+        const asParts = (c) => (Array.isArray(c) ? c : [{ type: "text", text: String(c ?? "") }]);
+        const join = (a, b) =>
+            typeof a === "string" && typeof b === "string" ? `${a}\n\n${b}` : [...asParts(a), ...asParts(b)];
+        const systems = [];
+        const turns = [];
+        for (const m of messages || []) {
+            if (!m) continue;
+            if (m.role === "system") {
+                if (!isEmpty(m.content)) systems.push(String(m.content).trim());
+                continue;
+            }
+            if ((m.role !== "user" && m.role !== "assistant") || isEmpty(m.content)) continue;
+            const last = turns[turns.length - 1];
+            if (last?.role === m.role) last.content = join(last.content, m.content);
+            else turns.push({ role: m.role, content: m.content });
+        }
+        return systems.length ? [{ role: "system", content: systems.join("\n\n") }, ...turns] : turns;
     }
 
     /** TTS-safe text; keeps only the [tag] directions the active voice supports. */
@@ -2295,6 +2446,22 @@ class AgentInterface {
                     m.content.some((p) => p && (p.type === "image_url" || p.type === "image"))
             );
         return hasVision ? Math.max(base, 512) : base;
+    }
+
+    /**
+     * A manually picked Groq model (BYOK) runs at its recommended temperature; JSON-output agents
+     * and the automatic pick keep the agent's configured temperature.
+     */
+    _resolveTemperature(agent, model, responseFormat) {
+        if (this._chatModelChoice && !responseFormat && this._clientApiKey()) {
+            const tuned = AgentInterface.MODEL_TEMPERATURES.find((t) => t.match.test(String(model || "")));
+            if (tuned) return tuned.temperature;
+        }
+        return Number.isFinite(agent?.temperature)
+            ? agent.temperature
+            : Number.isFinite(this.config.defaultChatTemperature)
+              ? this.config.defaultChatTemperature
+              : 0.35;
     }
 
     _assistantContentFromChatJson(json) {
@@ -2677,7 +2844,10 @@ class AgentInterface {
         if (bodyNorm.includes(head)) return body;
         const headPrefix = head.slice(0, Math.min(120, head.length)).trim();
         if (headPrefix.length >= 24 && bodyNorm.includes(headPrefix)) return body;
-        return `${head}\n\n${body}`;
+        const headed = /^(?:Current state \(json\)|User said|User|Robot notice|Game instruction \(not said by the player\)):\n/i.test(
+            body
+        );
+        return `${head}\n\n${headed ? body : `User said:\n${body}`}`;
     }
 
     /** True once any user/assistant turn is in history (kickoff or player turn completed). */
@@ -2756,6 +2926,7 @@ class AgentInterface {
         } else {
             conversationMessages = this._withSystemPrompt(conversationMessages);
         }
+        conversationMessages = this._toChatTemplate(conversationMessages);
 
         let sendCameraImage;
         if (options.forceCameraImage === true) {
@@ -2782,7 +2953,7 @@ class AgentInterface {
             wantVision: sendCameraImage || this._messagesIncludeVisionImage(conversationMessages)
         });
         if (!model) {
-            throw new Error("Set a model on the agent or use the model override field.");
+            throw new Error("Set a model on the agent or pick a chat model.");
         }
         if (
             this._messagesIncludeVisionImage(conversationMessages) &&
@@ -2798,11 +2969,6 @@ class AgentInterface {
             return await this._sendGeminiChat(agent, conversationMessages, apiKey, model);
         }
 
-        const temperature = Number.isFinite(agent.temperature)
-            ? agent.temperature
-            : Number.isFinite(this.config.defaultChatTemperature)
-              ? this.config.defaultChatTemperature
-              : 0.35;
         const responseFormat =
             agent.responseFormat && typeof agent.responseFormat === "object"
                 ? agent.responseFormat
@@ -2810,14 +2976,22 @@ class AgentInterface {
                   ? this.config.chatResponseFormat
                   : null;
 
+        const streamReply =
+            !hostedArcadeChat &&
+            !responseFormat &&
+            typeof window.GroqChatRecover?.readChatCompletionStream === "function";
         const body = {
             model,
-            messages: conversationMessages,
-            temperature,
+            messages: responseFormat ? conversationMessages : this._withSingleTurnReminder(conversationMessages),
+            temperature: this._resolveTemperature(agent, model, responseFormat),
             max_tokens: this._resolveMaxTokens(agent, conversationMessages)
         };
         if (responseFormat) {
             body.response_format = responseFormat;
+        }
+        if (streamReply) {
+            body.stream = true;
+            body.stream_options = { include_usage: true };
         }
         const reasoningEffort = this._resolveReasoningEffort(agent, model, options.reasoningEffort);
         if (reasoningEffort) {
@@ -2869,28 +3043,34 @@ class AgentInterface {
             if (timeoutId) clearTimeout(timeoutId);
         }
 
-        const rawText = await res.text();
         if (!res.ok) {
-            const salvaged = this._trySalvageGroqChatError(res.status, rawText, model);
-            const salvagedText = String(salvaged?.contentText || "").trim();
-            if (salvagedText) {
-                const contentText = this._stripThinkingBlocks(salvagedText) || salvagedText;
-                return {
-                    rawText,
-                    json: salvaged.payload,
-                    contentText,
-                    salvagedFrom: "tool_use_failed"
-                };
+            return this._chatErrorReply(res.status, await res.text(), model);
+        }
+        if (body.stream && res.body && /text\/event-stream/i.test(res.headers.get("Content-Type") || "")) {
+            const streamed = await window.GroqChatRecover.readChatCompletionStream(res, model);
+            if (streamed.errorText) return this._chatErrorReply(400, streamed.errorText, model);
+            if (streamed.cut) {
+                console.warn("AgentInterface: model started a second message; kept only the first reply.", {
+                    model: streamed.json.model,
+                    requestId: streamed.json.x_groq?.id,
+                    reasoning: streamed.json.choices[0].message.reasoning
+                });
             }
-            throw new Error(`HTTP ${res.status}: ${rawText.slice(0, 500)}`);
+            return this._chatReplyFromJson(streamed.json, JSON.stringify(streamed.json));
         }
 
+        const rawText = await res.text();
         let json;
         try {
             json = JSON.parse(rawText);
         } catch (_) {
             throw new Error("Response was not JSON.");
         }
+        return this._chatReplyFromJson(json, rawText);
+    }
+
+    /** `{ rawText, json, contentText }` for a chat completion; throws when it has no content. */
+    _chatReplyFromJson(json, rawText) {
         const contentText = this._assistantContentFromChatJson(json);
         if (!contentText) {
             const finish = json?.choices?.[0]?.finish_reason || "unknown";
@@ -2898,10 +3078,21 @@ class AgentInterface {
                 `Model returned empty content (finish_reason=${finish}). Increase max tokens for vision/reasoning turns.`
             );
         }
+        return { rawText, json, contentText };
+    }
+
+    /** Reply salvaged from a Groq tool_use_failed error; otherwise throws the HTTP error. */
+    _chatErrorReply(status, rawText, model) {
+        const salvaged = this._trySalvageGroqChatError(status, rawText, model);
+        const salvagedText = String(salvaged?.contentText || "").trim();
+        if (!salvagedText) {
+            throw new Error(`HTTP ${status}: ${String(rawText || "").slice(0, 500)}`);
+        }
         return {
             rawText,
-            json,
-            contentText
+            json: salvaged.payload,
+            contentText: this._stripThinkingBlocks(salvagedText) || salvagedText,
+            salvagedFrom: "tool_use_failed"
         };
     }
 
@@ -3330,7 +3521,7 @@ class AgentInterface {
                 return false;
             }
             const fullUserContent = this._withGameTurnInstruction(
-                this._buildUserTurnContent(stateBlock, "User said", userTranscript),
+                this._buildUserTurnContent(stateBlock, null, userTranscript),
                 gameTurn.text
             );
             const outboundUser = await this._mergeIntroductionIntoFirstUserMessage(fullUserContent, prior.length);
@@ -3438,7 +3629,7 @@ class AgentInterface {
         try {
             const stateBlock = this._buildCurrentStateForIntroductionPrompt();
             const fullUserContent = this._withGameTurnInstruction(
-                this._buildUserTurnContent(stateBlock, "User said", text),
+                this._buildUserTurnContent(stateBlock, null, text),
                 gameTurn.text
             );
             const prior = this._buildPriorConversationMessages();
@@ -3527,7 +3718,7 @@ class AgentInterface {
             const marker = `__PHONEBOT_TRANSCRIPT_${crypto.randomUUID()}__`;
             const stateBlock = this._buildCurrentStateForIntroductionPrompt();
             const userTemplate = this._withGameTurnInstruction(
-                this._buildUserTurnContent(stateBlock, "User said", marker),
+                this._buildUserTurnContent(stateBlock, null, marker),
                 gameTurn.text
             );
             const prior = this._buildPriorConversationMessages();
@@ -3535,10 +3726,9 @@ class AgentInterface {
                 userTemplate,
                 prior.length
             );
-            const conversationMessages = this._withSystemPrompt([
-                ...prior,
-                { role: "user", content: outboundTemplate }
-            ]);
+            const conversationMessages = this._toChatTemplate(
+                this._withSystemPrompt([...prior, { role: "user", content: outboundTemplate }])
+            );
             if (this._sendCameraImageInput) {
                 this._sendCameraImage = !!this._sendCameraImageInput.checked;
             }
@@ -3552,13 +3742,8 @@ class AgentInterface {
                 wantVision:
                     !!this._sendCameraImage || this._messagesIncludeVisionImage(conversationMessages)
             });
-            if (!model) throw new Error("Set a model on the agent or use the model override field.");
+            if (!model) throw new Error("Set a model on the agent or pick a chat model.");
 
-            const temperature = Number.isFinite(agent.temperature)
-                ? agent.temperature
-                : Number.isFinite(this.config.defaultChatTemperature)
-                  ? this.config.defaultChatTemperature
-                  : 0.35;
             const responseFormat =
                 agent.responseFormat && typeof agent.responseFormat === "object"
                     ? agent.responseFormat
@@ -3567,8 +3752,8 @@ class AgentInterface {
                       : null;
             const chatBody = {
                 model,
-                messages: conversationMessages,
-                temperature,
+                messages: responseFormat ? conversationMessages : this._withSingleTurnReminder(conversationMessages),
+                temperature: this._resolveTemperature(agent, model, responseFormat),
                 max_tokens: this._resolveMaxTokens(agent, conversationMessages)
             };
             if (responseFormat) chatBody.response_format = responseFormat;
@@ -3765,7 +3950,7 @@ class AgentInterface {
             // Typed chat is a player turn; kickoffs and game-sent prompts are not.
             if (!isKickoff && !options.gameAction) gameTurn = this._beginGamePlayerTurn();
             const stateBlock = this._buildCurrentStateForIntroductionPrompt();
-            const label = options.gameAction ? AgentInterface.GAME_INSTRUCTION_LABEL : "User";
+            const label = options.gameAction ? AgentInterface.GAME_INSTRUCTION_LABEL : null;
             const fullUserContent = this._withGameTurnInstruction(
                 this._buildUserTurnContent(stateBlock, label, text),
                 gameTurn?.text
@@ -4239,6 +4424,7 @@ class AgentInterface {
         }
         this._syncVoiceUiForSelectedAgent();
         this._syncAiBudgetUi();
+        this._syncChatModelUi();
     }
 
     buildGUI(container) {
@@ -4288,6 +4474,7 @@ class AgentInterface {
             this._sessionModels = null;
             this._sessionModelsPromise = null;
             this._syncAiBudgetUi();
+            this._syncChatModelUi();
             if (this._apiKey) void this.ensureSessionGroqModels();
             this._schedulePendingResumeForKey();
         });
@@ -4305,6 +4492,7 @@ class AgentInterface {
             this._sessionModelsPromise = null;
             this._syncVoiceUiForSelectedAgent();
             this._syncAiBudgetUi();
+            this._syncChatModelUi();
             void this.ensureSessionGroqModels();
             if (this._statusEl) {
                 this._statusEl.className = "muted";
@@ -4325,11 +4513,29 @@ class AgentInterface {
         rememberWrap.appendChild(rememberInput);
         rememberWrap.appendChild(document.createTextNode("Remember key for selected agent"));
 
-        const modelLabel = document.createElement("label");
-        modelLabel.textContent = "Model override (optional)";
-        const modelOverrideInput = document.createElement("input");
-        modelOverrideInput.type = "text";
-        modelOverrideInput.placeholder = "Leave blank to use agent config model";
+        const chatModelRow = document.createElement("div");
+        const chatModelLabel = document.createElement("label");
+        chatModelLabel.textContent = "Chat model";
+        chatModelLabel.htmlFor = "robotAgentChatModel";
+        const chatModelSelect = document.createElement("select");
+        chatModelSelect.id = "robotAgentChatModel";
+        chatModelSelect.style.width = "100%";
+        chatModelSelect.addEventListener("change", () => this._setChatModelChoice(chatModelSelect.value));
+        const chatModelRefreshBtn = document.createElement("button");
+        chatModelRefreshBtn.type = "button";
+        chatModelRefreshBtn.textContent = "Refresh models";
+        chatModelRefreshBtn.addEventListener("click", () => {
+            this._sessionModels = null;
+            this._sessionModelsPromise = null;
+            void this.ensureSessionGroqModels();
+        });
+        const chatModelHint = document.createElement("p");
+        chatModelHint.className = "muted";
+        chatModelHint.style.margin = "4px 0 0";
+        chatModelRow.appendChild(chatModelLabel);
+        chatModelRow.appendChild(chatModelSelect);
+        chatModelRow.appendChild(chatModelRefreshBtn);
+        chatModelRow.appendChild(chatModelHint);
 
         const voiceWrap = document.createElement("label");
         voiceWrap.style.display = "flex";
@@ -4461,9 +4667,8 @@ class AgentInterface {
         controls.appendChild(keyInput);
         controls.appendChild(clearKeyBtn);
         controls.appendChild(rememberWrap);
+        controls.appendChild(chatModelRow);
         controls.appendChild(aiBudget);
-        controls.appendChild(modelLabel);
-        controls.appendChild(modelOverrideInput);
         controls.appendChild(voiceWrap);
         controls.appendChild(voiceSelectLabel);
         controls.appendChild(voiceSelect);
@@ -4494,7 +4699,11 @@ class AgentInterface {
         this._voiceSelectLabel = voiceSelectLabel;
         this._voiceStatusEl = voiceStatus;
         this._fullSpeechPromptInput = fullSpeechPromptInput;
-        this._modelOverrideInput = modelOverrideInput;
+        this._chatModelRow = chatModelRow;
+        this._chatModelSelect = chatModelSelect;
+        this._chatModelRefreshBtn = chatModelRefreshBtn;
+        this._chatModelHintEl = chatModelHint;
+        this._renderChatModelOptions();
         this._templateSelect = templateSelect;
         this._insertTemplateBtn = insertTemplateBtn;
         this._promptInput = promptInput;
@@ -4509,7 +4718,10 @@ class AgentInterface {
         this._voiceInput.checked = this._voiceOn;
         this._syncKeyFromSelection();
         // Browsers restore form values after load; re-assert what we actually stored.
-        requestAnimationFrame(() => this._syncKeyFromSelection());
+        requestAnimationFrame(() => {
+            this._syncKeyFromSelection();
+            if (this._clientApiKey() && !this._isGeminiProvider()) void this.ensureSessionGroqModels();
+        });
         this._syncVoiceUiForSelectedAgent();
         this._syncAiBudgetUi();
         this._syncSendButtonState();
@@ -4536,7 +4748,10 @@ class AgentInterface {
         this._voiceSelectLabel = null;
         this._voiceStatusEl = null;
         this._fullSpeechPromptInput = null;
-        this._modelOverrideInput = null;
+        this._chatModelRow = null;
+        this._chatModelSelect = null;
+        this._chatModelRefreshBtn = null;
+        this._chatModelHintEl = null;
         this._templateSelect = null;
         this._insertTemplateBtn = null;
         this._promptInput = null;

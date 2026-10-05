@@ -6,7 +6,12 @@ import {
     applyOrpheusVocalDirections,
     orpheusSpeechBodyBudget
 } from "../../groqModelSelect.js";
-import { trySalvageGroqChatError, ensureVisionMaxTokens, extractAssistantContentText } from "../../groqChatRecover.js";
+import {
+    trySalvageGroqChatError,
+    ensureVisionMaxTokens,
+    extractAssistantContentText,
+    readChatCompletionStream
+} from "../../groqChatRecover.js";
 
 /** Shared arcade pricing: player credit equals payment; provider cost × markup is debited. */
 const ARCADE_DEFAULT_PRICE_CENTS = 200;
@@ -439,19 +444,11 @@ async function proxyGroqChat(request, env, ctx) {
         1024,
         ensureVisionMaxTokens(Number(body.max_tokens) || 256, body.messages)
     );
-    body.stream = false;
     applyCrossModelChatDefaults(body);
 
-    const upstream = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-        method: "POST",
-        headers: {
-            Authorization: `Bearer ${env.GROQ_API_KEY}`,
-            "Content-Type": "application/json"
-        },
-        body: JSON.stringify(body)
-    });
-    const raw = await upstream.text();
+    const upstream = await fetchGroqChatCompletion(env, body);
     if (!upstream.ok) {
+        const { raw } = upstream;
         const salvaged = trySalvageGroqChatError(upstream.status, raw, body.model);
         if (salvaged) {
             const charge = calculateChatCharge(salvaged.payload.usage, body.model, env, session);
@@ -467,19 +464,79 @@ async function proxyGroqChat(request, env, ctx) {
         }
         return new Response(raw, {
             status: upstream.status,
-            headers: { "Content-Type": upstream.headers.get("Content-Type") || "application/json" }
+            headers: { "Content-Type": upstream.contentType }
         });
     }
-    const payload = JSON.parse(raw);
+    const { payload } = upstream;
     const charge = calculateChatCharge(payload.usage, body.model, env, session);
     deferAiDebit(ctx, env, id, charge);
-    return new Response(raw, {
+    return new Response(JSON.stringify(payload), {
         status: 200,
         headers: {
             "Content-Type": "application/json",
             "X-Phonebot-AI-Charge-Cents": String(charge)
         }
     });
+}
+
+/**
+ * POST a chat body to Groq. Streams unless JSON mode is on, so a reply can be cut where gpt-oss
+ * starts a second assistant message (see readChatCompletionStream).
+ * @returns {Promise<{ ok: true, payload: object } | { ok: false, status: number, raw: string, contentType: string }>}
+ */
+async function fetchGroqChatCompletion(env, body) {
+    const stream = !body.response_format;
+    body.stream = stream;
+    if (stream) body.stream_options = { include_usage: true };
+    else delete body.stream_options;
+
+    const upstream = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        method: "POST",
+        headers: {
+            Authorization: `Bearer ${env.GROQ_API_KEY}`,
+            "Content-Type": "application/json"
+        },
+        body: JSON.stringify(body)
+    });
+    const contentType = upstream.headers.get("Content-Type") || "application/json";
+    if (!upstream.ok) {
+        return { ok: false, status: upstream.status, raw: await upstream.text(), contentType };
+    }
+    if (stream && upstream.body && /text\/event-stream/i.test(contentType)) {
+        const streamed = await readChatCompletionStream(upstream, body.model);
+        if (streamed.errorText) {
+            return { ok: false, status: 400, raw: streamed.errorText, contentType: "application/json" };
+        }
+        const payload = streamed.json;
+        if (streamed.cut) {
+            console.warn("Groq chat: model started a second message; kept only the first reply.", {
+                model: payload.model,
+                requestId: payload.x_groq?.id
+            });
+        }
+        if (!payload.usage) payload.usage = estimateChatUsage(body.messages, payload);
+        return { ok: true, payload };
+    }
+    try {
+        return { ok: true, payload: JSON.parse(await upstream.text()) };
+    } catch (_) {
+        throw httpError(502, "Groq chat response was invalid.");
+    }
+}
+
+/** Rough token counts (4 characters per token) for a stream cut before Groq sent usage. Images are not counted. */
+function estimateChatUsage(messages, payload) {
+    const tokens = (text) => Math.ceil(String(text || "").length / 4);
+    let prompt = 0;
+    for (const m of messages || []) {
+        if (typeof m?.content === "string") prompt += tokens(m.content);
+        else if (Array.isArray(m?.content)) {
+            for (const part of m.content) if (typeof part?.text === "string") prompt += tokens(part.text);
+        }
+    }
+    const message = payload?.choices?.[0]?.message || {};
+    const completion = tokens(message.content) + tokens(message.reasoning);
+    return { prompt_tokens: prompt, completion_tokens: completion, total_tokens: prompt + completion, estimated: true };
 }
 
 async function proxyGroqTranscribe(request, env, ctx) {
@@ -602,7 +659,6 @@ async function proxyGroqVoiceTurn(request, env, ctx) {
         1024,
         ensureVisionMaxTokens(Number(chatBody.max_tokens) || 256, chatBody.messages)
     );
-    chatBody.stream = false;
     applyCrossModelChatDefaults(chatBody);
 
     const transcribeForm = new FormData();
@@ -637,31 +693,19 @@ async function proxyGroqVoiceTurn(request, env, ctx) {
     finalUserMessage.content = replacement.content;
 
     const chatStartedAt = Date.now();
-    const chatResponse = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-        method: "POST",
-        headers: {
-            Authorization: `Bearer ${env.GROQ_API_KEY}`,
-            "Content-Type": "application/json"
-        },
-        body: JSON.stringify(chatBody)
-    });
-    const chatRaw = await chatResponse.text();
+    const chatResponse = await fetchGroqChatCompletion(env, chatBody);
     let chatPayload;
     if (!chatResponse.ok) {
-        const salvaged = trySalvageGroqChatError(chatResponse.status, chatRaw, chatBody.model);
+        const salvaged = trySalvageGroqChatError(chatResponse.status, chatResponse.raw, chatBody.model);
         if (!salvaged) {
-            return new Response(chatRaw, {
+            return new Response(chatResponse.raw, {
                 status: chatResponse.status,
-                headers: { "Content-Type": chatResponse.headers.get("Content-Type") || "application/json" }
+                headers: { "Content-Type": chatResponse.contentType }
             });
         }
         chatPayload = salvaged.payload;
     } else {
-        try {
-            chatPayload = JSON.parse(chatRaw);
-        } catch (_) {
-            throw httpError(502, "Groq chat response was invalid.");
-        }
+        chatPayload = chatResponse.payload;
     }
     const rawContent = extractAssistantContentText(chatPayload);
     const contentText = rawContent;

@@ -147,6 +147,31 @@ function pickVision(models) {
     return pickCheapest(filterVisionChat(models));
 }
 
+function chatCandidates(models) {
+    const seen = new Set();
+    return [...filterTextChat(models), ...filterVisionChat(models)].filter((m) => {
+        if (seen.has(m.id)) return false;
+        seen.add(m.id);
+        return true;
+    });
+}
+
+/**
+ * Chat models a user may pick manually (text-only and vision-capable), cheapest first.
+ * @param {object[]|{ data: object[] }} models
+ * @returns {{ id: string, vision: boolean, inputUsdPerMillion: number, outputUsdPerMillion: number }[]}
+ */
+function listChatModelOptions(models) {
+    return chatCandidates(models)
+        .sort((a, b) => chatPriceScore(a) - chatPriceScore(b) || String(a.id).localeCompare(String(b.id)))
+        .map((m) => ({
+            id: m.id,
+            vision: hasModality(m, "input_modalities", "image"),
+            inputUsdPerMillion: (Number(m.pricing?.prompt) || 0) * 1_000_000,
+            outputUsdPerMillion: (Number(m.pricing?.completion) || 0) * 1_000_000
+        }));
+}
+
 /**
  * Convert Groq API per-token USD prices into Worker-style AUD cents per million tokens.
  * @param {object} model
@@ -320,8 +345,10 @@ function applyCrossModelChatDefaults(body) {
 }
 
 /**
+ * `overrides.chat` replaces the automatic chat pick when it is a valid chat candidate;
+ * a vision-capable override also handles camera turns. Unknown IDs fall back to automatic.
  * @param {object[]|{ data: object[] }} models
- * @param {{ audPerUsd?: number }} [options]
+ * @param {{ audPerUsd?: number, overrides?: { chat?: string|null } }} [options]
  * @returns {{
  *   chat: string|null,
  *   vision: string|null,
@@ -333,8 +360,11 @@ function applyCrossModelChatDefaults(body) {
  */
 function selectGroqModels(models, options = {}) {
     const audPerUsd = Number(options.audPerUsd) || 1.5;
-    const chatModel = pickChat(models);
-    const visionModel = pickVision(models);
+    const overrideId = String(options.overrides?.chat || "").trim();
+    const override = overrideId ? chatCandidates(models).find((m) => m.id === overrideId) || null : null;
+    const chatModel = override || pickChat(models);
+    const visionModel =
+        override && hasModality(override, "input_modalities", "image") ? override : pickVision(models);
     const sttModel = pickStt(models);
     const ttsModel = pickTts(models);
 
@@ -360,10 +390,12 @@ function selectGroqModels(models, options = {}) {
 }
 
 /**
+ * Raw model list from GET /openai/v1/models.
  * @param {string} apiKey
- * @param {{ audPerUsd?: number, fetchImpl?: typeof fetch }} [options]
+ * @param {{ fetchImpl?: typeof fetch }} [options]
+ * @returns {Promise<object[]>}
  */
-async function fetchAndSelectGroqModels(apiKey, options = {}) {
+async function fetchGroqModels(apiKey, options = {}) {
     const key = String(apiKey || "").trim();
     if (!key) throw new Error("Groq API key is required to list models.");
     const fetchImpl = options.fetchImpl || fetch;
@@ -384,13 +416,24 @@ async function fetchAndSelectGroqModels(apiKey, options = {}) {
     } catch (_) {
         throw new Error("Groq models response was not JSON.");
     }
-    return selectGroqModels(payload, { audPerUsd: options.audPerUsd });
+    return asList(payload);
+}
+
+/**
+ * @param {string} apiKey
+ * @param {{ audPerUsd?: number, overrides?: { chat?: string|null }, fetchImpl?: typeof fetch }} [options]
+ */
+async function fetchAndSelectGroqModels(apiKey, options = {}) {
+    const models = await fetchGroqModels(apiKey, { fetchImpl: options.fetchImpl });
+    return selectGroqModels(models, { audPerUsd: options.audPerUsd, overrides: options.overrides });
 }
 
 const api = {
     MIN_CHAT_CONTEXT,
     selectGroqModels,
+    fetchGroqModels,
     fetchAndSelectGroqModels,
+    listChatModelOptions,
     filterTextChat,
     filterVisionChat,
     filterStt,
@@ -417,7 +460,9 @@ if (typeof window !== "undefined") {
 export {
     MIN_CHAT_CONTEXT,
     selectGroqModels,
+    fetchGroqModels,
     fetchAndSelectGroqModels,
+    listChatModelOptions,
     filterTextChat,
     filterVisionChat,
     filterStt,

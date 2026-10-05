@@ -581,7 +581,7 @@ class Robot {
 
     /**
      * Play a dropdown entry: a mode id, or one of the active character's games (`game:<id>`),
-     * which runs from its local copy in the Custom engine.
+     * which runs in the Custom engine (repo games are fetched fresh each time).
      * @param {string} gameId
      */
     async selectGame(gameId) {
@@ -590,9 +590,9 @@ class Robot {
         const Game = window.CustomMessagesGame;
         const character = this._activeCharacter();
         if (typeof Game !== "function" || !character) return false;
-        let savedId = "";
+        let storeId = "";
         try {
-            savedId = await window.PhonebotCharacters.ensureGameCopy(
+            storeId = await window.PhonebotCharacters.loadGame(
                 character.id,
                 id.slice("game:".length)
             );
@@ -600,15 +600,15 @@ class Robot {
             console.warn("Character game load failed:", err);
             return false;
         }
-        if (!savedId || !Game.activateGame(savedId)) return false;
+        if (!storeId || !Game.activateGame(storeId)) return false;
         return this.restartCustomGame();
     }
 
-    /** Open a saved game's editor; the game is not made active and no triggers run. */
-    editCustomGame(savedId) {
+    /** Open a game's editor (read only for repo games); the game is not made active and no triggers run. */
+    editCustomGame(gameId) {
         const Game = window.CustomMessagesGame;
-        if (typeof Game !== "function" || !savedId) return false;
-        Game.requestEditGame(savedId);
+        if (typeof Game !== "function" || !gameId) return false;
+        Game.requestEditGame(gameId);
         return this.restartCustomGame();
     }
 

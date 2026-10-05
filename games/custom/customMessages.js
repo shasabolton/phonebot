@@ -140,6 +140,11 @@ class CustomMessagesGame {
     });
     /** @type {Promise<GamesIndexEntry[]>|null} */
     static _builtinIndexPromise = null;
+    /**
+     * Repo games loaded this page load, by id. Kept in memory only, so they always play the
+     * repo's current file and can't be edited. @type {Map<string, object>}
+     */
+    static _repoGames = new Map();
     static FACE_POLL_MS = 200;
     static SPEECH_POLL_MS = 150;
     static REPEAT_GAP_MS = 1200;
@@ -214,6 +219,8 @@ class CustomMessagesGame {
         this._activeGameName = "";
         /** Editing from the character editor: no triggers run and the game is not selected. */
         this._editOnly = false;
+        /** A repo game: the editor only shows it and nothing is saved. */
+        this._readOnly = false;
         this._running = false;
         this._generation = 0;
         this._audioBusy = false;
@@ -294,6 +301,7 @@ class CustomMessagesGame {
         const active = editGameId
             ? CustomMessagesGame.loadGameWorkspace(editGameId)
             : CustomMessagesGame.loadActiveWorkspace();
+        this._readOnly = CustomMessagesGame.isRepoGame(active.gameId);
         if (!active.gameId) {
             // No game selected: plain hold-to-talk chat with no actions or prompts.
             this._editOnly = false;
@@ -334,32 +342,52 @@ class CustomMessagesGame {
         this._startSpeechPoll(generation);
     }
 
+    /** Games saved in this browser, then repo games loaded this page load. @returns {object[]} */
+    static _allGames() {
+        return [
+            ...(CustomMessagesGame._loadStore().games || []),
+            ...CustomMessagesGame._repoGames.values()
+        ];
+    }
+
+    /** True for a repo game, which plays from the repo's file and can't be edited. */
+    static isRepoGame(gameId) {
+        return CustomMessagesGame._repoGames.has(String(gameId || ""));
+    }
+
+    /** Id a character's repo game has once loaded. */
+    static repoGameId(characterId, slug) {
+        return `repo:${characterId}/${slug}`;
+    }
+
     /**
      * `characterId` + `slug` name the owning character and the game's folder in it ("" for games
      * saved before characters owned games). `builtinId` is left on copies of the old shared games.
+     * `repo` marks repo games, which aren't saved in this browser.
      * @returns {SavedGameSummary[]}
      */
     static listGames() {
-        const store = CustomMessagesGame._loadStore();
-        return (store.games || [])
+        return CustomMessagesGame._allGames()
             .map((c) => ({
                 id: String(c.id || ""),
                 name: String(c.name || "").trim() || "Untitled",
                 characterId: String(c.characterId || ""),
                 slug: String(c.slug || ""),
-                builtinId: String(c.builtinId || "")
+                builtinId: String(c.builtinId || ""),
+                repo: CustomMessagesGame._repoGames.has(c.id)
             }))
             .filter((c) => c.id);
     }
 
-    /** @returns {SavedGameSummary|null} */
+    /** A character's game saved in this browser (not a repo game). @returns {SavedGameSummary|null} */
     static findCharacterGame(characterId, slug) {
         const owner = String(characterId || "");
         const want = String(slug || "");
         if (!owner || !want) return null;
         return (
-            CustomMessagesGame.listGames().find((g) => g.characterId === owner && g.slug === want) ||
-            null
+            CustomMessagesGame.listGames().find(
+                (g) => !g.repo && g.characterId === owner && g.slug === want
+            ) || null
         );
     }
 
@@ -378,12 +406,12 @@ class CustomMessagesGame {
         return true;
     }
 
-    /** Delete every game a character owns. */
+    /** Delete every game a character has saved in this browser. */
     static deleteCharacterGames(characterId) {
         const owner = String(characterId || "");
         if (!owner) return;
         for (const game of CustomMessagesGame.listGames()) {
-            if (game.characterId === owner) CustomMessagesGame.deleteGame(game.id);
+            if (!game.repo && game.characterId === owner) CustomMessagesGame.deleteGame(game.id);
         }
     }
 
@@ -432,15 +460,15 @@ class CustomMessagesGame {
     }
 
     /**
-     * A saved game by id. `gameId` is null (and `messages` empty) when it does not exist.
+     * A saved or loaded repo game by id. `gameId` is null (and `messages` empty) when it does
+     * not exist.
      * @param {string|null} gameId
      * @returns {{ gameId: string|null, gameName: string, messages: CustomMessage[] }}
      */
     static loadGameWorkspace(gameId) {
-        const store = CustomMessagesGame._loadStore();
         const want = gameId ? String(gameId) : null;
         if (want) {
-            const game = (store.games || []).find((c) => c && c.id === want);
+            const game = CustomMessagesGame._allGames().find((c) => c && c.id === want);
             if (game) {
                 return {
                     gameId: game.id,
@@ -497,9 +525,8 @@ class CustomMessagesGame {
     static activateGame(gameId) {
         const want = String(gameId || "").trim();
         if (!want) return false;
+        if (!CustomMessagesGame._allGames().some((c) => c && c.id === want)) return false;
         const store = CustomMessagesGame._loadStore();
-        const game = (store.games || []).find((c) => c && c.id === want);
-        if (!game) return false;
         store.activeGameId = want;
         CustomMessagesGame._saveStore(store);
         return true;
@@ -521,6 +548,10 @@ class CustomMessagesGame {
     static deleteGame(gameId) {
         const want = String(gameId || "").trim();
         if (!want) return false;
+        if (CustomMessagesGame._repoGames.delete(want)) {
+            window.dispatchEvent(new CustomEvent(CustomMessagesGame.GAME_CHANGE_EVENT));
+            return true;
+        }
         const store = CustomMessagesGame._loadStore();
         const removed = (store.games || []).find((c) => c && c.id === want);
         if (!removed) return false;
@@ -578,16 +609,7 @@ class CustomMessagesGame {
      * @returns {Promise<{ id: string, name: string }|null>}
      */
     static async importGameFromExport(payload, { characterId, slug, basePath = "", files = null }) {
-        if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
-        if (!characterId || !slug) return null;
-        const format = String(payload.format || "").trim();
-        if (
-            format &&
-            format !== CustomMessagesGame.EXPORT_FORMAT &&
-            !CustomMessagesGame.LEGACY_EXPORT_FORMATS.includes(format)
-        ) {
-            return null;
-        }
+        if (!CustomMessagesGame._isGamePayload(payload) || !characterId || !slug) return null;
         const name = String(payload.name || "").trim() || "Untitled";
         const messages = CustomMessagesGame._deserializeMessageList(payload.messages);
         // Fresh keys so importing the same backup twice never shares (then deletes) a clip.
@@ -608,6 +630,41 @@ class CustomMessagesGame {
         store.games.push(game);
         CustomMessagesGame._saveStore(store);
         return { id: game.id, name: game.name };
+    }
+
+    /**
+     * Load a character's repo game file into memory (nothing is saved in this browser), replacing
+     * the version loaded before. Relative `audioUrl`s are resolved against `basePath`, the file's
+     * app-relative path.
+     * @param {object} payload
+     * @param {{ characterId: string, slug: string, basePath: string }} options
+     * @returns {{ id: string, name: string }|null}
+     */
+    static loadRepoGame(payload, { characterId, slug, basePath }) {
+        if (!CustomMessagesGame._isGamePayload(payload) || !characterId || !slug) return null;
+        const messages = CustomMessagesGame._deserializeMessageList(payload.messages);
+        CustomMessagesGame._rebaseAudio(messages, { basePath });
+        const game = {
+            id: CustomMessagesGame.repoGameId(characterId, slug),
+            name: String(payload.name || "").trim() || "Untitled",
+            messages: messages.map((m) => CustomMessagesGame._serializeMessage(m)),
+            characterId: String(characterId),
+            slug: String(slug)
+        };
+        CustomMessagesGame._repoGames.set(game.id, game);
+        window.dispatchEvent(new CustomEvent(CustomMessagesGame.GAME_CHANGE_EVENT));
+        return { id: game.id, name: game.name };
+    }
+
+    /** A game file (or older backup) object. */
+    static _isGamePayload(payload) {
+        if (!payload || typeof payload !== "object" || Array.isArray(payload)) return false;
+        const format = String(payload.format || "").trim();
+        return (
+            !format ||
+            format === CustomMessagesGame.EXPORT_FORMAT ||
+            CustomMessagesGame.LEGACY_EXPORT_FORMATS.includes(format)
+        );
     }
 
     /** @param {string} value @returns {boolean} true for paths with no scheme or leading slash. */
@@ -1397,6 +1454,7 @@ class CustomMessagesGame {
     }
 
     async _persistAll() {
+        if (this._readOnly) return;
         await CustomMessagesGame._storeAudioInDb(this.messages);
         CustomMessagesGame._saveMessages(this.messages, this._activeGameId);
     }
@@ -1492,7 +1550,7 @@ class CustomMessagesGame {
      * @param {{ name?: string }} patch
      */
     _persistActiveGameMeta(patch = {}) {
-        if (!this._activeGameId) return;
+        if (!this._activeGameId || this._readOnly) return;
         if (patch.name != null) {
             const label = String(patch.name || "").trim();
             if (label) this._activeGameName = label;
@@ -1524,7 +1582,9 @@ class CustomMessagesGame {
 
         const hint = document.createElement("p");
         hint.className = "custom-messages-hint muted";
-        hint.textContent = "A game is a collection of messages and their triggers.";
+        hint.textContent = this._readOnly
+            ? "This game comes from the repo, so it is read only here. Change its file in the repo; the latest version loads every time."
+            : "A game is a collection of messages and their triggers.";
         card.appendChild(hint);
 
         const meta = document.createElement("div");
@@ -1541,6 +1601,7 @@ class CustomMessagesGame {
         nameInput.maxLength = 48;
         nameInput.value = this._activeGameName || "";
         nameInput.disabled = !this._activeGameId;
+        nameInput.readOnly = this._readOnly;
         nameInput.addEventListener("change", () => {
             this._persistActiveGameMeta({ name: nameInput.value });
         });
@@ -1572,6 +1633,7 @@ class CustomMessagesGame {
         addBtn.type = "button";
         addBtn.className = "custom-messages-add";
         addBtn.textContent = "+ Add";
+        addBtn.hidden = this._readOnly;
         addBtn.addEventListener("click", () => this.openEditor(null));
 
         const doneBtn = document.createElement("button");
@@ -1619,7 +1681,9 @@ class CustomMessagesGame {
         if (!this.messages.length) {
             const empty = document.createElement("p");
             empty.className = "custom-messages-hint muted";
-            empty.textContent = "No messages yet. Tap + Add to create one.";
+            empty.textContent = this._readOnly
+                ? "No messages."
+                : "No messages yet. Tap + Add to create one.";
             list.appendChild(empty);
             return;
         }
@@ -1680,8 +1744,8 @@ class CustomMessagesGame {
             const editBtn = document.createElement("button");
             editBtn.type = "button";
             editBtn.className = "custom-messages-tile-edit";
-            editBtn.setAttribute("aria-label", "Edit message");
-            editBtn.textContent = "Edit";
+            editBtn.setAttribute("aria-label", this._readOnly ? "View message" : "Edit message");
+            editBtn.textContent = this._readOnly ? "View" : "Edit";
             editBtn.addEventListener("click", (e) => {
                 e.stopPropagation();
                 this.openEditor(msg);
@@ -1734,7 +1798,11 @@ class CustomMessagesGame {
 
         const title = document.createElement("h2");
         title.className = "custom-messages-title";
-        title.textContent = draft.id ? "Edit message" : "Custom message";
+        title.textContent = this._readOnly
+            ? "View message"
+            : draft.id
+              ? "Edit message"
+              : "Custom message";
         card.appendChild(title);
 
         const clearLabel = document.createElement("label");
@@ -1895,13 +1963,14 @@ class CustomMessagesGame {
         const cancelBtn = document.createElement("button");
         cancelBtn.type = "button";
         cancelBtn.className = "custom-messages-cancel secondary";
-        cancelBtn.textContent = "Cancel";
+        cancelBtn.textContent = this._readOnly ? "Close" : "Cancel";
         cancelBtn.addEventListener("click", () => this._closeEditor());
 
+        submitBtn.hidden = this._readOnly;
         actions.appendChild(submitBtn);
         actions.appendChild(cancelBtn);
 
-        if (draft.id) {
+        if (draft.id && !this._readOnly) {
             const deleteBtn = document.createElement("button");
             deleteBtn.type = "button";
             deleteBtn.className = "custom-messages-delete secondary";
@@ -2079,6 +2148,17 @@ class CustomMessagesGame {
         };
         this._syncTriggerOptions();
         this._syncEditorState();
+        this._lockEditor();
+    }
+
+    /** Read-only editor: text stays readable and the audio can still be played; nothing changes. */
+    _lockEditor() {
+        if (!this._readOnly || !this._overlay) return;
+        for (const el of this._overlay.querySelectorAll("input, select, textarea, button")) {
+            if (el === this._previewBtn || el.classList.contains("custom-messages-cancel")) continue;
+            if (el.tagName === "TEXTAREA" || /^(text|url|number)$/.test(el.type)) el.readOnly = true;
+            else el.disabled = true;
+        }
     }
 
     /** A titled block of the editor body. @returns {HTMLElement} */
@@ -2756,7 +2836,7 @@ class CustomMessagesGame {
 
     async _submitDraft() {
         const draft = this._draft;
-        if (!draft || draft._busy) return;
+        if (!draft || draft._busy || this._readOnly) return;
         if (this._recording) await this._stopRecording(false);
 
         const trigger = draft.trigger || "gameLoad";
@@ -2816,6 +2896,7 @@ class CustomMessagesGame {
     }
 
     async _deleteMessage(id) {
+        if (this._readOnly) return;
         const want = String(id || "");
         const removed = this.messages.find((m) => m.id === want);
         this.messages = this.messages.filter((m) => m.id !== want);
@@ -3735,11 +3816,12 @@ class CustomMessagesGame {
 
 /**
  * @typedef {object} SavedGameSummary
- * @property {string} id Local store id.
+ * @property {string} id Local store id, or the repo game's id.
  * @property {string} name
  * @property {string} characterId Owning character ("" for games saved before characters owned games).
  * @property {string} slug The game's folder name inside its character.
  * @property {string} builtinId Copies of the old shared games/index.json JSON games.
+ * @property {boolean} repo A repo game: kept in memory only and read only.
  */
 
 window.CustomMessagesGame = CustomMessagesGame;
