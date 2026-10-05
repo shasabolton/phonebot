@@ -32,6 +32,9 @@ class Robot {
         this._goalInputEl = null;
         this._modeSelect = null;
         this._localGame = null;
+        /** Run toggle turned off (see pauseActivity). */
+        this._paused = false;
+        this._resumeWaiters = [];
         this._modeReady = false;
         this._modeActivationGeneration = 0;
         this.dashboardContainer = null;
@@ -861,6 +864,42 @@ class Robot {
         if (agent && typeof agent.applyPromptTemplate === "function") {
             void agent.applyPromptTemplate(spec);
         }
+    }
+
+    /**
+     * Run toggle off: hold playing audio where it is; game triggers, timers, and agent replies
+     * wait on whenResumed() until resumeActivity().
+     */
+    pauseActivity() {
+        if (this._paused) return;
+        this._paused = true;
+        this.getProcessingByType("audioPlayer")?.pauseForRobot?.();
+        this._localGame?.pauseAudio?.();
+        try {
+            window.speechSynthesis?.pause();
+        } catch (_) {}
+    }
+
+    resumeActivity() {
+        if (!this._paused) return;
+        this._paused = false;
+        try {
+            window.speechSynthesis?.resume();
+        } catch (_) {}
+        this.getProcessingByType("audioPlayer")?.resumeForRobot?.();
+        this._localGame?.resumeAudio?.();
+        const waiters = this._resumeWaiters.splice(0);
+        for (const resolve of waiters) resolve();
+    }
+
+    isPaused() {
+        return this._paused;
+    }
+
+    /** Resolves now when running, else once the run toggle is turned back on. */
+    whenResumed() {
+        if (!this._paused) return Promise.resolve();
+        return new Promise((resolve) => this._resumeWaiters.push(resolve));
     }
 
     _stopLocalGame() {

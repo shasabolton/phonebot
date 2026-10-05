@@ -56,10 +56,10 @@ class ParrotGame {
         window.__phonebotTtsSpeaking = false;
     }
 
-    _sleep(ms, generation) {
-        return new Promise((resolve) => {
-            setTimeout(() => resolve(this._isActive(generation)), Math.max(0, ms));
-        });
+    async _sleep(ms, generation) {
+        await new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
+        await this.robot?.whenResumed?.();
+        return this._isActive(generation);
     }
 
     /**

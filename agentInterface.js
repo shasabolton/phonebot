@@ -1360,12 +1360,18 @@ class AgentInterface {
         try {
             await Promise.race([
                 player.playBlob(blob, labels.playLabel),
-                new Promise((_, reject) =>
-                    setTimeout(
-                        () => reject(new Error(`TTS playback timed out after ${playTimeoutMs / 1000}s.`)),
-                        playTimeoutMs
-                    )
-                )
+                new Promise((_, reject) => {
+                    const arm = () =>
+                        setTimeout(async () => {
+                            if (this.robot?.isPaused?.()) {
+                                await this.robot.whenResumed();
+                                arm();
+                                return;
+                            }
+                            reject(new Error(`TTS playback timed out after ${playTimeoutMs / 1000}s.`));
+                        }, playTimeoutMs);
+                    arm();
+                })
             ]);
         } finally {
             window.__phonebotTtsSpeaking = false;
@@ -1415,6 +1421,7 @@ class AgentInterface {
         if (!window.speechSynthesis || typeof window.SpeechSynthesisUtterance !== "function") {
             return;
         }
+        await this.robot?.whenResumed?.();
         try {
             window.speechSynthesis.cancel();
             const utterance = new SpeechSynthesisUtterance(content);
@@ -2433,6 +2440,7 @@ class AgentInterface {
             : String(text || "").trim();
     }
 
+    /** The agent's max tokens, the same at every reasoning level; thinking and reply share it. */
     _resolveMaxTokens(agent, messages) {
         const base = Number.isFinite(agent?.maxTokens) ? Math.round(agent.maxTokens) : 1024;
         if (typeof window.GroqChatRecover?.ensureVisionMaxTokens === "function") {
@@ -2980,6 +2988,7 @@ class AgentInterface {
             !hostedArcadeChat &&
             !responseFormat &&
             typeof window.GroqChatRecover?.readChatCompletionStream === "function";
+        const reasoningEffort = this._resolveReasoningEffort(agent, model, options.reasoningEffort);
         const body = {
             model,
             messages: responseFormat ? conversationMessages : this._withSingleTurnReminder(conversationMessages),
@@ -2993,7 +3002,6 @@ class AgentInterface {
             body.stream = true;
             body.stream_options = { include_usage: true };
         }
-        const reasoningEffort = this._resolveReasoningEffort(agent, model, options.reasoningEffort);
         if (reasoningEffort) {
             body.reasoning_effort = reasoningEffort;
         }
@@ -3386,6 +3394,7 @@ class AgentInterface {
     }
 
     async _maybeRunActionFromResponse(contentText, rawText) {
+        await this.robot?.whenResumed?.();
         const fromContent = this._tryParseJson(contentText) || this._extractJsonObjectFromModelText(contentText);
         const fromRaw = this._tryParseJson(rawText) || this._extractJsonObjectFromModelText(rawText);
         const payload = fromContent || fromRaw;
@@ -3750,6 +3759,7 @@ class AgentInterface {
                     : this.config.chatResponseFormat && typeof this.config.chatResponseFormat === "object"
                       ? this.config.chatResponseFormat
                       : null;
+            const reasoningEffort = this._resolveReasoningEffort(agent, model);
             const chatBody = {
                 model,
                 messages: responseFormat ? conversationMessages : this._withSingleTurnReminder(conversationMessages),
@@ -3757,7 +3767,6 @@ class AgentInterface {
                 max_tokens: this._resolveMaxTokens(agent, conversationMessages)
             };
             if (responseFormat) chatBody.response_format = responseFormat;
-            const reasoningEffort = this._resolveReasoningEffort(agent, model);
             if (reasoningEffort) chatBody.reasoning_effort = reasoningEffort;
             if (agent.extraBody && typeof agent.extraBody === "object") {
                 Object.assign(chatBody, agent.extraBody);

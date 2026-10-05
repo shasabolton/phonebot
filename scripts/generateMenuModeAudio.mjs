@@ -23,11 +23,6 @@ const VOICE = "austin";
 /** @type {{ file: string, text: string }[]} */
 export const CLIPS = [
     {
-        file: "intro.wav",
-        text:
-            "Hello there. I am your friendly talking head on the wall. I like to play word games, talk philosophy, and you should know, I am also a pretty good fortune teller. Please choose a game from the menu."
-    },
-    {
         file: "nudge-0.wav",
         text:
             "Wanna play Simon says, 20 questions, discuss the nature of reality, just pick a game from the menu."

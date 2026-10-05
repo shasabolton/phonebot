@@ -945,9 +945,28 @@ class CustomMessagesGame {
         window.__phonebotTtsSpeaking = false;
     }
 
-    _sleep(ms, generation) {
-        return new Promise((resolve) => {
-            setTimeout(() => resolve(this._isActive(generation)), Math.max(0, ms));
+    async _sleep(ms, generation) {
+        await new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
+        await this.robot?.whenResumed?.();
+        return this._isActive(generation);
+    }
+
+    _isPaused() {
+        return !!this.robot?.isPaused?.();
+    }
+
+    /** Robot paused: hold a URL clip playing outside the audio player. */
+    pauseAudio() {
+        const audio = this._untappedAudio;
+        if (audio && !audio.paused && !audio.ended) audio.pause();
+    }
+
+    resumeAudio() {
+        const audio = this._untappedAudio;
+        if (!audio || !audio.paused || audio.ended) return;
+        audio.play().catch((err) => {
+            console.warn("Custom audio URL resume failed:", err);
+            this._stopUntappedAudio();
         });
     }
 
@@ -2973,7 +2992,7 @@ class CustomMessagesGame {
     }
 
     async _onFaceTick(generation) {
-        if (!this._isActive(generation) || this._audioBusy) return;
+        if (!this._isActive(generation) || this._audioBusy || this._isPaused()) return;
         if (this._endPending) return;
         const facePresent = this._isFacePresent();
         const now = Date.now();
@@ -3059,7 +3078,7 @@ class CustomMessagesGame {
     }
 
     async _onSpeechTick(generation) {
-        if (!this._isActive(generation) || this._endPending) return;
+        if (!this._isActive(generation) || this._endPending || this._isPaused()) return;
         const speaking = this._isSpeechSpeaking();
 
         if (this._lastSpeechSpeaking === null) {
@@ -3643,7 +3662,9 @@ class CustomMessagesGame {
     }
 
     /** @param {string} url @returns {Promise<void>} Resolves when playback ends or is stopped. */
-    _playUntappedUrl(url) {
+    async _playUntappedUrl(url) {
+        await this.robot?.whenResumed?.();
+        if (!this._running) return;
         this._stopUntappedAudio();
         const audio = new Audio(url);
         this._untappedAudio = audio;
@@ -3657,7 +3678,9 @@ class CustomMessagesGame {
             };
             audio.addEventListener("ended", finish);
             audio.addEventListener("error", finish);
-            audio.addEventListener("pause", finish);
+            audio.addEventListener("pause", () => {
+                if (this._untappedAudio !== audio || !this._isPaused()) finish();
+            });
             audio
                 .play()
                 .then(() => {
@@ -3673,6 +3696,8 @@ class CustomMessagesGame {
     _stopUntappedAudio() {
         const audio = this._untappedAudio;
         if (!audio) return;
+        this._untappedAudio = null;
+        window.__phonebotTtsSpeaking = false;
         try {
             audio.pause();
         } catch (_) {}

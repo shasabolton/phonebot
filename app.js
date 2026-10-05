@@ -494,7 +494,7 @@ class App {
     _wireTransmitterHandlers(tx) {
         if (!tx) return;
         if (typeof tx.setReadyChangeHandler === 'function') {
-            tx.setReadyChangeHandler(() => this.updateStartButtonState());
+            tx.setReadyChangeHandler(() => this._onTransmitterReadyChange());
         }
         if (typeof tx.setActionFrequencyChangeHandler === 'function') {
             tx.setActionFrequencyChangeHandler(() => this.restartActionLoopIfRunning());
@@ -520,38 +520,53 @@ class App {
         return !!this.loopIntervalId;
     }
 
+    /** The run toggle is on: the robot isn't paused (motor signals also need a ready transmitter). */
+    isRobotOn() {
+        return !!this.robot && !(typeof this.robot.isPaused === 'function' && this.robot.isPaused());
+    }
+
     syncRunToggle() {
         const toggle = this.runToggle;
         if (!toggle) return;
-        const transmitterReady = !!(
-            this.transmitterInstance &&
-            this.transmitterInstance.isReady &&
-            this.transmitterInstance.isReady()
-        );
-        const hasRobot = !!this.robot;
-        const running = this.isRunLoopActive();
-        const canStart = transmitterReady && hasRobot;
-        toggle.disabled = this._runToggleBusy || (!running && !canStart);
-        toggle.setAttribute('aria-checked', running ? 'true' : 'false');
-        toggle.classList.toggle('is-on', running);
+        const on = this.isRobotOn();
+        toggle.disabled = this._runToggleBusy || !this.robot;
+        toggle.setAttribute('aria-checked', on ? 'true' : 'false');
+        toggle.classList.toggle('is-on', on);
         toggle.classList.toggle('is-busy', !!this._runToggleBusy);
-        toggle.title = running
-            ? 'Transmit loop on — tap to stop'
-            : canStart
-              ? 'Transmit loop off — tap to start'
-              : 'Select robot and ready transmitter to start';
+        toggle.title = !this.robot
+            ? 'Select a robot first'
+            : on
+              ? 'Robot on — tap to pause'
+              : 'Robot paused — tap to resume';
     }
 
     updateStartButtonState() {
         this.syncRunToggle();
     }
 
+    /** A transmitter that becomes ready while the robot is on starts sending motor signals. */
+    _onTransmitterReadyChange() {
+        this.updateStartButtonState();
+        if (this.isRobotOn() && this.isTransmitterReady() && !this._runToggleBusy) {
+            void this.startTransmitLoop();
+        }
+    }
+
+    /** Toggle off: pause audio, game triggers and agent replies, and send servos home. */
     async onStop() {
+        const wasTransmitting = this.isRunLoopActive();
         this.stopLoop();
         this._runToggleBusy = false;
+        if (this.robot && typeof this.robot.pauseActivity === 'function') {
+            this.robot.pauseActivity();
+        }
 
         let restorePids = null;
-        if (this.robot && typeof this.robot.syncActuatorsToHomeForTransmit === 'function') {
+        if (
+            wasTransmitting &&
+            this.robot &&
+            typeof this.robot.syncActuatorsToHomeForTransmit === 'function'
+        ) {
             this._runToggleBusy = true;
             this.syncRunToggle();
             const { message, restorePids: restore } = this.robot.syncActuatorsToHomeForTransmit();
@@ -575,15 +590,17 @@ class App {
         this.syncRunToggle();
     }
 
+    /** Toggle on: resume where the robot paused, and send motor signals if a transmitter is ready. */
     async onStart() {
+        if (this._runToggleBusy || !this.robot) return;
+        if (typeof this.robot.resumeActivity === 'function') this.robot.resumeActivity();
+        this.syncRunToggle();
+        await this.startTransmitLoop();
+    }
+
+    async startTransmitLoop() {
         if (this._runToggleBusy || this.isRunLoopActive()) return;
-        this.updateStartButtonState();
-        const transmitterReady = !!(
-            this.transmitterInstance &&
-            this.transmitterInstance.isReady &&
-            this.transmitterInstance.isReady()
-        );
-        if (!transmitterReady || !this.robot) return;
+        if (!this.isTransmitterReady() || !this.robot) return;
 
         this._runToggleBusy = true;
         this.syncRunToggle();
@@ -605,7 +622,7 @@ class App {
 
     async onRunToggleClick() {
         if (this._runToggleBusy) return;
-        if (this.isRunLoopActive()) {
+        if (this.isRobotOn()) {
             await this.onStop();
         } else {
             await this.onStart();
@@ -702,7 +719,7 @@ class App {
         runToggle.className = 'app-run-toggle';
         runToggle.setAttribute('role', 'switch');
         runToggle.setAttribute('aria-checked', 'false');
-        runToggle.setAttribute('aria-label', 'Transmit loop');
+        runToggle.setAttribute('aria-label', 'Robot on / pause');
         runToggle.disabled = true;
         const runThumb = document.createElement('span');
         runThumb.className = 'app-run-toggle-thumb';

@@ -1,0 +1,19 @@
+{
+  "format": "phonebot.game.v1",
+  "name": "Introduction",
+  "messages": [
+    {
+      "id": "introduction-intro",
+      "kind": "audio",
+      "trigger": "gameLoad",
+      "loop": "once",
+
+      "onEnd": "end:game:menuMode",
+      "delaySec": 0,
+      "constraints": { "face": "any" },
+      "text": "Hello there. I am your friendly talking head on the wall. I like to play word games, talk philosophy, and you should know, I am also a pretty good fortune teller. Please choose a game from the menu.",
+      "fileName": "intro.wav",
+      "audioUrl": "audio/intro.wav"
+    }
+  ]
+}

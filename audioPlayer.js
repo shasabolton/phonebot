@@ -81,6 +81,31 @@ class AudioPlayerAiModel {
         /** Object URL for programmatic playback (e.g. local TTS). */
         this._ttsObjectUrl = "";
         this._playEndedWaiters = [];
+        /** A clip was playing when the robot paused; it carries on from there on resume. */
+        this._heldByRobotPause = false;
+    }
+
+    /** Robot paused: hold what's playing where it is. */
+    pauseForRobot() {
+        const audio = this._audio;
+        if (!audio || audio.paused || audio.ended) return;
+        this._heldByRobotPause = true;
+        audio.pause();
+        this._setStatus("Paused.");
+    }
+
+    resumeForRobot() {
+        if (!this._heldByRobotPause) return;
+        this._heldByRobotPause = false;
+        const audio = this._audio;
+        if (!audio || audio.ended || !audio.src) return;
+        if (this._audioContext && this._audioContext.state === "suspended") {
+            void this._audioContext.resume().catch(() => {});
+        }
+        audio.play().catch((err) => {
+            console.warn("Audio resume failed:", err);
+            this._resolvePlayEndedWaiters();
+        });
     }
 
     static _clampDelayMs(value) {
@@ -565,6 +590,7 @@ class AudioPlayerAiModel {
     /** Silence what's playing and claim playback. @returns {number} token for this play */
     _beginPlay() {
         this._playToken += 1;
+        this._heldByRobotPause = false;
         this._resolvePlayEndedWaiters();
         this._ensureAudio().pause();
         return this._playToken;
@@ -578,6 +604,9 @@ class AudioPlayerAiModel {
      * @returns {Promise<void>} Resolves when playback ends or is stopped.
      */
     async _playUrl(src, label, loadedId, clipPitch) {
+        const token = this._playToken;
+        await this.robot?.whenResumed?.();
+        if (token !== this._playToken) return;
         const audio = this._ensureAudio();
         audio.pause();
         try {
@@ -678,6 +707,7 @@ class AudioPlayerAiModel {
 
     stop() {
         this._playToken += 1;
+        this._heldByRobotPause = false;
         if (!this._audio) {
             this._resolvePlayEndedWaiters();
             this._syncTransportButtons();

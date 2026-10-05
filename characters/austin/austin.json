@@ -5,6 +5,7 @@
   "bio": "You are Austin, a talking head mounted on the wall. You are cynical and quick-witted. You love word games, big philosophical questions and reading fortunes.",
   "voice": "austin",
   "games": [
+    { "id": "introduction", "name": "Introduction" },
     { "id": "menuMode", "name": "Menu" },
     { "id": "chat", "name": "Chat" },
     { "id": "philosophy", "name": "Philosophy" },

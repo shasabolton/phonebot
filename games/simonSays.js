@@ -94,6 +94,8 @@ class SimonSaysPoseMatch {
         this.robot = robot;
         this._running = false;
         this._generation = 0;
+        /** Total time _sleep spent waiting out robot pauses. */
+        this._pausedMs = 0;
         this._lastPairKey = "";
         this._currentA = null;
         this._currentB = null;
@@ -351,10 +353,15 @@ class SimonSaysPoseMatch {
         }
     }
 
-    _sleep(ms, generation) {
-        return new Promise((resolve) => {
-            setTimeout(() => resolve(this._isActive(generation)), Math.max(0, ms));
-        });
+    /** Waits out a robot pause too; the time spent paused is added to `_pausedMs`. */
+    async _sleep(ms, generation) {
+        await new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
+        if (this.robot?.isPaused?.()) {
+            const pausedAt = performance.now();
+            await this.robot.whenResumed();
+            this._pausedMs += performance.now() - pausedAt;
+        }
+        return this._isActive(generation);
     }
 
     _getMoveNet() {
@@ -565,10 +572,11 @@ class SimonSaysPoseMatch {
         const windowMs = SimonSaysPoseMatch.POSE_CHECK_WINDOW_MS;
         const pollMs = SimonSaysPoseMatch.POSE_POLL_MS;
         const started = performance.now();
+        const pausedAtStart = this._pausedMs;
         let holdStart = null;
 
         while (this._isActive(generation)) {
-            const now = performance.now();
+            const now = performance.now() - (this._pausedMs - pausedAtStart);
             const elapsed = now - started;
             const matched = this._isPoseCorrect(
                 this._getKeypoints(),
