@@ -321,26 +321,30 @@ async function startSession(env, id) {
     const existing = await selectSession(env, id);
     if (!existing) throw httpError(404, "Play session not found.");
 
-    let resolvedJson = existing.resolved_models_json || null;
-    if (!resolvedJson && env.GROQ_API_KEY) {
+    let resolvedJson = resolvedHasChatRate(parseResolvedModels(existing)) ? existing.resolved_models_json : null;
+    if (!resolvedJson) {
+        if (!env.GROQ_API_KEY) throw httpError(503, "Hosted AI is not configured.");
+        let resolved = null;
         try {
             const selected = await fetchAndSelectGroqModels(env.GROQ_API_KEY, {
                 audPerUsd: Number(env.GROQ_AUD_PER_USD) || 1.5
             });
-            resolvedJson = JSON.stringify({
+            resolved = {
                 chat: selected.chat,
                 vision: selected.vision,
                 stt: selected.stt,
                 tts: selected.tts,
                 rates: selected.rates,
                 selectedAt: now
-            });
+            };
         } catch (err) {
             console.error(JSON.stringify({ event: "groq_model_select_failed", message: err?.message }));
-            resolvedJson = JSON.stringify(fallbackResolvedModels(env));
         }
-    } else if (!resolvedJson) {
-        resolvedJson = JSON.stringify(fallbackResolvedModels(env));
+        // Without a live rate for the chat model nothing could be charged, so the session stays unstarted.
+        if (!resolvedHasChatRate(resolved)) {
+            throw httpError(503, "Hosted AI is temporarily unavailable. Please try again in a moment.");
+        }
+        resolvedJson = JSON.stringify(resolved);
     }
 
     await env.DB.prepare(
@@ -348,7 +352,7 @@ async function startSession(env, id) {
          SET status = 'active',
              started_at = COALESCE(started_at, ?),
              expires_at = ?,
-             resolved_models_json = COALESCE(resolved_models_json, ?)
+             resolved_models_json = ?
          WHERE id = ? AND status IN ('paid', 'active')`
     )
         .bind(now, now + CREDIT_TTL_MS, resolvedJson, id)
@@ -359,25 +363,12 @@ async function startSession(env, id) {
     return json(publicSession(session));
 }
 
-function fallbackResolvedModels(env) {
-    const chat = csvList(env.GROQ_ALLOWED_MODELS, "openai/gpt-oss-20b")[0] || "openai/gpt-oss-20b";
-    const stt = csvList(env.GROQ_ALLOWED_TRANSCRIBE_MODELS, "whisper-large-v3")[0] || "whisper-large-v3";
-    const tts =
-        csvList(env.GROQ_ALLOWED_SPEECH_MODELS, "canopylabs/orpheus-v1-english")[0] ||
-        "canopylabs/orpheus-v1-english";
-    let rates = {};
-    try {
-        rates = JSON.parse(env.GROQ_RATES_JSON || "{}");
-    } catch (_) {}
-    return {
-        chat,
-        vision: chat,
-        stt,
-        tts,
-        rates,
-        selectedAt: Date.now(),
-        fallback: true
-    };
+function hasChatRate(rate) {
+    return Number(rate?.inputCentsPerMillion) > 0 || Number(rate?.outputCentsPerMillion) > 0;
+}
+
+function resolvedHasChatRate(resolved) {
+    return !!resolved?.chat && hasChatRate(resolved.rates?.[resolved.chat]);
 }
 
 function parseResolvedModels(session) {
@@ -391,14 +382,13 @@ function parseResolvedModels(session) {
     }
 }
 
-function sessionAllowsChatModel(session, model, env) {
+/** Only the session's own picks, and only while the session holds a live rate for that model. */
+function sessionAllowsChatModel(session, model) {
     const resolved = parseResolvedModels(session);
     const id = String(model || "").trim();
-    if (!id) return false;
-    if (resolved) {
-        return id === resolved.chat || id === resolved.vision;
-    }
-    return csvList(env.GROQ_ALLOWED_MODELS, "openai/gpt-oss-20b").includes(id);
+    if (!id || !resolved) return false;
+    if (id !== resolved.chat && id !== resolved.vision) return false;
+    return hasChatRate(resolved.rates?.[id]);
 }
 
 function sessionAllowsSttModel(session, model, env) {
@@ -437,7 +427,7 @@ async function proxyGroqChat(request, env, ctx) {
     const { id, session } = gate;
 
     const body = await readJson(request);
-    if (!sessionAllowsChatModel(session, body.model, env)) {
+    if (!sessionAllowsChatModel(session, body.model)) {
         throw httpError(400, "Model is not allowed for hosted arcade use.");
     }
     body.max_tokens = Math.min(
@@ -652,7 +642,7 @@ async function proxyGroqVoiceTurn(request, env, ctx) {
     if (!chatBody || !Array.isArray(chatBody.messages)) {
         throw httpError(400, "chatBody.messages is required.");
     }
-    if (!sessionAllowsChatModel(session, chatBody.model, env)) {
+    if (!sessionAllowsChatModel(session, chatBody.model)) {
         throw httpError(400, "Model is not allowed for hosted arcade use.");
     }
     chatBody.max_tokens = Math.min(
@@ -949,16 +939,8 @@ function csvList(value, fallback) {
         .filter(Boolean);
 }
 
-function calculateChatCharge(usage, model, env, session = null) {
-    let rates = {};
-    try {
-        rates = JSON.parse(env.GROQ_RATES_JSON || "{}");
-    } catch (_) {}
-    const resolved = parseResolvedModels(session);
-    if (resolved?.rates && typeof resolved.rates === "object") {
-        rates = { ...rates, ...resolved.rates };
-    }
-    const rate = rates[model] || {};
+function calculateChatCharge(usage, model, env, session) {
+    const rate = parseResolvedModels(session)?.rates?.[model] || {};
     const input = Math.max(0, Number(usage?.prompt_tokens) || 0);
     const output = Math.max(0, Number(usage?.completion_tokens) || 0);
     const cents =

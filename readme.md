@@ -201,20 +201,13 @@ used; while BYOK is active it shows that the hosted quota is not being consumed.
 Every checkout buys the same shared AI credit; the Worker clamps the amount to A$1–A$10 and
 the A$10 balance cap.
 
-Set `GROQ_RATES_JSON` to a JSON object keyed by allowed model. Rates are AUD cents per
-million tokens, for example:
-
-```json
-{
-  "openai/gpt-oss-20b": {
-    "inputCentsPerMillion": 11.25,
-    "outputCentsPerMillion": 45
-  }
-}
-```
-
-Replace the example zeroes with the current effective provider costs. A hosted chat call
-is charged at least one cent so a missing or stale rate cannot create unlimited play.
+Hosted chat rates come from Groq's live model list. When a session starts, the Worker picks
+the chat and vision models from `GET /openai/v1/models` and stores their prices (converted to
+AUD with `GROQ_AUD_PER_USD`) on the session. There is no fallback model: if the list can't be
+loaded or the chosen chat model has no price, the session stays unstarted, the player's credit
+is untouched, and starting again retries. Hosted chat only accepts the session's own models,
+and only while the session holds a rate for that model. Every hosted call is charged at least
+one cent.
 
 ### Stripe webhook and local test
 
