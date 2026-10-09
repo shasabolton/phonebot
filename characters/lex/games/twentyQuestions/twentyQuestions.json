@@ -11,7 +11,7 @@
       "onEnd": "",
       "delaySec": 0,
       "constraints": { "face": "any" },
-      "text": "Tell the user how to play the game of 20 questions. Then ask if they want to play.",
+      "text": "Tell the user how to play the game of 20 questions: they think of an object, person, place, or animal, and you will ask up to 20 yes-or-no questions to guess what it is. Then ask if they want to play.",
       "fileName": "",
       "sendCamera": false,
       "clearHistory": true,

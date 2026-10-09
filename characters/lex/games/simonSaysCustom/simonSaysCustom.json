@@ -28,7 +28,7 @@
       "trigger": "speechFinished",
       "loop": "once",
       "onEnd": "",
-      "delaySec": 20,
+      "delaySec": 5,
       "constraints": {
         "face": "present"
       },
