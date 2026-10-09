@@ -1068,15 +1068,27 @@ class AgentInterface {
     }
 
     /**
+     * Where Telnyx voices come from for other panels: "key" (the player's own), "hosted" (the
+     * arcade's account on AI credit, while a play session is active) or "" (none).
+     */
+    telnyxVoiceSource() {
+        const access = this._telnyxAccess();
+        if (!access) return "";
+        if (!this._isHostedTelnyx(access)) return "key";
+        return window.playBilling?.getActiveSessionId?.() ? "hosted" : "";
+    }
+
+    /**
      * Telnyx voices for other panels (the character editor), loading them if needed.
-     * @returns {Promise<{ hasKey: boolean, voices: object[], error: string }>}
+     * @returns {Promise<{ hasKey: boolean, source: string, voices: object[], error: string }>}
      */
     async telnyxVoices(options = {}) {
-        if (!this.telnyxApiKey()) return { hasKey: false, voices: [], error: "" };
+        const source = this.telnyxVoiceSource();
+        if (!source) return { hasKey: false, source, voices: [], error: "" };
         await this._loadTelnyxLists(options);
         // A newer load may have started meanwhile (the key changed); wait for that one.
         await this._telnyxListsPromise;
-        return { hasKey: true, voices: this._telnyxLists.voices, error: this._telnyxListError };
+        return { hasKey: true, source, voices: this._telnyxLists.voices, error: this._telnyxListError };
     }
 
     /** Add a voice saved from Voice Design to the Telnyx voice lists. */

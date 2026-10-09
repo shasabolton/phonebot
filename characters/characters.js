@@ -1148,8 +1148,11 @@ class CharactersPanel {
         const voiceHint = hint("");
         const Telnyx = window.TelnyxVoice;
         const getAgent = () => this.robot?.agentInterface || null;
+        /** The player's own Telnyx key: Voice Design needs it, as designing on the arcade's account is not offered. */
         const telnyxKey = () => getAgent()?.telnyxApiKey?.() || "";
-        /** Voices on the player's Telnyx key, grouped by provider after the Groq voices. */
+        /** "key", "hosted" (the arcade's account on AI credit) or "": where the Telnyx voices come from. */
+        const telnyxSource = () => getAgent()?.telnyxVoiceSource?.() || "";
+        /** Telnyx voices (the player's key or hosted credit), grouped by provider after the Groq voices. */
         let telnyxVoices = [];
         /** Search results as "shown of total", for the hint. */
         let voiceCounts = null;
@@ -1224,11 +1227,14 @@ class CharactersPanel {
             }
             if (!Telnyx) return;
             const telnyxPicked = Telnyx.isVoiceId(voiceSelect.value);
-            voiceHint.textContent = !telnyxKey()
-                ? "For Telnyx voices, select the Telnyx agent and enter your Telnyx API key, then reopen this editor."
+            const source = telnyxSource();
+            voiceHint.textContent = !source
+                ? "For Telnyx voices, add AI credit, or select the Telnyx agent and enter your Telnyx API key, then reopen this editor."
                 : telnyxPicked
                   ? "Telnyx voices speak while the Telnyx agent is selected. With Groq the character keeps the Groq voice."
-                  : `${telnyxVoices.length} Telnyx voices from your account are in the list.`;
+                  : source === "hosted"
+                    ? `${telnyxVoices.length} Telnyx voices are in the list, on AI credit (listening to one uses a little credit).`
+                    : `${telnyxVoices.length} Telnyx voices from your account are in the list.`;
         };
         voiceSelect.addEventListener("change", syncVoiceHint);
 
@@ -1395,7 +1401,8 @@ class CharactersPanel {
         const designStatus = hint(
             "Describe the voice and generate a sample; it reads the test sentence below. Adjust the description and " +
                 "generate again until it sounds right (each try is a new version of the same design), then save it. " +
-                "Saved voices stay on your Telnyx account. Telnyx may charge for each sample."
+                "Saved voices stay on your Telnyx account. Telnyx may charge for each sample. Needs your own Telnyx API key " +
+                "(the Telnyx agent's key box); AI credit can use designed voices but not make them."
         );
         /** The design being iterated on: { id, version, provider, sample, saved }. */
         let design = null;
@@ -1411,7 +1418,7 @@ class CharactersPanel {
         const generateBtn = button("Generate sample", "secondary", async () => {
             const key = telnyxKey();
             if (!key) {
-                designStatus.textContent = "Select the Telnyx agent and enter your Telnyx API key first.";
+                designStatus.textContent = "Designing a voice needs your own Telnyx API key: select the Telnyx agent and enter it first.";
                 return;
             }
             const provider = designProvider.value;
@@ -1485,7 +1492,7 @@ class CharactersPanel {
         const loadTelnyxVoices = async () => {
             const agent = getAgent();
             if (!Telnyx || typeof agent?.telnyxVoices !== "function") return;
-            if (telnyxKey()) voiceHint.textContent = "Loading Telnyx voices…";
+            if (telnyxSource()) voiceHint.textContent = "Loading Telnyx voices…";
             try {
                 const result = await agent.telnyxVoices();
                 if (this._editorOverlay !== overlay) return;

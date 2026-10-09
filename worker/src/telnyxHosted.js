@@ -21,8 +21,11 @@ const MAX_AUDIO_FILE_BYTES = 25_000_000;
 /** Compressed recordings have no cheap duration; this bitrate (32 kbit/s) errs towards charging more. */
 const COMPRESSED_BYTES_PER_SECOND = 4000;
 
-/** Lists the page needs to pick models and voices; free, but still only for an active play session. */
-const FREE_GETS = new Set(["/ai/openai/models", "/ai/models", "/speech-to-text/providers", "/text-to-speech/voices"]);
+/**
+ * Lists the page needs to pick models and voices (/voice_clones: voices designed on this account);
+ * free, but still only for an active play session. Designing and saving voices stays blocked.
+ */
+const FREE_GETS = new Set(["/ai/openai/models", "/ai/models", "/speech-to-text/providers", "/text-to-speech/voices", "/voice_clones"]);
 
 let chatRatesCache = { at: 0, rates: null, pending: null };
 
