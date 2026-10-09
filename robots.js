@@ -321,18 +321,8 @@ window.ROBOTS_DATA = {
                 cameraCaptureMaxEdge: 960,
                 cameraCaptureJpegQuality: 0.85,
                 promptTemplates: [],
+                // The first agent is selected when the page opens. Groq is kept as a fallback.
                 agents: [
-                    {
-                        name: "Groq",
-                        baseUrl: "https://api.groq.com/openai/v1",
-                        chatPath: "/chat/completions",
-                        model: "openai/gpt-oss-20b",
-                        transcriptionModel: "whisper-large-v3",
-                        speechModel: "canopylabs/orpheus-v1-english",
-                        temperature: 0.9,
-                        maxTokens: 1024,
-                        reasoningEffort: "low"
-                    },
                     {
                         name: "Telnyx",
                         provider: "telnyx",
@@ -351,6 +341,17 @@ window.ROBOTS_DATA = {
                         voice: "Telnyx.KokoroTTS.am_adam",
                         temperature: 0.9,
                         maxTokens: 400
+                    },
+                    {
+                        name: "Groq",
+                        baseUrl: "https://api.groq.com/openai/v1",
+                        chatPath: "/chat/completions",
+                        model: "openai/gpt-oss-20b",
+                        transcriptionModel: "whisper-large-v3",
+                        speechModel: "canopylabs/orpheus-v1-english",
+                        temperature: 0.9,
+                        maxTokens: 1024,
+                        reasoningEffort: "low"
                     }
                 ]
             }

@@ -1152,7 +1152,9 @@ class CharactersPanel {
         const telnyxKey = () => getAgent()?.telnyxApiKey?.() || "";
         /** "key", "hosted" (the arcade's account on AI credit) or "": where the Telnyx voices come from. */
         const telnyxSource = () => getAgent()?.telnyxVoiceSource?.() || "";
-        /** Telnyx voices (the player's key or hosted credit), grouped by provider after the Groq voices. */
+        /** The voice list offers only the selected agent's voices: Telnyx's, or Groq and browser voices. */
+        const telnyxSelected = () => !!Telnyx && !!getAgent()?.telnyxSelected?.();
+        /** Telnyx voices (the player's key or hosted credit), grouped by provider. */
         let telnyxVoices = [];
         /** Search results as "shown of total", for the hint. */
         let voiceCounts = null;
@@ -1167,12 +1169,14 @@ class CharactersPanel {
             const matches = CharactersPanel.voiceMatcher(voiceSearch.value);
             const shown = (voice) => voice.id === wanted || matches(voice);
             const names = Telnyx?.PROVIDER_NAMES || {};
-            const [keep, ...groqVoices] = PhonebotCharacters.voiceOptions().map((v, i) => ({
+            const useTelnyx = telnyxSelected();
+            const [keep, ...allGroqVoices] = PhonebotCharacters.voiceOptions().map((v, i) => ({
                 ...v,
                 text: `${v.label} ${v.id} ${i ? "groq" : ""}`,
                 gender: /♂/.test(v.label) ? "male" : /♀/.test(v.label) ? "female" : ""
             }));
-            const telnyx = telnyxVoices.map((v) => ({
+            const groqVoices = useTelnyx ? [] : allGroqVoices;
+            const telnyx = (useTelnyx ? telnyxVoices : []).map((v) => ({
                 ...v,
                 text: [v.name, v.id, v.language, v.accent, v.age, names[v.provider] || v.provider, "telnyx"].join(" ")
             }));
@@ -1209,7 +1213,8 @@ class CharactersPanel {
                 add(groups.get(v.provider), v.id, details ? `${v.name} (${details})` : v.name, v.id);
             }
             if (wanted && ![...voiceSelect.options].some((o) => o.value === wanted)) {
-                add(voiceSelect, wanted, wanted);
+                const otherProvider = Telnyx && Telnyx.isVoiceId(wanted) !== useTelnyx;
+                add(voiceSelect, wanted, otherProvider ? `${wanted} (${useTelnyx ? "Groq" : "Telnyx"} voice)` : wanted);
             }
             voiceSelect.value = wanted;
         };
@@ -1226,12 +1231,18 @@ class CharactersPanel {
                 return;
             }
             if (!Telnyx) return;
-            const telnyxPicked = Telnyx.isVoiceId(voiceSelect.value);
+            const picked = voiceSelect.value;
+            if (!telnyxSelected()) {
+                voiceHint.textContent = Telnyx.isVoiceId(picked)
+                    ? "That's a Telnyx voice: the Groq agent keeps its own voice. Pick a Groq voice, or select the Telnyx agent."
+                    : "Groq voices, as the Groq agent is selected. For Telnyx voices, select the Telnyx agent and reopen this editor.";
+                return;
+            }
             const source = telnyxSource();
             voiceHint.textContent = !source
-                ? "For Telnyx voices, add AI credit, or select the Telnyx agent and enter your Telnyx API key, then reopen this editor."
-                : telnyxPicked
-                  ? "Telnyx voices speak while the Telnyx agent is selected. With Groq the character keeps the Groq voice."
+                ? "For Telnyx voices, add AI credit or enter your Telnyx API key on the Telnyx agent, then reopen this editor."
+                : picked && !Telnyx.isVoiceId(picked)
+                  ? "That's a Groq voice: Telnyx speaks it with a similar Telnyx voice. Pick a Telnyx voice to choose one."
                   : source === "hosted"
                     ? `${telnyxVoices.length} Telnyx voices are in the list, on AI credit (listening to one uses a little credit).`
                     : `${telnyxVoices.length} Telnyx voices from your account are in the list.`;
@@ -1363,7 +1374,7 @@ class CharactersPanel {
 
         const designSection = document.createElement("details");
         designSection.className = "characters-fx";
-        designSection.hidden = !Telnyx;
+        designSection.hidden = !telnyxSelected();
         const designSummary = document.createElement("summary");
         designSummary.className = "custom-messages-game-meta-label";
         designSummary.textContent = "Design a Telnyx voice";
@@ -1492,6 +1503,10 @@ class CharactersPanel {
         const loadTelnyxVoices = async () => {
             const agent = getAgent();
             if (!Telnyx || typeof agent?.telnyxVoices !== "function") return;
+            if (!telnyxSelected()) {
+                syncVoiceHint();
+                return;
+            }
             voiceHint.textContent = "Loading Telnyx voices…";
             try {
                 const result = await agent.telnyxVoices();
@@ -1728,11 +1743,8 @@ class CharactersPanel {
         const fill = (source) => {
             nameInput.value = source?.name || "";
             bioInput.value = source?.bio || "";
-            const voice = String(source?.voice || "");
-            if (voice && ![...voiceSelect.options].some((o) => o.value === voice)) {
-                addOption(voiceSelect, voice, voice);
-            }
-            voiceSelect.value = voice;
+            renderVoices(String(source?.voice || ""));
+            syncVoiceHint();
             setFx(source?.voiceFx || null);
             const builtIns = new Set(source?.builtInGames || []);
             for (const [id, check] of builtInChecks) check.checked = builtIns.has(id);

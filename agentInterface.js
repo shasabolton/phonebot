@@ -1067,6 +1067,11 @@ class AgentInterface {
         return AgentInterface._creditRequiredError("AI budget used. Pay to continue.");
     }
 
+    /** True when the selected agent is Telnyx: other panels then offer Telnyx voices instead of Groq's. */
+    telnyxSelected() {
+        return this._isTelnyxProvider();
+    }
+
     /**
      * Where Telnyx voices come from for other panels: "key" (the player's own), "hosted" (the
      * arcade's account on AI credit, while a play session is active) or "" (none).
