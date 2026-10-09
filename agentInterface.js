@@ -141,6 +141,7 @@ class AgentInterface {
         this._sessionModelsPromise = null;
         this._aiBudgetListener = () => {
             this._syncAiBudgetUi();
+            if (this._isTelnyxProvider()) void this._loadTelnyxLists();
             void this._resumePendingSend();
         };
         window.addEventListener("phonebot:ai-budget", this._aiBudgetListener);
@@ -442,10 +443,23 @@ class AgentInterface {
         return !!this._clientApiKey();
     }
 
-    /** Without a key of their own, Groq-compatible agents use hosted AI credit (Gemini and Telnyx have no hosted path). */
+    /** Without a key of their own, Groq and Telnyx agents use hosted AI credit (Gemini has no hosted path). */
     _useHostedAi() {
         if (this._clientApiKey() || !window.playBilling) return false;
-        return !this._isGeminiProvider() && !this._isTelnyxProvider();
+        return !this._isGeminiProvider();
+    }
+
+    /** Hosted credit on the Groq agents' Worker routes; Telnyx has its own (`_telnyxAccess`). */
+    _useHostedGroq() {
+        return this._useHostedAi() && !this._isTelnyxProvider();
+    }
+
+    /** True while the play session is active with credit left. */
+    _hostedCreditLeft() {
+        const session = window.playBilling?.getActiveSession?.();
+        const budget = Math.max(0, Number(session?.aiBudgetCents) || 0);
+        const spent = Math.max(0, Number(session?.aiSpentCents) || 0);
+        return session?.status === "active" && budget - spent > 0;
     }
 
     /** Before any hosted AI request: shows the top-up popup when credit is $0. */
@@ -558,6 +572,7 @@ class AgentInterface {
             }
         }
         this._setClientApiKey(key);
+        if (this._isTelnyxProvider()) void this._loadTelnyxLists();
         void this.ensureSessionGroqModels();
         void this._resumePendingSend();
         return { ok: true };
@@ -1025,6 +1040,34 @@ class AgentInterface {
     }
 
     /**
+     * What Telnyx requests use: the player's key (free to the arcade), else TelnyxVoice.HOSTED (the
+     * Worker's key, charged to AI credit) when hosted AI applies, else "".
+     */
+    _telnyxAccess() {
+        const key = this.telnyxApiKey();
+        if (key) return key;
+        return this._useHostedAi() && window.TelnyxVoice ? window.TelnyxVoice.HOSTED : "";
+    }
+
+    _isHostedTelnyx(access) {
+        return !!access && access === window.TelnyxVoice?.HOSTED;
+    }
+
+    _telnyxSpeechLabel() {
+        return `Telnyx speech (${this._useHostedAi() ? "AI credit" : "your key"}).`;
+    }
+
+    /** The Worker said hosted credit ran out: show the top-up popup. @returns {Error} to throw */
+    async _telnyxPaymentRequired(session) {
+        this._billingPaused = true;
+        await window.playBilling?.handlePaymentRequired?.(
+            new Response(JSON.stringify({ session: session || null }), { status: 402, headers: { "Content-Type": "application/json" } }),
+            this._billingContext()
+        );
+        return AgentInterface._creditRequiredError("AI budget used. Pay to continue.");
+    }
+
+    /**
      * Telnyx voices for other panels (the character editor), loading them if needed.
      * @returns {Promise<{ hasKey: boolean, voices: object[], error: string }>}
      */
@@ -1050,9 +1093,10 @@ class AgentInterface {
      * @returns {Promise<void>} settles once the lists are loaded
      */
     _loadTelnyxLists(options = {}) {
-        const key = this.telnyxApiKey();
+        const key = this._telnyxAccess();
         const api = window.TelnyxVoice;
-        if (!key || !api) {
+        // Hosted lists need a play session; they load when credit is added (phonebot:ai-budget).
+        if (!key || !api || (this._isHostedTelnyx(key) && !window.playBilling?.getActiveSessionId?.())) {
             this._syncTelnyxUi();
             return Promise.resolve();
         }
@@ -1221,22 +1265,26 @@ class AgentInterface {
         const telnyx = this._isTelnyxProvider();
         if (this._telnyxRow) this._telnyxRow.hidden = !telnyx;
         if (!telnyx) return;
-        const hasKey = !!this._clientApiKey();
-        if (this._telnyxRefreshBtn) this._telnyxRefreshBtn.disabled = !hasKey || this._telnyxListsLoading;
+        const access = this._telnyxAccess();
+        const hosted = this._isHostedTelnyx(access);
+        const canLoad = !!access && (!hosted || !!window.playBilling?.getActiveSessionId?.());
+        if (this._telnyxRefreshBtn) this._telnyxRefreshBtn.disabled = !canLoad || this._telnyxListsLoading;
         if (!this._telnyxHintEl) return;
         const { stt, chat, voices, skippedUltra } = this._telnyxLists;
-        this._telnyxHintEl.className = hasKey && this._telnyxListError ? "error" : "muted";
-        this._telnyxHintEl.textContent = !hasKey
-            ? "Enter your Telnyx API key (it starts with KEY) to load your account's models and voices. Telnyx has no hosted credit yet."
-            : this._telnyxListsLoading
-              ? "Loading models and voices from Telnyx…"
-              : this._telnyxListError
-                ? `Some Telnyx lists didn't load: ${this._telnyxListError}`
-                : stt.length || chat.length || voices.length
-                  ? `From your account: ${stt.length} streaming speech-to-text models, ${chat.length} chat models billed by Telnyx ` +
-                    `(${chat.filter((m) => m.auto).length} picked automatically), ${voices.length} voices` +
-                    (skippedUltra ? ` (${skippedUltra} Ultra voices left out because they can't stream).` : ".")
-                  : "Lists not loaded yet. Click Refresh Telnyx lists.";
+        this._telnyxHintEl.className = canLoad && this._telnyxListError ? "error" : "muted";
+        this._telnyxHintEl.textContent = !access
+            ? "Enter your Telnyx API key (it starts with KEY) to load your account's models and voices."
+            : !canLoad
+              ? "No key: Telnyx runs on hosted AI credit. The models and voices load once credit is added, or enter your own Telnyx API key."
+              : this._telnyxListsLoading
+                ? "Loading models and voices from Telnyx…"
+                : this._telnyxListError
+                  ? `Some Telnyx lists didn't load: ${this._telnyxListError}`
+                  : stt.length || chat.length || voices.length
+                    ? `${hosted ? "Hosted (AI credit)" : "From your account"}: ${stt.length} streaming speech-to-text models, ` +
+                      `${chat.length} chat models billed by Telnyx (${chat.filter((m) => m.auto).length} picked automatically), ${voices.length} voices` +
+                      (skippedUltra ? ` (${skippedUltra} Ultra voices left out because they can't stream).` : ".")
+                    : "Lists not loaded yet. Click Refresh Telnyx lists.";
     }
 
     _resolveChatUrl(agent) {
@@ -1319,10 +1367,12 @@ class AgentInterface {
         form.append("file", blob, filename);
         form.append("model", model);
         const hostedArcade =
-            this._useHostedAi() &&
+            this._useHostedGroq() &&
             typeof window.playBilling?.fetchHostedTranscribe === "function";
         let res;
-        if (hostedArcade) {
+        if (this._isTelnyxProvider(agent) && this._useHostedAi()) {
+            res = await window.TelnyxVoice.fetch("/ai/audio/transcriptions", { method: "POST", body: form }, window.TelnyxVoice.HOSTED);
+        } else if (hostedArcade) {
             res = await window.playBilling.fetchHostedTranscribe(form);
         } else {
             const url = this._resolveTranscribeUrl(agent);
@@ -1457,8 +1507,9 @@ class AgentInterface {
     async synthesizeSpeechBlob(text, options = {}) {
         const telnyxVoice = this._isTelnyxVoiceId(options.voice) ? String(options.voice).trim() : "";
         if (telnyxVoice || this._isTelnyxProvider()) {
-            const apiKey = this.telnyxApiKey();
+            const apiKey = this._telnyxAccess();
             if (!apiKey) throw new Error("Enter your Telnyx API key (on the Telnyx agent) for Telnyx speech.");
+            if (this._isHostedTelnyx(apiKey)) await this._ensureHostedAiCredit();
             if (typeof window.TelnyxVoice?.synthesizeSpeech !== "function") {
                 throw new Error("Telnyx helper is not loaded.");
             }
@@ -1472,6 +1523,7 @@ class AgentInterface {
                         if (!telnyxVoice) this._noteTelnyxWorked("voice", voice);
                         return blob;
                     } catch (err) {
+                        if (err?.status === 402 && this._isHostedTelnyx(apiKey)) throw await this._telnyxPaymentRequired(err.session);
                         if (i === voices.length - 1 || /HTTP (401|402|403|429)\b/.test(String(err?.message))) throw err;
                         console.error(`Telnyx voice ${voice} failed; trying the next one.`, err);
                         failed.push(voice);
@@ -1782,14 +1834,16 @@ class AgentInterface {
         }
         if (telnyx) {
             this._setVoiceStatus(
-                "Telnyx: hold-to-talk turns stream speech-to-text, chat and voice through the phonebot Worker on your key; typed messages use plain Telnyx speech."
+                `Telnyx: hold-to-talk turns stream speech-to-text, chat and voice through the phonebot Worker ${
+                    this._useHostedAi() ? "on hosted AI credit" : "on your key"
+                }; typed messages use plain Telnyx speech.`
             );
             return;
         }
         this._setVoiceStatus(
             this._isBrowserTtsVoice()
                 ? "Web TTS (free browser speech). No API credits used for speech."
-                : this._useHostedAi()
+                : this._useHostedGroq()
                   ? "No API key: chat, Whisper, and TTS use hosted AI credit (top-up popup when it runs out)."
                   : gemini
                     ? "Gemini audio turn + TTS (AI Studio). Text history only — no Groq Whisper/Orpheus."
@@ -1869,7 +1923,7 @@ class AgentInterface {
                     idleLabel: gemini
                         ? "Gemini TTS (AI Studio)."
                         : telnyx
-                          ? "Telnyx speech (your key)."
+                          ? this._telnyxSpeechLabel()
                           : "Groq Orpheus TTS (uses API credits).",
                     playLabel: `${provider} TTS (${voice})${partLabel}`
                 });
@@ -2379,7 +2433,12 @@ class AgentInterface {
     /** Must not await before `turn.open()`: the microphone's audio context is created inside the press. */
     async _startTelnyxStreamTurn() {
         const key = this._clientApiKey();
-        if (!key) throw new Error("Enter your Telnyx API key in the agent panel first.");
+        const hosted = !key && this._useHostedAi();
+        if (!key && !hosted) throw new Error("Enter your Telnyx API key in the agent panel first.");
+        if (hosted && !this._hostedCreditLeft()) {
+            void this._ensureHostedAiCredit().catch(() => {});
+            throw AgentInterface._creditRequiredError("Add AI credit (or enter your Telnyx API key) to talk.");
+        }
         if (typeof window.TelnyxStreamTurn !== "function") {
             throw new Error("Telnyx streaming didn't load (telnyxVoice.js).");
         }
@@ -2392,6 +2451,7 @@ class AgentInterface {
         this._abortPttRecording();
         const turn = new window.TelnyxStreamTurn({
             key,
+            session: hosted ? window.playBilling.getActiveSessionId() : "",
             stt,
             voice: this._telnyxVoiceChoices(),
             speak: !!this._voiceOn,
@@ -2401,6 +2461,8 @@ class AgentInterface {
                 this._statusEl.className = "muted";
             },
             onError: (err) => {
+                window.playBilling?.recordAiCharge?.(err?.chargeCents);
+                if (err?.status === 402) void this._telnyxPaymentRequired(err.session);
                 if (this._statusEl) {
                     this._statusEl.textContent = err?.message || "Telnyx stream failed.";
                     this._statusEl.className = "error";
@@ -2556,6 +2618,7 @@ class AgentInterface {
                     }
                 }
             );
+            window.playBilling?.recordAiCharge?.(done?.chargeCents);
             this._noteTelnyxModelFailures(done?.failedModels);
             this._noteTelnyxSttFailures(done?.failedStt);
             this._noteTelnyxVoiceFailures(done?.failedVoices);
@@ -2610,7 +2673,7 @@ class AgentInterface {
             } else if (pieces.length && player && typeof player.playBlob === "function") {
                 await this._playSpeechBlob(new Blob(pieces.splice(0), { type: "audio/mpeg" }), reply, generation, {
                     speakingLabel: `Speaking (Telnyx ${voice})…`,
-                    idleLabel: "Telnyx speech (your key).",
+                    idleLabel: this._telnyxSpeechLabel(),
                     playLabel
                 });
             } else if (this._voiceOn && reply && replyPushed) {
@@ -2624,7 +2687,7 @@ class AgentInterface {
             if (this._telnyxTurn === turn) this._telnyxTurn = null;
             window.__phonebotTtsSpeaking = false;
             if (generation === this._speakGeneration) {
-                this._setVoiceStatus("Telnyx speech (your key).");
+                this._setVoiceStatus(this._telnyxSpeechLabel());
                 if (ok && this._statusEl && this._agentEnabled) {
                     this._statusEl.textContent = "Done. (Telnyx streaming turn)";
                     this._statusEl.className = "ok";
@@ -2821,7 +2884,7 @@ class AgentInterface {
             }
 
             if (
-                this._useHostedAi() &&
+                this._useHostedGroq() &&
                 typeof window.playBilling?.fetchHostedVoiceTurn === "function"
             ) {
                 this._setPttState("thinking");
@@ -3728,10 +3791,11 @@ class AgentInterface {
         }
         const hostedArcadeChat =
             !gemini &&
-            this._useHostedAi() &&
+            this._useHostedGroq() &&
             typeof window.playBilling?.fetchHostedChat === "function";
+        const hostedTelnyxChat = this._isTelnyxProvider(agent) && this._useHostedAi();
         const apiKey = this._clientApiKey();
-        if (!hostedArcadeChat && !apiKey) {
+        if (!hostedArcadeChat && !hostedTelnyxChat && !apiKey) {
             throw new Error("Enter an API key for this provider.");
         }
 
@@ -3878,7 +3942,18 @@ class AgentInterface {
                 }, timeoutMs);
             let res;
             try {
-                res = hostedArcadeChat
+                res = hostedTelnyxChat
+                    ? await window.TelnyxVoice.fetch(
+                          "/ai/openai/chat/completions",
+                          {
+                              method: "POST",
+                              headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify(body),
+                              signal: controller?.signal
+                          },
+                          window.TelnyxVoice.HOSTED
+                      )
+                    : hostedArcadeChat
                     ? await window.playBilling.fetchHostedChat(body, controller?.signal)
                     : await fetch(url, {
                           method: String(agent.method || "POST").toUpperCase(),
@@ -3946,7 +4021,13 @@ class AgentInterface {
                     this._noteTelnyxWorked("chat", m.id);
                     return result;
                 } catch (err) {
-                    if (i === models.length - 1 || /^HTTP (401|402|403|429)\b/.test(String(err?.message))) throw err;
+                    if (
+                        i === models.length - 1 ||
+                        err?.code === AgentInterface.CREDIT_REQUIRED ||
+                        /^HTTP (401|402|403|429)\b/.test(String(err?.message))
+                    ) {
+                        throw err;
+                    }
                     console.error(`Telnyx chat model ${m.id} failed; trying the next one.`, err);
                     failed.push(m.id);
                 }
@@ -4583,7 +4664,7 @@ class AgentInterface {
      * This is never used when the user has entered a BYOK key.
      */
     async _submitHostedVoiceTurnFromBlob(blob, options = {}) {
-        if (!this._agentEnabled || !this._useHostedAi()) return false;
+        if (!this._agentEnabled || !this._useHostedGroq()) return false;
         if (this._sendInProgress) return false;
 
         const agent = this.getSelectedAgent();

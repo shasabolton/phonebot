@@ -13,6 +13,7 @@ import {
     readChatCompletionStream
 } from "../../groqChatRecover.js";
 import { handleTelnyxStream } from "./telnyxStream.js";
+import { proxyTelnyx, TelnyxPricing } from "./telnyxHosted.js";
 
 /** Shared arcade pricing: player credit equals payment; provider cost × markup is debited. */
 const ARCADE_DEFAULT_PRICE_CENTS = 200;
@@ -63,10 +64,16 @@ export default {
                 assertAllowedOrigin(request, env);
                 return corsResponse(request, env, await proxyGroqVoiceTurn(request, env, ctx));
             }
-            // Player's own Telnyx key only (sent in the socket's start message); no hosted credit is used.
+            // The player's own Telnyx key (in the socket's start message) is free; without one the
+            // Worker's key is used and the turn is charged to the ?session= play session.
             if (path === "/api/telnyx/stream" && request.method === "GET") {
                 assertAllowedOrigin(request, env);
-                return handleTelnyxStream(request);
+                return handleTelnyxStream(request, hostedTelnyxBilling(request, env, ctx));
+            }
+            const telnyxPath = path.match(/^\/api\/telnyx\/v2(\/[\w./-]+)$/);
+            if (telnyxPath && (request.method === "GET" || request.method === "POST")) {
+                assertAllowedOrigin(request, env);
+                return corsResponse(request, env, await proxyTelnyx(request, telnyxPath[1], hostedTelnyxBilling(request, env, ctx)));
             }
 
             const match = path.match(/^\/api\/session\/([0-9a-f-]+)(?:\/(start|complete))?$/i);
@@ -877,8 +884,8 @@ function arrayBufferToBase64(buffer) {
     return btoa(binary);
 }
 
-async function requireActiveAiSession(request, env) {
-    if (!env.GROQ_API_KEY) throw httpError(503, "Hosted AI is not configured.");
+async function requireActiveAiSession(request, env, keyName = "GROQ_API_KEY") {
+    if (!env[keyName]) throw httpError(503, "Hosted AI is not configured.");
     const id = playSessionIdFromRequest(request);
     let session = await selectSession(env, id);
     if (session && sessionPastExpiry(session)) {
@@ -943,6 +950,34 @@ function csvList(value, fallback) {
         .split(",")
         .map((item) => item.trim())
         .filter(Boolean);
+}
+
+/**
+ * Hosted Telnyx for one request or streamed turn: `open()` checks the play session (throws 402 with
+ * the session when there is no credit), `charge(usd)` debits provider cost × markup and returns cents.
+ */
+function hostedTelnyxBilling(request, env, ctx) {
+    let sessionId = "";
+    return {
+        apiKey: env.TELNYX_API_KEY,
+        pricing: new TelnyxPricing(env),
+        async open() {
+            const gate = await requireActiveAiSession(request, env, "TELNYX_API_KEY");
+            if (gate instanceof Response) {
+                const body = await gate.json();
+                const error = httpError(402, body.error || "AI credit is needed.");
+                error.session = body.session;
+                throw error;
+            }
+            sessionId = gate.id;
+        },
+        charge(usd) {
+            if (!sessionId || !(usd > 0)) return 0;
+            const cents = applyArcadeMarkup(usd * 100 * (Number(env.GROQ_AUD_PER_USD) || 1.5), env);
+            deferAiDebit(ctx, env, sessionId, cents);
+            return cents;
+        }
+    };
 }
 
 function calculateChatCharge(usage, model, env, session) {

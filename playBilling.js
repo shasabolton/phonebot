@@ -447,6 +447,22 @@ class PlayBilling {
         });
     }
 
+    /**
+     * A Telnyx API path (e.g. "/ai/openai/models") through the Worker on its Telnyx key, charged to
+     * this session's AI credit.
+     */
+    async fetchHostedTelnyx(path, init = {}) {
+        if (!this._active?.id) {
+            throw new Error("No active arcade play session.");
+        }
+        const [pathname, query = ""] = String(path).split("?");
+        const params = new URLSearchParams(query);
+        params.set("session", this._active.id);
+        const response = await fetch(`${this.apiBaseUrl}/telnyx/v2${pathname}?${params}`, init);
+        this._applyAiChargeResponse(response);
+        return response;
+    }
+
     /** Session rides in the query string: a custom header would force a CORS preflight on every turn. */
     _hostedAiUrl(endpoint) {
         return `${this.apiBaseUrl}/ai/${endpoint}?session=${encodeURIComponent(this._active.id)}`;

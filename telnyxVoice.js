@@ -1,11 +1,14 @@
 /**
- * Telnyx on the player's own key: live model and voice lists, plain (REST) speech, and the streamed
- * hold-to-talk turn. Telnyx's REST API allows browser calls, so lists and REST speech go direct.
- * Browser WebSockets cannot send an Authorization header, so streamed turns go through the
- * phonebot Worker (`/api/telnyx/stream`, see worker/src/telnyxStream.js).
+ * Telnyx: live model and voice lists, plain (REST) speech, and the streamed hold-to-talk turn.
+ * On the player's own key, REST calls go straight to Telnyx (it allows browser calls). With the
+ * HOSTED key they go through the phonebot Worker on the Worker's key and the play session's AI
+ * credit. Browser WebSockets cannot send an Authorization header, so streamed turns always go
+ * through the Worker (`/api/telnyx/stream`, see worker/src/telnyxStream.js).
  */
 class TelnyxVoice {
     static API_BASE = "https://api.telnyx.com/v2";
+    /** Passed instead of a key: use the Worker's Telnyx key, charged to AI credit. */
+    static HOSTED = "phonebot-hosted";
     static VOICE_PROVIDERS = ["telnyx", "minimax", "aws", "azure", "xai", "soniox"];
     /** Picker group names; "designed" holds voices saved from Voice Design on the account. */
     static PROVIDER_NAMES = {
@@ -44,30 +47,51 @@ class TelnyxVoice {
         return `${text} Telnyx API keys start with "KEY".`;
     }
 
+    /** `status` and, from the Worker's 402, `session` are kept on the error for the paywall. */
     static async _errorFrom(label, response) {
         const raw = await response.text().catch(() => "");
         let detail = raw.slice(0, 400);
+        let session = null;
         try {
-            const first = JSON.parse(raw)?.errors?.[0];
+            const parsed = JSON.parse(raw);
+            const first = parsed?.errors?.[0];
             if (first) detail = `${first.code ? `${first.code} ` : ""}${first.detail || first.title || detail}`;
+            else if (typeof parsed?.error === "string") detail = parsed.error;
+            else if (typeof parsed?.error?.message === "string") detail = parsed.error.message;
+            session = parsed?.session || null;
         } catch (_) {}
-        return new Error(TelnyxVoice._withKeyHint(`${label} failed (HTTP ${response.status}): ${detail}`));
+        const error = new Error(TelnyxVoice._withKeyHint(`${label} failed (HTTP ${response.status}): ${detail}`));
+        error.status = response.status;
+        error.session = session;
+        return error;
+    }
+
+    /** A Telnyx API path (e.g. "/ai/openai/models") on the player's key, or through the Worker for HOSTED. */
+    static fetch(path, init = {}, key) {
+        if (key === TelnyxVoice.HOSTED) {
+            if (typeof window.playBilling?.fetchHostedTelnyx !== "function") {
+                return Promise.reject(new Error("Hosted Telnyx needs the arcade billing script."));
+            }
+            return window.playBilling.fetchHostedTelnyx(path, init);
+        }
+        return fetch(`${TelnyxVoice.API_BASE}${path}`, {
+            ...init,
+            headers: { ...init.headers, Authorization: `Bearer ${key}` }
+        });
     }
 
     static async _getJson(label, path, key) {
-        const response = await fetch(`${TelnyxVoice.API_BASE}${path}`, {
-            headers: { Authorization: `Bearer ${key}` }
-        });
+        const response = await TelnyxVoice.fetch(path, {}, key);
         if (!response.ok) throw await TelnyxVoice._errorFrom(label, response);
         return response.json();
     }
 
     static async _postJson(label, path, key, body) {
-        const response = await fetch(`${TelnyxVoice.API_BASE}${path}`, {
-            method: "POST",
-            headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-            body: JSON.stringify(body)
-        });
+        const response = await TelnyxVoice.fetch(
+            path,
+            { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) },
+            key
+        );
         if (!response.ok) throw await TelnyxVoice._errorFrom(label, response);
         return response.json();
     }
@@ -78,8 +102,9 @@ class TelnyxVoice {
     }
 
     /**
-     * Streaming speech-to-text models on the account.
-     * @returns {Promise<{ provider: string, model: string }[]>}
+     * Streaming speech-to-text models on the account. `languages` is null when Telnyx doesn't say;
+     * `hosted` is Telnyx's flag for models it runs itself (null when not sent).
+     * @returns {Promise<{ provider: string, model: string, languages: string[]|null, hosted: boolean|null }[]>}
      */
     static async listStreamingSttModels(key) {
         const payload = await TelnyxVoice._getJson(
@@ -87,8 +112,8 @@ class TelnyxVoice {
             "/speech-to-text/providers?service_type=streaming",
             key
         );
-        const streams = (types) =>
-            !Array.isArray(types) || types.some((t) => (typeof t === "string" ? t : t?.type) === "streaming");
+        const streaming = (types) =>
+            Array.isArray(types) ? types.find((t) => (typeof t === "string" ? t : t?.type) === "streaming") : {};
         const list = Array.isArray(payload?.data) ? payload.data : Array.isArray(payload) ? payload : [];
         const models = [];
         for (const entry of list) {
@@ -96,9 +121,11 @@ class TelnyxVoice {
             const nested = Array.isArray(entry?.models) ? entry.models : [entry];
             for (const m of nested) {
                 const model = String((typeof m === "string" ? m : m?.model || m?.id) || "").trim();
-                if (provider && model && streams(m?.service_types ?? entry?.service_types)) {
-                    models.push({ provider, model });
-                }
+                const stream = streaming(m?.service_types ?? entry?.service_types);
+                if (!provider || !model || !stream) continue;
+                const languages = Array.isArray(stream.languages) ? stream.languages.map((l) => String(l)) : null;
+                const hosted = m?.hosted ?? entry?.hosted;
+                models.push({ provider, model, languages, hosted: typeof hosted === "boolean" ? hosted : null });
             }
         }
         if (!models.length) {
@@ -109,29 +136,59 @@ class TelnyxVoice {
 
     /**
      * Streaming speech-to-text models in the order to try them: the tested ones (`preferred`, as
-     * "provider|model") the account still has, then other models from the same providers, then the rest.
-     * Within a provider the highest version number comes first, and a base model before its variants
-     * (nova-3 before nova-3-medical), so a retired model is replaced by its successor.
-     * @param {{ provider: string, model: string }[]} list
+     * "provider|model") the account still has; then the rest, models that hear the player's language
+     * first (listing it or "auto"), then ones Telnyx runs itself (`hosted`), then general models before
+     * specialised ones (one or two languages, e.g. medical English), then other models from the tested
+     * providers. Within a provider the highest version number comes first, and a base model before its
+     * variants, so a retired model is replaced by its successor.
+     * @param {{ provider: string, model: string, languages?: string[]|null, hosted?: boolean|null }[]} list
      * @param {string[]} [preferred]
-     * @returns {{ provider: string, model: string, value: string, tested: boolean }[]}
+     * @param {{ language?: string }} [options] BCP 47 tag, default the browser's language
+     * @returns {{ provider: string, model: string, value: string, tested: boolean, language: boolean|null, hosted: boolean|null }[]}
      */
-    static rankSttModels(list, preferred = []) {
+    static rankSttModels(list, preferred = [], { language = globalThis.navigator?.language || "en" } = {}) {
         const value = (m) => `${m.provider}|${m.model}`;
         const tested = (Array.isArray(preferred) ? preferred : []).map((v) => String(v || "").trim()).filter(Boolean);
         const testedProviders = [...new Set(tested.map((v) => v.split("|")[0].toLowerCase()))];
         const version = (model) => Math.max(-1, ...(String(model).match(/\d+(?:\.\d+)?/g) || []).map(Number));
-        const rank = (m) => {
-            const at = tested.indexOf(value(m));
-            if (at >= 0) return at;
-            const provider = testedProviders.indexOf(m.provider.toLowerCase());
-            return tested.length + (provider >= 0 ? provider : testedProviders.length);
+        const wanted = String(language).toLowerCase().replace(/_/g, "-");
+        const base = wanted.split("-")[0];
+        /** true, false, or null when Telnyx lists no languages. */
+        const hears = (languages) =>
+            Array.isArray(languages)
+                ? languages.some((l) => {
+                      const tag = String(l).toLowerCase().replace(/_/g, "-");
+                      return tag === "auto" || tag === "multi" || tag === wanted || tag === base || tag.startsWith(`${base}-`);
+                  })
+                : null;
+        const order = (flag) => (flag === true ? 0 : flag === null ? 1 : 2);
+        const specialised = (languages) =>
+            Array.isArray(languages) && languages.length <= 2 && !languages.some((l) => /^(auto|multi)$/i.test(String(l)));
+        const testedAt = (m) => {
+            const at = tested.indexOf(m.value);
+            return at >= 0 ? at : tested.length;
+        };
+        const providerRank = (m) => {
+            const at = testedProviders.indexOf(m.provider.toLowerCase());
+            return at >= 0 ? at : testedProviders.length;
         };
         return (Array.isArray(list) ? list : [])
-            .map((m) => ({ provider: m.provider, model: m.model, value: value(m), tested: tested.includes(value(m)) }))
+            .map((m) => ({
+                provider: m.provider,
+                model: m.model,
+                value: value(m),
+                tested: tested.includes(value(m)),
+                language: hears(m.languages),
+                hosted: typeof m.hosted === "boolean" ? m.hosted : null,
+                specialised: specialised(m.languages)
+            }))
             .sort(
                 (a, b) =>
-                    rank(a) - rank(b) ||
+                    testedAt(a) - testedAt(b) ||
+                    order(a.language) - order(b.language) ||
+                    order(a.hosted) - order(b.hosted) ||
+                    a.specialised - b.specialised ||
+                    providerRank(a) - providerRank(b) ||
                     a.provider.localeCompare(b.provider) ||
                     version(b.model) - version(a.model) ||
                     a.model.length - b.model.length ||
@@ -419,9 +476,10 @@ class TelnyxVoice {
         else design.name = `${String(options.name || "phonebot voice").trim()} ${new Date().toISOString().replace(/[:.]/g, "-")}`;
         const data = (await TelnyxVoice._postJson("Telnyx voice design", "/voice_designs", key, design))?.data || {};
         if (!data.id) throw new Error("Telnyx voice design returned no design id.");
-        const response = await fetch(
-            `${TelnyxVoice.API_BASE}/voice_designs/${encodeURIComponent(data.id)}/sample?version=${encodeURIComponent(data.version)}`,
-            { headers: { Authorization: `Bearer ${key}` } }
+        const response = await TelnyxVoice.fetch(
+            `/voice_designs/${encodeURIComponent(data.id)}/sample?version=${encodeURIComponent(data.version)}`,
+            {},
+            key
         );
         if (!response.ok) throw await TelnyxVoice._errorFrom("Telnyx voice design sample", response);
         const sample = await response.blob();
@@ -480,11 +538,11 @@ class TelnyxVoice {
         if (!input) throw new Error("Nothing to speak.");
         let lastError = null;
         for (let attempt = 0; attempt < 2; attempt++) {
-            const response = await fetch(`${TelnyxVoice.API_BASE}/text-to-speech/speech`, {
-                method: "POST",
-                headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-                body: JSON.stringify({ text: input, voice })
-            });
+            const response = await TelnyxVoice.fetch(
+                "/text-to-speech/speech",
+                { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: input, voice }) },
+                key
+            );
             if (response.ok) {
                 const blob = await response.blob();
                 if (blob.size < 44) throw new Error("Telnyx speech returned empty audio.");
@@ -530,7 +588,9 @@ class TelnyxStreamTurn {
     static _workletReady = null;
 
     /**
-     * @param {{ key: string, stt: { provider: string, model: string }[], voice: string[], speak: boolean,
+     * `key` is the player's Telnyx key, or "" with `session` (a play session id) to use the Worker's
+     * key on AI credit.
+     * @param {{ key: string, session?: string, stt: { provider: string, model: string }[], voice: string[], speak: boolean,
      *   onPartial?: (text: string) => void, onError?: (err: Error) => void }} options
      */
     constructor(options) {
@@ -605,8 +665,9 @@ class TelnyxStreamTurn {
     }
 
     _openSocket() {
-        const url = TelnyxVoice.streamUrl();
-        const { key, stt, voice, speak } = this._options;
+        const { key, session, stt, voice, speak } = this._options;
+        const url = new URL(TelnyxVoice.streamUrl());
+        if (session) url.searchParams.set("session", session);
         const ws = new WebSocket(url);
         this._ws = ws;
         ws.addEventListener("open", () => {
@@ -625,8 +686,8 @@ class TelnyxStreamTurn {
             this._fail(
                 new Error(
                     opened
-                        ? `The Telnyx stream at ${url} closed before the reply finished (code ${event.code}${reason}).`
-                        : `Could not connect to the Telnyx stream at ${url} (code ${event.code}${reason}). ` +
+                        ? `The Telnyx stream at ${url.origin}${url.pathname} closed before the reply finished (code ${event.code}${reason}).`
+                        : `Could not connect to the Telnyx stream at ${url.origin}${url.pathname} (code ${event.code}${reason}). ` +
                           `Check the Worker has the /api/telnyx/stream route and that ALLOWED_ORIGINS includes ${window.location.origin}.`
                 )
             );
@@ -755,6 +816,9 @@ class TelnyxStreamTurn {
             err.failedModels = Array.isArray(message.failedModels) ? message.failedModels : [];
             err.failedStt = Array.isArray(message.failedStt) ? message.failedStt : [];
             err.failedVoices = Array.isArray(message.failedVoices) ? message.failedVoices : [];
+            err.status = Number(message.status) || 0;
+            err.session = message.session || null;
+            err.chargeCents = Number(message.chargeCents) || 0;
             this._fail(err);
         }
     }

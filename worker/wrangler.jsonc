@@ -16,7 +16,39 @@
 		"GROQ_ALLOWED_SPEECH_MODELS": "canopylabs/orpheus-v1-english,canopylabs/orpheus-arabic-saudi",
 		"GROQ_TRANSCRIBE_CENTS": "1",
 		"GROQ_SPEECH_CENTS": "1",
-		"GROQ_AUD_PER_USD": "1.5"
+		"GROQ_AUD_PER_USD": "1.5",
+		// Hosted Telnyx (secret TELNYX_API_KEY) speech prices in USD, from telnyx.com/pricing (Oct 2026).
+		// Chat prices come live from Telnyx's model list. Anything not listed is charged at "default", the dearest rate.
+		"TELNYX_STT_USD_PER_MINUTE": {
+			"deepgram": 0.005,
+			"assemblyai": 0.005,
+			"telnyx": 0.015,
+			"google": 0.017,
+			"azure": 0.027,
+			"xai": 0.0033,
+			"parakeet": 0.0015,
+			"cohere": 0.0015,
+			"soniox": 0.002,
+			"speechmatics": 0.0035,
+			"humain": 0.007,
+			"basira": 0.007,
+			"default": 0.027
+		},
+		// Keyed by voice id prefix, e.g. "Telnyx.KokoroTTS.am_adam".
+		"TELNYX_TTS_USD_PER_MILLION_CHARS": {
+			"Telnyx.KokoroTTS": 3,
+			"Telnyx.Natural": 3,
+			"Telnyx.NaturalHD": 48,
+			"Telnyx.Ultra": 32,
+			"Telnyx.Qwen3TTS": 32,
+			"AWS.Polly": 24,
+			"Minimax": 34,
+			"Rime": 20,
+			"Inworld": 10,
+			"Resemble": 8,
+			"Murf": 8,
+			"default": 48
+		}
 	},
 	"d1_databases": [
 		{

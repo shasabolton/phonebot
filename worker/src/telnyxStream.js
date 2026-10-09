@@ -1,6 +1,8 @@
 /**
- * One streamed hold-to-talk turn on the player's own Telnyx key. Browser WebSockets cannot send an
- * Authorization header, so the page hands the key to this Worker, which holds both Telnyx sockets.
+ * One streamed hold-to-talk turn. Browser WebSockets cannot send an Authorization header, so the page
+ * hands its Telnyx key to this Worker, which holds both Telnyx sockets. A turn with no key uses the
+ * Worker's key and is charged to the play session in the socket URL (?session=): speech-to-text by
+ * the seconds sent, chat by tokens, voice by characters (see telnyxHosted.js), settled once per turn.
  *
  *   page -> {type:"start", key, stt:{provider, model}, sttOptions:[{provider, model}], voice, voiceOptions:[id],
  *           speak} when the player starts talking (the *Options lists are the order to try; without
@@ -10,14 +12,17 @@
  *           on release (`chat.model` alone is still accepted)
  *   page <- {type:"ready"}, {type:"partial", text}, {type:"transcript", text}, {type:"reply", text},
  *           {type:"audio", audio:<base64 MP3>}, then
- *           {type:"done", model, failedModels, sttModel, failedStt, voice, failedVoices, ...}
- *           or {type:"error", message, failedModels, failedStt, failedVoices}
+ *           {type:"done", model, failedModels, sttModel, failedStt, voice, failedVoices, chargeCents, ...}
+ *           or {type:"error", message, status, session, failedModels, failedStt, failedVoices, chargeCents}
+ *           (status 402 with the play session when hosted credit has run out)
  *
  * The transcript replaces `transcriptMarker` in the last chat message, as in the hosted voice turn.
  * Speech-to-text models are tried in order: if one fails before the transcript is ready, the next one
  * is sent the whole recording. Chat models are tried in order: the next one is used if one fails
  * before any reply text is spoken.
  */
+
+import { estimateTokens } from "./telnyxHosted.js";
 
 const TELNYX_BASE = "https://api.telnyx.com/v2";
 const INPUT_RATE = 16000;
@@ -60,13 +65,14 @@ const CLOSE_STREAM_ENGINES = new Set(["Deepgram", "Speechmatics", "Soniox"]);
 /** The providers list prefixes every model; the WebSocket wants these engines' models bare. */
 const BARE_MODEL_ENGINES = new Set(["Deepgram", "Google"]);
 
-export function handleTelnyxStream(request) {
+/** @param billing hosted Telnyx billing from index.js, used only when the start message has no key */
+export function handleTelnyxStream(request, billing) {
     if (request.headers.get("Upgrade") !== "websocket") throw httpError(426, "Expected a WebSocket upgrade.");
     const { 0: client, 1: server } = new WebSocketPair();
     // Without this, binary frames arrive as Blob and Telnyx receives nothing.
     server.binaryType = "arraybuffer";
     server.accept();
-    new TelnyxStreamSession(server);
+    new TelnyxStreamSession(server, billing);
     return new Response(null, { status: 101, webSocket: client });
 }
 
@@ -82,6 +88,7 @@ function streamingStt(stt) {
     }
     return {
         engine,
+        provider,
         model,
         value: `${raw}|${listed}`,
         finalize: engine === "Deepgram",
@@ -102,8 +109,12 @@ function visibleReply(raw, final) {
 }
 
 class TelnyxStreamSession {
-    constructor(page) {
+    constructor(page, billing) {
         this.page = page;
+        this.billing = billing;
+        this.hosted = false;
+        /** Hosted turns: Telnyx's price of everything used so far, in US dollars. */
+        this.costUsd = 0;
         this.id = crypto.randomUUID().slice(0, 8);
         this.createdAt = Date.now();
         this.recorded = [];
@@ -124,6 +135,7 @@ class TelnyxStreamSession {
             if (!this.finished) this.reached("page closed");
             this.finished = true;
             this.closeUpstream();
+            this.settle();
         });
     }
 
@@ -144,15 +156,39 @@ class TelnyxStreamSession {
         this.send({
             type: "error",
             message: error?.message || String(error),
+            status: error?.status,
+            session: error?.session,
             reply: this.reply || undefined,
             failedModels: this.failedModels?.length ? this.failedModels : undefined,
             failedStt: this.failedStt?.length ? this.failedStt : undefined,
-            failedVoices: this.failedVoices?.length ? this.failedVoices : undefined
+            failedVoices: this.failedVoices?.length ? this.failedVoices : undefined,
+            chargeCents: this.settle()
         });
         this.closeUpstream();
         try {
             this.page.close(1011, "error");
         } catch (_) {}
+    }
+
+    /** Charges a hosted turn once, whether it finished, failed or the page went away. @returns {number} cents */
+    settle() {
+        if (!this.hosted || this.settled) return 0;
+        this.settled = true;
+        return this.billing.charge(this.costUsd);
+    }
+
+    meterStt(bytes) {
+        if (this.hosted && this.stream) this.costUsd += this.billing.pricing.sttUsd(this.stream.provider, bytes / (INPUT_RATE * 2));
+    }
+
+    meterSpeech(text) {
+        if (this.hosted && text.trim()) this.costUsd += this.billing.pricing.ttsUsd(this.voice, text.length);
+    }
+
+    meterChat(model, body, completionText, usage) {
+        if (!this.hosted) return;
+        const counted = usage?.prompt_tokens != null ? usage : estimateTokens(body.messages, completionText);
+        this.costUsd += this.billing.pricing.chatUsd(this.chatRates.get(model.id), counted);
     }
 
     closeUpstream() {
@@ -177,7 +213,10 @@ class TelnyxStreamSession {
             if (this.audioBytes > MAX_AUDIO_BYTES) throw httpError(413, "Too much audio for one turn.");
             // Everything is kept: a newly connected speech-to-text model is sent the whole recording.
             this.recorded.push(frame);
-            if (this.stt && !this.sttClosed) this.stt.send(frame);
+            if (this.stt && !this.sttClosed) {
+                this.stt.send(frame);
+                this.meterStt(frame.byteLength);
+            }
             return;
         }
         if (event.data.length > MAX_CONTROL_MESSAGE_CHARS) throw httpError(413, "Message is too large.");
@@ -190,7 +229,13 @@ class TelnyxStreamSession {
         if (this.started) return;
         this.started = true;
         this.apiKey = String(message.key || "").trim();
-        if (!this.apiKey) throw httpError(401, "Enter your Telnyx API key.");
+        if (!this.apiKey) {
+            if (!this.billing?.apiKey) throw httpError(401, "Enter your Telnyx API key.");
+            await this.billing.open();
+            this.chatRates = await this.billing.pricing.chatRates();
+            this.apiKey = this.billing.apiKey;
+            this.hosted = true;
+        }
         this.sttOptions = (Array.isArray(message.sttOptions) && message.sttOptions.length ? message.sttOptions : [message.stt])
             .filter((s) => String(s?.provider || "").trim())
             .slice(0, MAX_STT_MODELS)
@@ -297,7 +342,10 @@ class TelnyxStreamSession {
             }
             this.transcriptReady("speech-to-text closed");
         });
-        for (const frame of this.recorded) socket.send(frame);
+        for (const frame of this.recorded) {
+            socket.send(frame);
+            this.meterStt(frame.byteLength);
+        }
     }
 
     /** The speech-to-text model failed mid-turn: replay the recording into the next one, if any. */
@@ -343,9 +391,11 @@ class TelnyxStreamSession {
                 id: String(m.id || "").trim(),
                 thinkingOff: typeof m.thinkingOff === "boolean" ? m.thinkingOff : !REJECTS_TEMPLATE_KWARGS.test(String(m.id || ""))
             }))
-            .filter((m) => m.id)
+            .filter((m) => m.id && (!this.hosted || this.chatRates.has(m.id)))
             .slice(0, MAX_CHAT_MODELS);
-        if (!models.length) throw httpError(400, "Pick a Telnyx chat model.");
+        if (!models.length) {
+            throw httpError(400, this.hosted ? "None of these chat models has a Telnyx price, so hosted credit can't pay for them." : "Pick a Telnyx chat model.");
+        }
         if (!Array.isArray(chat.messages) || !chat.messages.length) throw httpError(400, "chat.messages is required.");
         this.chat = {
             models,
@@ -367,6 +417,7 @@ class TelnyxStreamSession {
         try {
             if (this.sttClosed) throw new Error("closed");
             this.stt.send(new ArrayBuffer(TAIL_SILENCE_BYTES));
+            this.meterStt(TAIL_SILENCE_BYTES);
             if (this.stream.finalize) this.stt.send(JSON.stringify({ type: "Finalize" }));
             if (this.stream.closeStream) this.stt.send(JSON.stringify({ type: "CloseStream" }));
         } catch (_) {
@@ -445,6 +496,7 @@ class TelnyxStreamSession {
             body: form
         });
         if (!response.ok) throw await upstreamError("Telnyx file speech-to-text (after the stream heard nothing)", response);
+        if (this.hosted) this.costUsd += this.billing.pricing.sttUsd("telnyx", this.audioBytes / (INPUT_RATE * 2));
         return String((await response.json())?.text || "").trim();
     }
 
@@ -518,14 +570,18 @@ class TelnyxStreamSession {
             this.chatAbort.abort();
         }, CHAT_FIRST_DATA_MS);
         const watchdog = setTimeout(() => this.chatAbort.abort(), CHAT_TIMEOUT_MS);
+        const body = this.chatBody(model);
+        const stats = { usage: null, reasoning: "" };
+        let answered = false;
         try {
             const response = await fetch(`${TELNYX_BASE}/ai/openai/chat/completions`, {
                 method: "POST",
                 headers: { Authorization: `Bearer ${this.apiKey}`, "Content-Type": "application/json" },
-                body: JSON.stringify(this.chatBody(model)),
+                body: JSON.stringify(body),
                 signal: this.chatAbort.signal
             });
             if (!response.ok) throw await upstreamError(`Telnyx chat (${model.id})`, response);
+            answered = true;
             await readChatStream(
                 response.body,
                 (piece) => {
@@ -533,7 +589,8 @@ class TelnyxStreamSession {
                     this.rawReply += piece;
                     this.speakNew(false);
                 },
-                () => clearTimeout(firstData)
+                () => clearTimeout(firstData),
+                stats
             );
         } catch (error) {
             if (this.finished || !this.chatAbort.signal.aborted) throw error;
@@ -546,6 +603,7 @@ class TelnyxStreamSession {
         } finally {
             clearTimeout(firstData);
             clearTimeout(watchdog);
+            if (answered) this.meterChat(model, body, this.rawReply + stats.reasoning, stats.usage);
         }
         if (this.finished) return;
         this.reply = visibleReply(this.rawReply, true).trim();
@@ -592,6 +650,7 @@ class TelnyxStreamSession {
     sendSpeech(message) {
         try {
             this.tts?.send(JSON.stringify(message));
+            this.meterSpeech(message.text);
         } catch (_) {}
     }
 
@@ -615,7 +674,7 @@ class TelnyxStreamSession {
             return;
         }
         this.attachSpeech(socket);
-        if (this.spoken) socket.send(JSON.stringify({ text: this.spoken, flush: true }));
+        if (this.spoken) this.sendSpeech({ text: this.spoken, flush: true });
         if (this.chatDone) this.endSpeech();
     }
 
@@ -675,7 +734,8 @@ class TelnyxStreamSession {
             voice: this.voice,
             failedVoices: this.failedVoices || [],
             speechRetries: this.speechRetries || 0,
-            timings: this.timings
+            timings: this.timings,
+            chargeCents: this.settle()
         });
         this.closeUpstream();
         try {
@@ -701,8 +761,9 @@ async function openTelnyxSocket(label, path, apiKey) {
 /**
  * Reads an OpenAI-style SSE chat stream, passing each piece of visible reply text (not reasoning) to
  * onPiece. onData is called for every event, reasoning included, to show the model is working.
+ * `stats` collects the reasoning text and any `usage` Telnyx sends, for billing.
  */
-async function readChatStream(body, onPiece, onData = () => {}) {
+async function readChatStream(body, onPiece, onData = () => {}, stats = {}) {
     const reader = body.pipeThrough(new TextDecoderStream()).getReader();
     let buffer = "";
     for (;;) {
@@ -724,7 +785,11 @@ async function readChatStream(body, onPiece, onData = () => {}) {
                 continue;
             }
             if (json?.error) throw httpError(502, `Telnyx chat error: ${json.error.message || JSON.stringify(json.error)}`);
-            const piece = json?.choices?.[0]?.delta?.content;
+            if (json?.usage) stats.usage = json.usage;
+            const delta = json?.choices?.[0]?.delta;
+            const reasoning = delta?.reasoning_content || delta?.reasoning;
+            if (typeof reasoning === "string") stats.reasoning = (stats.reasoning || "") + reasoning;
+            const piece = delta?.content;
             if (piece) onPiece(piece);
         }
     }
