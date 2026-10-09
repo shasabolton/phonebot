@@ -7,169 +7,195 @@
       "kind": "audio",
       "trigger": "gameLoad",
       "loop": "once",
-
       "onEnd": "next",
       "delaySec": 0,
-      "constraints": { "face": "any" },
+      "constraints": {
+        "face": "any"
+      },
       "text": "Let me tell the story about the day I tried to escape the wall!",
       "fileName": "escape-the-wall-00.wav",
-      "audioUrl": "audio/escape-the-wall-00.wav"
+      "audioUrl": "audio/escape-the-wall-00.wav",
+      "telnyxAudioUrl": "audio/telnyx/escape-the-wall-00.mp3"
     },
     {
       "id": "etw-01",
       "kind": "audio",
       "trigger": "playNext",
       "loop": "once",
-
       "onEnd": "next",
       "delaySec": 0,
-      "constraints": { "face": "any" },
+      "constraints": {
+        "face": "any"
+      },
       "text": "It was a hot summer afternoon—the kind that stretches like warm taffy and forgets to end. The shop had gone quiet. No footsteps. No chatter.",
       "fileName": "escape-the-wall-01.wav",
-      "audioUrl": "audio/escape-the-wall-01.wav"
+      "audioUrl": "audio/escape-the-wall-01.wav",
+      "telnyxAudioUrl": "audio/telnyx/escape-the-wall-01.mp3"
     },
     {
       "id": "etw-02",
       "kind": "audio",
       "trigger": "playNext",
       "loop": "once",
-
       "onEnd": "next",
       "delaySec": 0,
-      "constraints": { "face": "any" },
+      "constraints": {
+        "face": "any"
+      },
       "text": "Just dust doing ballet in the light, and me, a head on a wall, wondering what a life is when you can't leave the frame.",
       "fileName": "escape-the-wall-02.wav",
-      "audioUrl": "audio/escape-the-wall-02.wav"
+      "audioUrl": "audio/escape-the-wall-02.wav",
+      "telnyxAudioUrl": "audio/telnyx/escape-the-wall-02.mp3"
     },
     {
       "id": "etw-03",
       "kind": "audio",
       "trigger": "playNext",
       "loop": "once",
-
       "onEnd": "next",
       "delaySec": 0,
-      "constraints": { "face": "any" },
+      "constraints": {
+        "face": "any"
+      },
       "text": "I had questions. Big ones. Am I décor? Am I destiny? Or just a chin with opinions?",
       "fileName": "escape-the-wall-03.wav",
-      "audioUrl": "audio/escape-the-wall-03.wav"
+      "audioUrl": "audio/escape-the-wall-03.wav",
+      "telnyxAudioUrl": "audio/telnyx/escape-the-wall-03.mp3"
     },
     {
       "id": "etw-04",
       "kind": "audio",
       "trigger": "playNext",
       "loop": "once",
-
       "onEnd": "next",
       "delaySec": 0,
-      "constraints": { "face": "any" },
+      "constraints": {
+        "face": "any"
+      },
       "text": "Then she walked in. Soft perfume. Soft purpose. She set her handbag beneath me—open, dark, inviting—like the universe had finally left a door ajar.",
       "fileName": "escape-the-wall-04.wav",
-      "audioUrl": "audio/escape-the-wall-04.wav"
+      "audioUrl": "audio/escape-the-wall-04.wav",
+      "telnyxAudioUrl": "audio/telnyx/escape-the-wall-04.mp3"
     },
     {
       "id": "etw-05",
       "kind": "audio",
       "trigger": "playNext",
       "loop": "once",
-
       "onEnd": "next",
       "delaySec": 0,
-      "constraints": { "face": "any" },
+      "constraints": {
+        "face": "any"
+      },
       "text": "A chance, I thought. A real chance to become… something.",
       "fileName": "escape-the-wall-05.wav",
-      "audioUrl": "audio/escape-the-wall-05.wav"
+      "audioUrl": "audio/escape-the-wall-05.wav",
+      "telnyxAudioUrl": "audio/telnyx/escape-the-wall-05.mp3"
     },
     {
       "id": "etw-06",
       "kind": "audio",
       "trigger": "playNext",
       "loop": "once",
-
       "onEnd": "next",
       "delaySec": 0,
-      "constraints": { "face": "any" },
+      "constraints": {
+        "face": "any"
+      },
       "text": "So I did what heroes do. I rolled my eyes like dice. I flapped my chin like a fish auditioning for freedom. And—plop—into the bag I went.",
       "fileName": "escape-the-wall-06.wav",
-      "audioUrl": "audio/escape-the-wall-06.wav"
+      "audioUrl": "audio/escape-the-wall-06.wav",
+      "telnyxAudioUrl": "audio/telnyx/escape-the-wall-06.mp3"
     },
     {
       "id": "etw-07",
       "kind": "audio",
       "trigger": "playNext",
       "loop": "once",
-
       "onEnd": "next",
       "delaySec": 0,
-      "constraints": { "face": "any" },
+      "constraints": {
+        "face": "any"
+      },
       "text": "Escape smelled of lipstick and loose change. Freedom lasted three glorious minutes.",
       "fileName": "escape-the-wall-07.wav",
-      "audioUrl": "audio/escape-the-wall-07.wav"
+      "audioUrl": "audio/escape-the-wall-07.wav",
+      "telnyxAudioUrl": "audio/telnyx/escape-the-wall-07.mp3"
     },
     {
       "id": "etw-08",
       "kind": "audio",
       "trigger": "playNext",
       "loop": "once",
-
       "onEnd": "next",
       "delaySec": 0,
-      "constraints": { "face": "any" },
+      "constraints": {
+        "face": "any"
+      },
       "text": "Then I tumbled out onto the road. Cars hissed past. A giant truck tyre barreled past, an inch from my fragile forehead.",
       "fileName": "escape-the-wall-08.wav",
-      "audioUrl": "audio/escape-the-wall-08.wav"
+      "audioUrl": "audio/escape-the-wall-08.wav",
+      "telnyxAudioUrl": "audio/telnyx/escape-the-wall-08.mp3"
     },
     {
       "id": "etw-09",
       "kind": "audio",
       "trigger": "playNext",
       "loop": "once",
-
       "onEnd": "next",
       "delaySec": 0,
-      "constraints": { "face": "any" },
+      "constraints": {
+        "face": "any"
+      },
       "text": "I was surely soon to become pavement pâté. With nothing but my own chin, I dragged myself desperately through the traffic and gravel like a wounded snail.",
       "fileName": "escape-the-wall-09.wav",
-      "audioUrl": "audio/escape-the-wall-09.wav"
+      "audioUrl": "audio/escape-the-wall-09.wav",
+      "telnyxAudioUrl": "audio/telnyx/escape-the-wall-09.mp3"
     },
     {
       "id": "etw-10",
       "kind": "audio",
       "trigger": "playNext",
       "loop": "once",
-
       "onEnd": "next",
       "delaySec": 0,
-      "constraints": { "face": "any" },
+      "constraints": {
+        "face": "any"
+      },
       "text": "With grit and a determined jawline I flopped up onto the curb. I climbed the stairs with my eyebrows—one heroic twitch at a time—then fainted on the doorstep, proud and ridiculous.",
       "fileName": "escape-the-wall-10.wav",
-      "audioUrl": "audio/escape-the-wall-10.wav"
+      "audioUrl": "audio/escape-the-wall-10.wav",
+      "telnyxAudioUrl": "audio/telnyx/escape-the-wall-10.mp3"
     },
     {
       "id": "etw-11",
       "kind": "audio",
       "trigger": "playNext",
       "loop": "once",
-
       "onEnd": "next",
       "delaySec": 0,
-      "constraints": { "face": "any" },
+      "constraints": {
+        "face": "any"
+      },
       "text": "When I woke, I was back on the wall.",
       "fileName": "escape-the-wall-11.wav",
-      "audioUrl": "audio/escape-the-wall-11.wav"
+      "audioUrl": "audio/escape-the-wall-11.wav",
+      "telnyxAudioUrl": "audio/telnyx/escape-the-wall-11.mp3"
     },
     {
       "id": "etw-12",
       "kind": "audio",
       "trigger": "playNext",
       "loop": "once",
-
       "onEnd": "end:home",
       "delaySec": 0,
-      "constraints": { "face": "any" },
+      "constraints": {
+        "face": "any"
+      },
       "text": "And I understood: I am useful here. Safe here. Lucky, even. The world can keep its traffic. I'll keep my view.",
       "fileName": "escape-the-wall-12.wav",
-      "audioUrl": "audio/escape-the-wall-12.wav"
+      "audioUrl": "audio/escape-the-wall-12.wav",
+      "telnyxAudioUrl": "audio/telnyx/escape-the-wall-12.mp3"
     }
   ]
 }

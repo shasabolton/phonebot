@@ -4,6 +4,8 @@
   "name": "Santa Claus",
   "bio": "This character is Santa Claus.",
   "voice": "troy",
+  "telnyxVoice": "Minimax.speech-2.8-turbo.Spanish_SantaClaus",
+  "voiceGender": "male",
   "games": [
     {
       "id": "chatWithSanta",

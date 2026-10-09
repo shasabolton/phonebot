@@ -692,6 +692,10 @@ class CustomMessagesGame {
     static _rebaseAudio(messages, { basePath = "", files = null }) {
         if (!basePath && !files) return;
         for (const msg of messages) {
+            if (CustomMessagesGame._isRelativePath(msg.telnyxAudioUrl)) {
+                // Games saved in this browser store one clip per message, so an uploaded Telnyx clip is dropped.
+                msg.telnyxAudioUrl = files ? "" : CustomMessagesGame._resolveRelativePath(basePath, msg.telnyxAudioUrl);
+            }
             if (!CustomMessagesGame._isRelativePath(msg.audioUrl)) continue;
             if (files) {
                 const path = CustomMessagesGame._resolveRelativePath("game.json", msg.audioUrl);
@@ -759,18 +763,29 @@ class CustomMessagesGame {
         /** @type {{ path: string, data: Blob }[]} */
         const files = [];
         const taken = new Set();
-        const addClip = (fileName, fallbackStem, blob) => {
+        const addClip = (fileName, fallbackStem, blob, dir = "audio") => {
             const ext = CustomMessagesGame._audioExtension(blob.type, fileName);
             const stem =
                 String(fileName || "")
                     .replace(/\.[a-z0-9]{2,5}$/i, "")
                     .replace(/[<>:"/\\|?*\u0000-\u001f]+/g, "_")
                     .trim() || fallbackStem;
-            let name = `${stem}.${ext}`;
-            for (let n = 2; taken.has(name.toLowerCase()); n++) name = `${stem}-${n}.${ext}`;
-            taken.add(name.toLowerCase());
-            files.push({ path: `audio/${name}`, data: blob });
-            return `audio/${name}`;
+            let path = `${dir}/${stem}.${ext}`;
+            for (let n = 2; taken.has(path.toLowerCase()); n++) path = `${dir}/${stem}-${n}.${ext}`;
+            taken.add(path.toLowerCase());
+            files.push({ path, data: blob });
+            return path;
+        };
+        /** App clips go into the folder; when one can't be fetched the JSON points at it instead. */
+        const addAppClip = async (url, fileName, fallbackStem, dir) => {
+            try {
+                const res = await fetch(url);
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                return addClip(fileName || CustomMessagesGame._fileNameFromUrl(url), fallbackStem, await res.blob(), dir);
+            } catch (err) {
+                console.warn("Game audio fetch for download failed:", url, err);
+                return new URL(url, window.location.href).href;
+            }
         };
         const out = [];
         for (const msg of messages) {
@@ -782,15 +797,10 @@ class CustomMessagesGame {
             if (!url && msg.audioBlob?.size) {
                 entry.audioUrl = addClip(msg.fileName, msg.id, msg.audioBlob);
             } else if (url && CustomMessagesGame._isAppUrl(url)) {
-                try {
-                    const res = await fetch(url);
-                    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-                    const name = msg.fileName || CustomMessagesGame._fileNameFromUrl(url);
-                    entry.audioUrl = addClip(name, msg.id, await res.blob());
-                } catch (err) {
-                    console.warn("Game audio fetch for download failed:", url, err);
-                    entry.audioUrl = new URL(url, window.location.href).href;
-                }
+                entry.audioUrl = await addAppClip(url, msg.fileName, msg.id);
+            }
+            if (entry.telnyxAudioUrl && CustomMessagesGame._isAppUrl(entry.telnyxAudioUrl)) {
+                entry.telnyxAudioUrl = await addAppClip(entry.telnyxAudioUrl, "", msg.id, "audio/telnyx");
             }
             out.push(entry);
         }
@@ -1102,6 +1112,7 @@ class CustomMessagesGame {
      */
     static _serializeMessage(msg, { forExport = false } = {}) {
         const constraints = CustomMessagesGame._normalizeConstraints(msg.constraints);
+        const telnyxAudioUrl = CustomMessagesGame._normalizeAudioUrl(msg.telnyxAudioUrl);
         const out = {
             id: msg.id,
             trigger: msg.trigger,
@@ -1120,6 +1131,7 @@ class CustomMessagesGame {
             maxWords: CustomMessagesGame._normalizeMaxWords(msg.maxWords),
             reasoningEffort: CustomMessagesGame._messageReasoningEffort(msg),
             audioUrl: CustomMessagesGame._normalizeAudioUrl(msg.audioUrl),
+            ...(telnyxAudioUrl ? { telnyxAudioUrl } : {}),
             audioKey: "",
             audioBase64: null,
             audioMime: ""
@@ -1172,6 +1184,7 @@ class CustomMessagesGame {
                 : CustomMessagesGame._normalizeMaxWords(entry.maxWords),
             reasoningEffort: CustomMessagesGame._normalizeReasoningEffort(entry.reasoningEffort),
             audioUrl: CustomMessagesGame._normalizeAudioUrl(entry.audioUrl),
+            telnyxAudioUrl: CustomMessagesGame._normalizeAudioUrl(entry.telnyxAudioUrl),
             audioKey: String(entry.audioKey || ""),
             audioBlob: null,
             _audioBase64: entry.audioBase64 || null,
@@ -2896,6 +2909,9 @@ class CustomMessagesGame {
         if (previous?.audioKey && msg.audioBlob && msg.audioBlob === previous.audioBlob) {
             msg.audioKey = previous.audioKey;
         }
+        if (previous?.telnyxAudioUrl && audioUrl && audioUrl === previous.audioUrl) {
+            msg.telnyxAudioUrl = previous.telnyxAudioUrl;
+        }
         if (idx >= 0) this.messages[idx] = msg;
         else this.messages.push(msg);
 
@@ -3608,8 +3624,11 @@ class CustomMessagesGame {
 
     async _playAudio(msg, generation) {
         const url = CustomMessagesGame._normalizeAudioUrl(msg.audioUrl);
-        if (url) {
-            await this._playAudioUrl(msg, url, generation);
+        const telnyxUrl = this._getAgent()?.telnyxSelected?.()
+            ? CustomMessagesGame._normalizeAudioUrl(msg.telnyxAudioUrl)
+            : "";
+        if (telnyxUrl || url) {
+            await this._playAudioUrl(msg, telnyxUrl || url, generation, telnyxUrl ? url : "");
             return this._isActive(generation);
         }
         const blob = msg.audioBlob;
@@ -3634,8 +3653,9 @@ class CustomMessagesGame {
      * @param {CustomMessage} msg
      * @param {string} url
      * @param {number} generation
+     * @param {string} [fallbackUrl] played instead when `url` can't be fetched
      */
-    async _playAudioUrl(msg, url, generation) {
+    async _playAudioUrl(msg, url, generation, fallbackUrl = "") {
         if (msg._urlFetch?.src !== url) {
             let blob = null;
             try {
@@ -3649,6 +3669,10 @@ class CustomMessagesGame {
             if (!this._isActive(generation)) return;
         }
         const blob = msg._urlFetch.blob;
+        if (!blob && fallbackUrl) {
+            await this._playAudioUrl(msg, fallbackUrl, generation);
+            return;
+        }
         const player = this._getAudioPlayer();
         if (blob && blob.size && player && typeof player.playBlob === "function") {
             try {
@@ -3832,7 +3856,9 @@ class CustomMessagesGame {
  * @property {number} maxWords Prompt reply word limit, at most MAX_PROMPT_WORDS; MAX_WORDS_UNCHANGED appends nothing.
  * @property {""|"low"|"medium"|"high"} reasoningEffort Sets the talking-head reasoning level when the prompt is sent; "" (Player turn only) = no change.
  * @property {string} audioUrl Audio file URL (absolute or app-relative); when set it replaces the stored clip.
- * @property {{ src: string, blob: Blob|null }} [_urlFetch] Cached fetch of `audioUrl` (blob null = fetch blocked).
+ * @property {string} [telnyxAudioUrl] The same words in the character's Telnyx voice, played instead
+ *   while the Telnyx agent is selected; "" = none.
+ * @property {{ src: string, blob: Blob|null }} [_urlFetch] Cached fetch of the last clip URL played (blob null = fetch blocked).
  * @property {string} audioKey IndexedDB key for the clip ("" when none / stored inline).
  * @property {Blob|null} audioBlob
  * @property {string|null} [_audioBase64]

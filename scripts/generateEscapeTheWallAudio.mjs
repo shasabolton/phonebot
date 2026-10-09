@@ -1,6 +1,6 @@
 /**
  * Generate "Escape the Wall" story WAVs via Groq Orpheus (Austin).
- * Chunks stay ≤200 chars (Orpheus limit). Output goes to characters/austin/games/escapeTheWall/audio/.
+ * Chunks stay ≤200 chars (Orpheus limit). Output goes to characters/lex/games/escapeTheWall/audio/.
  *
  * Usage (PowerShell — key stays in the terminal, not chat):
  *   $env:GROQ_API_KEY = Read-Host "Paste Groq key"
@@ -17,7 +17,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const OUT_DIR = path.join(__dirname, "..", "characters", "austin", "games", "escapeTheWall", "audio");
+const OUT_DIR = path.join(__dirname, "..", "characters", "lex", "games", "escapeTheWall", "audio");
 const STORY_PATH = path.join(__dirname, "..", "stories", "escape the wall.md");
 const API_URL = "https://api.groq.com/openai/v1/audio/speech";
 const MODEL = "canopylabs/orpheus-v1-english";
@@ -284,7 +284,7 @@ async function main() {
     }
 
     const have = writeManifest();
-    console.log(`Done. ${have}/${CLIPS.length} story clips in characters/austin/games/escapeTheWall/audio/.`);
+    console.log(`Done. ${have}/${CLIPS.length} story clips in characters/lex/games/escapeTheWall/audio/.`);
 }
 
 const isDirectRun =

@@ -59,9 +59,9 @@ class App {
         return !!this.robot?.config?.characters && typeof window.PhonebotCharacters === "function";
     }
 
-    /** Character matching ?character= by id or name slug (`madame-zora`). */
+    /** Character matching ?character= by id or name slug (`madame-zora`); renamed characters' old ids still work. */
     findCharacterByParam(param) {
-        const want = this.urlSlug(param);
+        const want = this.urlSlug(window.PhonebotCharacters?.currentId?.(param) ?? param);
         if (!want || typeof window.PhonebotCharacters !== "function") return null;
         const list = window.PhonebotCharacters.list();
         return (

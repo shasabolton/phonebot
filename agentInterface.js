@@ -825,16 +825,21 @@ class AgentInterface {
     }
 
     /**
-     * The active character's voice. Telnyx uses it when the account offers it, else the most reliable
-     * voice of the same gender; a Telnyx voice under Groq becomes the Groq voice of the same gender.
+     * The active character's voices: `voiceId` for Groq, `telnyxVoiceId` for Telnyx. Telnyx uses its
+     * voice when the account offers it, else the most reliable voice of the same gender; a character
+     * with only a Telnyx voice speaks the Groq voice of the same gender under Groq.
      * @param {string} voiceId "" when there is no character or it keeps the current voice
      * @param {string} [gender] the character's saved voiceGender, used when the voice can't be looked up
+     * @param {string} [telnyxVoiceId] "" = a Telnyx stand-in for `voiceId`'s gender
      */
-    setCharacterVoice(voiceId, gender = "") {
-        const id = String(voiceId || "").trim();
+    setCharacterVoice(voiceId, gender = "", telnyxVoiceId = "") {
+        const raw = String(voiceId || "").trim();
+        const groqId = this._isTelnyxVoiceId(raw) ? "" : raw;
+        const telnyxId = String(telnyxVoiceId || "").trim() || (groqId ? "" : raw);
+        const id = telnyxId || groqId;
         this._characterVoice = id ? { id, gender: window.TelnyxVoice?.normalGender?.(gender) || "" } : null;
-        if (id && !this._isTelnyxVoiceId(id)) {
-            this.setTtsVoice(id);
+        if (groqId) {
+            this.setTtsVoice(groqId);
         } else if (id) {
             const wanted = this._voiceGender(id) || this._characterVoice.gender;
             const groq = (window.GroqTts?.VOICES || []).find((v) => this._voiceGender(v.id) === wanted);
@@ -863,9 +868,11 @@ class AgentInterface {
     _telnyxVoiceChoices(agent = this.getSelectedAgent(), options = {}) {
         const voices = this._telnyxLists.voices || [];
         const offered = (id) => this._isTelnyxVoiceId(id) && (!voices.length || voices.some((v) => v.id === id));
+        /** The id as the voice list spells it: Telnyx writes provider names in either case. */
+        const listed = (id) => voices.find((v) => v.id.toLowerCase() === id.toLowerCase())?.id || id;
         const character = this._characterVoice;
         const pick = options.ignorePick ? "" : this._telnyxChoice("voice", agent);
-        const wanted = character ? [character.id] : [pick, String(agent?.voice || "").trim()].filter(Boolean);
+        const wanted = (character ? [character.id] : [pick, String(agent?.voice || "").trim()].filter(Boolean)).map(listed);
         const gender = wanted.map((id) => this._voiceGender(id)).find(Boolean) || character?.gender || "";
         const standIns = window.TelnyxVoice?.rankVoices
             ? window.TelnyxVoice.rankVoices(voices, {
@@ -1260,7 +1267,7 @@ class AgentInterface {
         const usedName = used ? voiceLabel(used) : usedId || "none available";
         const defaultLabel = !character
             ? `Default: ${usedName}`
-            : usedId === character.id
+            : usedId.toLowerCase() === character.id.toLowerCase()
               ? `Character's voice: ${usedName}`
               : `Character's voice isn't available here; stand-in: ${usedName}`;
         this._fillTelnyxSelect(

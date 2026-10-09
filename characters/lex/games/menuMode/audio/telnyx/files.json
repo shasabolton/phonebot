@@ -1,0 +1,29 @@
+{
+  "voice": "azure.en-US-Jasper:MAI-Voice-2",
+  "files": [
+    {
+      "file": "nudge-0.mp3",
+      "text": "Wanna play Simon says, 20 questions, discuss the nature of reality, just pick a game from the menu."
+    },
+    {
+      "file": "nudge-1.mp3",
+      "text": "Hey, did I mention, I can see the future. Just say the word and all will be revealed"
+    },
+    {
+      "file": "nudge-2b.mp3",
+      "text": "You don't like fun and frivality. Come on, just pick something from the menu"
+    },
+    {
+      "file": "nudge-3.mp3",
+      "text": "Okay lets see who can hold their breath the longest. Ready. 1, 2, 3, go"
+    },
+    {
+      "file": "nudge-4.mp3",
+      "text": "Oh I could do this all day. You are looking at a breath holding champion."
+    },
+    {
+      "file": "nudge-5.mp3",
+      "text": "Is anybody out there. Who will play with me"
+    }
+  ]
+}

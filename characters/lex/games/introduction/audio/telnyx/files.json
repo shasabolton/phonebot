@@ -1,0 +1,9 @@
+{
+  "voice": "azure.en-US-Jasper:MAI-Voice-2",
+  "files": [
+    {
+      "file": "intro.mp3",
+      "text": "Hello there. I am your friendly talking head on the wall. I like to play word games, talk philosophy, and you should know, I am also a pretty good fortune teller. Please choose a game from the menu."
+    }
+  ]
+}

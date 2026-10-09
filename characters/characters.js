@@ -10,7 +10,9 @@
  * @property {string} id Also the character's folder name.
  * @property {string} name
  * @property {string} bio Prompt sent as a system message on every AI turn while active.
- * @property {string} voice TTS voice id; "" keeps whatever voice is selected.
+ * @property {string} voice Groq (or browser) TTS voice id; "" keeps whatever voice is selected.
+ * @property {string} telnyxVoice Telnyx voice id, used while the Telnyx agent is selected; "" = a
+ *   Telnyx voice of the same gender stands in.
  * @property {"male"|"female"|""} voiceGender The voice's gender, so a voice of the same gender can
  *   stand in when the voice isn't available (another provider, or retired).
  * @property {object|null} voiceFx Effects on everything the character plays (see voiceFx.js);
@@ -45,6 +47,8 @@ class PhonebotCharacters {
     static GAME_PREFIX = "game:";
     /** Old shared-game ids whose folder got a new name when games moved into characters. */
     static LEGACY_GAME_IDS = Object.freeze({ escapeTheWallJson: "escapeTheWall" });
+    /** Old character ids whose folder got a new name; saved choices, copies and links follow them. */
+    static LEGACY_CHARACTER_IDS = Object.freeze({ austin: "lex" });
     /** Fired on window when the active character or any saved character changes. */
     static CHANGE_EVENT = "phonebot:characterchange";
     static NAME_MAX = 48;
@@ -170,11 +174,19 @@ class PhonebotCharacters {
         }
         const playable = new Set([...games.map((g) => prefix + g.id), ...builtInGames]);
         const homeGame = PhonebotCharacters._legacyGameRef(raw.homeGame);
+        // Characters saved before they had a voice per provider kept a Telnyx voice in `voice`.
+        let voice = String(raw.voice || "").trim();
+        let telnyxVoice = String(raw.telnyxVoice || "").trim();
+        if (window.TelnyxVoice?.isVoiceId?.(voice)) {
+            telnyxVoice ||= voice;
+            voice = "";
+        }
         return {
-            id: String(raw.id || "").trim() || PhonebotCharacters._slug(name),
+            id: PhonebotCharacters.currentId(raw.id) || PhonebotCharacters._slug(name),
             name,
             bio: String(raw.bio || "").trim(),
-            voice: String(raw.voice || "").trim(),
+            voice,
+            telnyxVoice,
             voiceGender: ["male", "female"].includes(raw.voiceGender) ? raw.voiceGender : "",
             voiceFx: window.PhonebotVoiceFx?.forProfile(raw.voiceFx) || null,
             games,
@@ -225,6 +237,29 @@ class PhonebotCharacters {
         return PhonebotCharacters._unique(PhonebotCharacters._slug(name, "game"), taken);
     }
 
+    /** A character id with renamed folders' old ids (any case) swapped for the new one. */
+    static currentId(id) {
+        const value = String(id || "").trim();
+        return PhonebotCharacters.LEGACY_CHARACTER_IDS[value.toLowerCase()] || value;
+    }
+
+    /**
+     * Saves a store read with old character ids under the new ids, and gives games saved in this
+     * browser for an old id to the new one. Written directly: this runs while the store is read.
+     */
+    static _moveRenamedCharacters(store) {
+        const Game = window.CustomMessagesGame;
+        for (const game of Game?.listGames?.() || []) {
+            const id = PhonebotCharacters.currentId(game.characterId);
+            if (!game.repo && id !== game.characterId) Game.assignGame(game.id, { characterId: id, slug: game.slug });
+        }
+        try {
+            localStorage.setItem(PhonebotCharacters.STORAGE_KEY, JSON.stringify(store));
+        } catch (err) {
+            console.warn("Characters store write failed:", err);
+        }
+    }
+
     /** @returns {{ activeId: string|null, characters: Character[] }} */
     static _loadStore() {
         if (PhonebotCharacters._migrating) return { activeId: null, characters: [] };
@@ -237,12 +272,17 @@ class PhonebotCharacters {
             }
             const parsed = JSON.parse(raw);
             if (parsed && typeof parsed === "object") {
-                return {
-                    activeId: parsed.activeId ? String(parsed.activeId) : null,
+                const store = {
+                    activeId: parsed.activeId ? PhonebotCharacters.currentId(parsed.activeId) : null,
                     characters: Array.isArray(parsed.characters)
                         ? parsed.characters.map((c) => PhonebotCharacters.normalize(c)).filter(Boolean)
                         : []
                 };
+                const renamed = [parsed.activeId, ...(parsed.characters || []).map((c) => c?.id)].some(
+                    (id) => PhonebotCharacters.currentId(id) !== String(id || "").trim()
+                );
+                if (renamed) PhonebotCharacters._moveRenamedCharacters(store);
+                return store;
             }
         } catch (err) {
             console.warn("Characters store read failed:", err);
@@ -263,14 +303,14 @@ class PhonebotCharacters {
             try {
                 v1 = JSON.parse(localStorage.getItem(PhonebotCharacters.STORAGE_KEY_V1) || "null");
             } catch (_) {}
-            const store = { activeId: v1?.activeId ? String(v1.activeId) : null, characters: [] };
+            const store = { activeId: v1?.activeId ? PhonebotCharacters.currentId(v1.activeId) : null, characters: [] };
             const Game = window.CustomMessagesGame;
             if (typeof Game !== "function") return store;
             const saved = Game.listGames();
             const claimed = new Set(saved.filter((g) => g.characterId).map((g) => g.id));
             const prefix = PhonebotCharacters.GAME_PREFIX;
             for (const raw of Array.isArray(v1?.characters) ? v1.characters : []) {
-                const id = String(raw?.id || "").trim();
+                const id = PhonebotCharacters.currentId(raw?.id);
                 if (!id) continue;
                 const games = [];
                 const taken = new Set();
@@ -658,6 +698,7 @@ class PhonebotCharacters {
             name: character.name,
             bio: character.bio,
             voice: character.voice,
+            ...(character.telnyxVoice ? { telnyxVoice: character.telnyxVoice } : {}),
             ...(character.voiceGender ? { voiceGender: character.voiceGender } : {}),
             ...(character.voiceFx ? { voiceFx: { ...character.voiceFx } } : {}),
             games: (character.games || []).map((g) => ({ id: g.id, name: g.name })),
@@ -1212,7 +1253,9 @@ class CharactersPanel {
                 const details = [v.language, v.accent, v.age, v.gender].filter(Boolean).join(", ");
                 add(groups.get(v.provider), v.id, details ? `${v.name} (${details})` : v.name, v.id);
             }
-            if (wanted && ![...voiceSelect.options].some((o) => o.value === wanted)) {
+            const listed = [...voiceSelect.options].find((o) => o.value.toLowerCase() === String(wanted).toLowerCase());
+            if (listed) wanted = listed.value;
+            else if (wanted) {
                 const otherProvider = Telnyx && Telnyx.isVoiceId(wanted) !== useTelnyx;
                 add(voiceSelect, wanted, otherProvider ? `${wanted} (${useTelnyx ? "Groq" : "Telnyx"} voice)` : wanted);
             }
@@ -1233,19 +1276,19 @@ class CharactersPanel {
             if (!Telnyx) return;
             const picked = voiceSelect.value;
             if (!telnyxSelected()) {
-                voiceHint.textContent = Telnyx.isVoiceId(picked)
-                    ? "That's a Telnyx voice: the Groq agent keeps its own voice. Pick a Groq voice, or select the Telnyx agent."
-                    : "Groq voices, as the Groq agent is selected. For Telnyx voices, select the Telnyx agent and reopen this editor.";
+                voiceHint.textContent =
+                    "The character's voice for the Groq agent. It has a separate Telnyx voice: select the Telnyx agent and reopen this editor to change that one.";
                 return;
             }
             const source = telnyxSource();
+            const kept = " The character keeps its Groq voice for the Groq agent.";
             voiceHint.textContent = !source
                 ? "For Telnyx voices, add AI credit or enter your Telnyx API key on the Telnyx agent, then reopen this editor."
-                : picked && !Telnyx.isVoiceId(picked)
-                  ? "That's a Groq voice: Telnyx speaks it with a similar Telnyx voice. Pick a Telnyx voice to choose one."
+                : !picked
+                  ? `No Telnyx voice picked: a Telnyx voice of the same gender stands in.${kept}`
                   : source === "hosted"
-                    ? `${telnyxVoices.length} Telnyx voices are in the list, on AI credit (listening to one uses a little credit).`
-                    : `${telnyxVoices.length} Telnyx voices from your account are in the list.`;
+                    ? `${telnyxVoices.length} Telnyx voices are in the list, on AI credit (listening to one uses a little credit).${kept}`
+                    : `${telnyxVoices.length} Telnyx voices from your account are in the list.${kept}`;
         };
         voiceSelect.addEventListener("change", syncVoiceHint);
 
@@ -1650,13 +1693,17 @@ class CharactersPanel {
         /** Save the form as it stands. @returns {Character|null} */
         const commit = () => {
             const current = characterId ? PhonebotCharacters.get(characterId) : null;
-            const voice = voiceSelect.value;
+            const picked = voiceSelect.value;
+            const editingTelnyx = telnyxSelected();
+            const voice = editingTelnyx ? current?.voice || "" : picked;
+            const telnyxVoice = editingTelnyx ? picked : current?.telnyxVoice || "";
             const saved = PhonebotCharacters.save({
                 id: characterId,
                 name: nameInput.value,
                 bio: bioInput.value,
                 voice,
-                voiceGender: voiceGenderOf(voice) || (current?.voice === voice ? current.voiceGender : ""),
+                telnyxVoice,
+                voiceGender: voiceGenderOf(picked) || current?.voiceGender || voiceGenderOf(editingTelnyx ? voice : telnyxVoice),
                 voiceFx: fx,
                 games: current ? current.games : [],
                 builtInGames: [...checkedBuiltIns(), ...otherBuiltIns],
@@ -1743,7 +1790,7 @@ class CharactersPanel {
         const fill = (source) => {
             nameInput.value = source?.name || "";
             bioInput.value = source?.bio || "";
-            renderVoices(String(source?.voice || ""));
+            renderVoices(String((telnyxSelected() ? source?.telnyxVoice : source?.voice) || ""));
             syncVoiceHint();
             setFx(source?.voiceFx || null);
             const builtIns = new Set(source?.builtInGames || []);
