@@ -111,6 +111,8 @@ class AgentInterface {
         window.telnyxPreferences = () => this.telnyxPreferences();
         /** Streamed hold-to-talk turn in progress (capturing or waiting for the reply). */
         this._telnyxTurn = null;
+        /** Streamed typed / game prompt in progress (from Send until the reply has streamed in). */
+        this._telnyxTextTurn = null;
         this._templateSelect = null;
         this._insertTemplateBtn = null;
         this._promptInput = null;
@@ -1732,6 +1734,10 @@ class AgentInterface {
         window.__phonebotTtsSpeaking = false;
         this._clearCameraPhotoOverlays();
         this._abortPttRecording();
+        if (this._telnyxTextTurn) {
+            this._telnyxTextTurn.cancel();
+            this._telnyxTextTurn = null;
+        }
         this._cancelPttWait();
         if (window.speechSynthesis) {
             try {
@@ -2548,9 +2554,6 @@ class AgentInterface {
     async _runTelnyxStreamTurn(turn) {
         const generation = this._speakGeneration;
         const agent = this.getSelectedAgent();
-        const voice = this._telnyxVoice(agent);
-        const player = this._getAudioPlayer();
-        const playLabel = `Telnyx (${voice})`;
         this._sendInProgress = true;
         this._syncSendButtonState();
         this._setPttState("processing");
@@ -2562,29 +2565,12 @@ class AgentInterface {
         if (agent) this._persistKeyForAgent(agent.name, this._clientApiKey());
 
         const gameTurn = this._beginGamePlayerTurn();
-        const textOnly = (content) =>
-            Array.isArray(content)
-                ? content.filter((p) => p?.type === "text").map((p) => p.text).join("\n\n")
-                : String(content ?? "");
         let clipsReady = Promise.resolve();
         let userEntry = null;
         let reply = "";
         let replyPushed = false;
-        const pieces = [];
-        let stream = null;
-        let playback = null;
         const live = () => generation === this._speakGeneration && this._agentEnabled;
-        const startPlayback = async () => {
-            await clipsReady;
-            if (!live()) return;
-            if (this._isConversationMode()) this._setPttState("talking");
-            this._setVoiceStatus(`Speaking (Telnyx ${voice})…`);
-            window.__phonebotTtsSpeaking = true;
-            stream = typeof player?.startMp3Stream === "function" ? player.startMp3Stream(playLabel) : null;
-            if (!stream) return;
-            stream.done.catch((err) => console.error("Telnyx streamed playback failed:", err));
-            for (const bytes of pieces.splice(0)) stream.push(bytes);
-        };
+        const speech = this._streamedReplySpeech(generation, this._telnyxVoice(agent), () => clipsReady);
 
         let ok = false;
         let done = null;
@@ -2597,23 +2583,7 @@ class AgentInterface {
             );
             const prior = this._buildPriorConversationMessages();
             const outboundTemplate = await this._mergeIntroductionIntoFirstUserMessage(userTemplate, prior.length);
-            const messages = this._withSingleTurnReminder(
-                this._toChatTemplate(this._withSystemPrompt([...prior, { role: "user", content: outboundTemplate }]))
-            ).map((m) => ({ role: m.role, content: textOnly(m.content) }));
-            await this._loadTelnyxLists();
-            const models = this._telnyxChatModels(agent);
-            if (!models.length) {
-                throw new Error(
-                    `No Telnyx chat model is available${this._telnyxListError ? `: ${this._telnyxListError}` : "."} Click Refresh Telnyx lists.`
-                );
-            }
-            const chat = {
-                models,
-                model: models[0].id,
-                messages,
-                temperature: this._resolveTemperature(agent, models[0].id, null),
-                max_tokens: this._resolveMaxTokens(agent, messages)
-            };
+            const chat = await this._telnyxStreamChat(agent, [...prior, { role: "user", content: outboundTemplate }]);
 
             done = await turn.release(
                 { chat, transcriptMarker: marker },
@@ -2639,12 +2609,7 @@ class AgentInterface {
                     onReply: (text) => {
                         reply = String(text || "").trim();
                     },
-                    onAudio: (bytes) => {
-                        if (!live()) return;
-                        if (stream) stream.push(bytes);
-                        else pieces.push(bytes);
-                        if (!playback) playback = startPlayback();
-                    }
+                    onAudio: speech.push
                 }
             );
             window.playBilling?.recordAiCharge?.(done?.chargeCents);
@@ -2694,27 +2659,9 @@ class AgentInterface {
         }
 
         try {
-            if (playback) await playback;
-            if (!live()) return;
-            if (stream) {
-                stream.end();
-                await this._withPlaybackTimeout(stream.done);
-            } else if (pieces.length && player && typeof player.playBlob === "function") {
-                await this._playSpeechBlob(new Blob(pieces.splice(0), { type: "audio/mpeg" }), reply, generation, {
-                    speakingLabel: `Speaking (Telnyx ${voice})…`,
-                    idleLabel: this._telnyxSpeechLabel(),
-                    playLabel
-                });
-            } else if (this._voiceOn && reply && replyPushed) {
-                if (ok) await this._speakSynthesizedAsync(reply, generation);
-                else await this._speakBrowserFallback(reply);
-            }
-        } catch (err) {
-            console.error("Telnyx reply playback failed:", err);
-            if (live() && reply) await this._speakBrowserFallback(reply);
+            await speech.finish(reply, { ok, spoken: replyPushed });
         } finally {
             if (this._telnyxTurn === turn) this._telnyxTurn = null;
-            window.__phonebotTtsSpeaking = false;
             if (generation === this._speakGeneration) {
                 this._setVoiceStatus(this._telnyxSpeechLabel());
                 if (ok && this._statusEl && this._agentEnabled) {
@@ -2724,6 +2671,162 @@ class AgentInterface {
                 if (this._agentEnabled && this._isConversationMode()) this._armConversationPtt();
             }
             gameTurn.finish(ok);
+        }
+    }
+
+    /**
+     * Reply audio from a Worker stream turn, played as it arrives once `ready()` resolves (a player
+     * turn's game clips go first). `finish` waits for it to end; when no audio came it speaks the
+     * reply another way if `spoken` (the reply is in the history).
+     * @param {number} generation
+     * @param {string} voice
+     * @param {() => Promise<void>} ready
+     * @returns {{ push: (bytes: Uint8Array) => void, heard: () => boolean,
+     *   finish: (reply: string, state: { ok: boolean, spoken: boolean }) => Promise<void> }}
+     */
+    _streamedReplySpeech(generation, voice, ready) {
+        const player = this._getAudioPlayer();
+        const playLabel = `Telnyx (${voice})`;
+        const live = () => generation === this._speakGeneration && this._agentEnabled;
+        const pieces = [];
+        let stream = null;
+        let playback = null;
+        const startPlayback = async () => {
+            await ready();
+            if (!live()) return;
+            if (this._isConversationMode()) this._setPttState("talking");
+            this._setVoiceStatus(`Speaking (Telnyx ${voice})…`);
+            window.__phonebotTtsSpeaking = true;
+            stream = typeof player?.startMp3Stream === "function" ? player.startMp3Stream(playLabel) : null;
+            if (!stream) return;
+            stream.done.catch((err) => console.error("Telnyx streamed playback failed:", err));
+            for (const bytes of pieces.splice(0)) stream.push(bytes);
+        };
+        return {
+            push: (bytes) => {
+                if (!live()) return;
+                if (stream) stream.push(bytes);
+                else pieces.push(bytes);
+                if (!playback) playback = startPlayback();
+            },
+            heard: () => !!playback,
+            finish: async (reply, { ok, spoken }) => {
+                try {
+                    if (playback) await playback;
+                    if (!live()) return;
+                    if (stream) {
+                        stream.end();
+                        await this._withPlaybackTimeout(stream.done);
+                    } else if (pieces.length && player && typeof player.playBlob === "function") {
+                        await this._playSpeechBlob(new Blob(pieces.splice(0), { type: "audio/mpeg" }), reply, generation, {
+                            speakingLabel: `Speaking (Telnyx ${voice})…`,
+                            idleLabel: this._telnyxSpeechLabel(),
+                            playLabel
+                        });
+                    } else if (this._voiceOn && reply && spoken) {
+                        if (ok) await this._speakSynthesizedAsync(reply, generation);
+                        else await this._speakBrowserFallback(reply);
+                    }
+                } catch (err) {
+                    console.error("Telnyx reply playback failed:", err);
+                    if (live() && reply) await this._speakBrowserFallback(reply);
+                } finally {
+                    window.__phonebotTtsSpeaking = false;
+                }
+            }
+        };
+    }
+
+    /** The `chat` of a Worker stream turn's "stop" message, for these conversation messages. */
+    async _telnyxStreamChat(agent, conversation) {
+        const textOnly = (content) =>
+            Array.isArray(content)
+                ? content.filter((p) => p?.type === "text").map((p) => p.text).join("\n\n")
+                : String(content ?? "");
+        const messages = this._withSingleTurnReminder(this._toChatTemplate(this._withSystemPrompt(conversation))).map(
+            (m) => ({ role: m.role, content: textOnly(m.content) })
+        );
+        await this._loadTelnyxLists();
+        const models = this._telnyxChatModels(agent);
+        if (!models.length) {
+            throw new Error(
+                `No Telnyx chat model is available${this._telnyxListError ? `: ${this._telnyxListError}` : "."} Click Refresh Telnyx lists.`
+            );
+        }
+        return {
+            models,
+            model: models[0].id,
+            messages,
+            temperature: this._resolveTemperature(agent, models[0].id, null),
+            max_tokens: this._resolveMaxTokens(agent, messages)
+        };
+    }
+
+    /**
+     * Opens a streamed Telnyx text turn for a send (typed chat once Send is pressed, or a game's
+     * prompt), so the voice connects while the prompt is built; null when the send should go the
+     * usual way: another agent, voice off, a camera photo (the stream is text only) or a JSON
+     * response format (the stream speaks the reply as it arrives).
+     */
+    async _openTelnyxTextTurn(agent, options = {}) {
+        if (!this._isTelnyxProvider(agent) || !this._voiceOn) return null;
+        if (typeof window.TelnyxStreamTurn !== "function") return null;
+        if (this._sendsCameraImage(options) || this._chatResponseFormat(agent)) return null;
+        const voice = this._telnyxVoiceChoices();
+        if (!voice.length) return null;
+        const key = this._clientApiKey();
+        const hosted = !key && this._useHostedAi();
+        if (!key && !hosted) return null;
+        if (hosted) await this._ensureHostedAiCredit();
+        const turn = new window.TelnyxStreamTurn({
+            key,
+            session: hosted ? window.playBilling.getActiveSessionId() : "",
+            input: "text",
+            voice,
+            speak: true,
+            onError: (err) => window.playBilling?.recordAiCharge?.(err?.chargeCents)
+        });
+        this._telnyxTextTurn = turn;
+        turn.openText();
+        return turn;
+    }
+
+    /**
+     * Sends the prompt on a turn from `_openTelnyxTextTurn`; its speech goes to `speech` as it
+     * arrives. Resolves like `sendPrompt`. A failure before any reply text or audio has
+     * `beforeReply` set, so the send can be retried without streaming.
+     * @returns {Promise<{ contentText: string, rawText: string }>}
+     */
+    async _runTelnyxTextTurn(turn, agent, conversation, speech) {
+        try {
+            const chat = await this._telnyxStreamChat(agent, conversation);
+            const done = await turn.release({ chat }, { onAudio: speech.push });
+            if (!done) {
+                const stopped = new Error("Stopped.");
+                stopped.stopped = true;
+                throw stopped;
+            }
+            window.playBilling?.recordAiCharge?.(done.chargeCents);
+            this._noteTelnyxModelFailures(done.failedModels);
+            this._noteTelnyxVoiceFailures(done.failedVoices);
+            this._noteTelnyxWorked("chat", done.model);
+            this._noteTelnyxWorked("voice", done.voice);
+            console.info(
+                `Telnyx text stream turn (${done.model || "chat model not reported"}) timings (ms):`,
+                done.timings || {},
+                `speech retries: ${done.speechRetries || 0}`
+            );
+            const reply = String(done.reply || "").trim();
+            return { contentText: reply, rawText: reply };
+        } catch (err) {
+            turn.cancel();
+            this._noteTelnyxModelFailures(err?.failedModels);
+            this._noteTelnyxVoiceFailures(err?.failedVoices);
+            if (err?.status === 402) throw await this._telnyxPaymentRequired(err.session);
+            if (!err?.stopped && !err?.reply && !speech.heard()) err.beforeReply = true;
+            throw err;
+        } finally {
+            if (this._telnyxTextTurn === turn) this._telnyxTextTurn = null;
         }
     }
 
@@ -3797,6 +3900,21 @@ class AgentInterface {
         );
     }
 
+    /** Whether a send with these options attaches a camera photo. */
+    _sendsCameraImage(options = {}) {
+        if (options.forceCameraImage === true) return true;
+        if (options.skipVisionAttachment === true) return false;
+        if (this._sendCameraImageInput) return !!this._sendCameraImageInput.checked;
+        return !!this._sendCameraImage;
+    }
+
+    /** The agent's (else the config's) `response_format` object, or null. */
+    _chatResponseFormat(agent) {
+        if (agent?.responseFormat && typeof agent.responseFormat === "object") return agent.responseFormat;
+        const fromConfig = this.config.chatResponseFormat;
+        return fromConfig && typeof fromConfig === "object" ? fromConfig : null;
+    }
+
     /**
      * @param {string} userText
      * @param {{ singleTurn?: boolean, messages?: Array<{role:string,content:string|unknown}>, systemPrompt?: string, reasoningEffort?: string }} [options]
@@ -3869,16 +3987,13 @@ class AgentInterface {
         }
         conversationMessages = this._toChatTemplate(conversationMessages);
 
-        let sendCameraImage;
-        if (options.forceCameraImage === true) {
-            sendCameraImage = true;
-        } else if (options.skipVisionAttachment === true) {
-            sendCameraImage = false;
-        } else if (this._sendCameraImageInput) {
-            sendCameraImage = !!this._sendCameraImageInput.checked;
+        const sendCameraImage = this._sendsCameraImage(options);
+        if (
+            this._sendCameraImageInput &&
+            options.forceCameraImage !== true &&
+            options.skipVisionAttachment !== true
+        ) {
             this._sendCameraImage = sendCameraImage;
-        } else {
-            sendCameraImage = !!this._sendCameraImage;
         }
         if (sendCameraImage) {
             await this._attachCameraPhotoWithOverlays(conversationMessages, {
@@ -3915,12 +4030,7 @@ class AgentInterface {
             return await this._sendGeminiChat(agent, conversationMessages, apiKey, model);
         }
 
-        const responseFormat =
-            agent.responseFormat && typeof agent.responseFormat === "object"
-                ? agent.responseFormat
-                : this.config.chatResponseFormat && typeof this.config.chatResponseFormat === "object"
-                  ? this.config.chatResponseFormat
-                  : null;
+        const responseFormat = this._chatResponseFormat(agent);
 
         const telnyx = this._isTelnyxProvider(agent);
         const streamReply =
@@ -4937,6 +5047,10 @@ class AgentInterface {
         let ok = false;
         let pendingUserTurn = null;
         let gameTurn = null;
+        const generation = this._speakGeneration;
+        let textTurn = null;
+        let speech = null;
+        let clipsReady = null;
         try {
             if (!text && !options.allowEmpty) {
                 if (this._statusEl) {
@@ -4946,6 +5060,7 @@ class AgentInterface {
                 return;
             }
             if (!modeStillCurrent()) return;
+            textTurn = await this._openTelnyxTextTurn(agent, options);
             // Typed chat is a player turn; kickoffs and game-sent prompts are not.
             if (!isKickoff && !options.gameAction) gameTurn = this._beginGamePlayerTurn();
             const stateBlock = this._buildCurrentStateForIntroductionPrompt();
@@ -4972,7 +5087,21 @@ class AgentInterface {
             const conversationMessages = [...prior, { role: "user", content: outboundUser }];
             const sendOpts = { messages: conversationMessages };
             this._assignCameraSendOptions(sendOpts, options);
-            const reply = await this.sendPrompt("", sendOpts);
+            let reply;
+            if (textTurn) {
+                clipsReady = gameTurn ? gameTurn.clipsDone() : Promise.resolve();
+                speech = this._streamedReplySpeech(generation, this._telnyxVoice(agent), () => clipsReady);
+                try {
+                    reply = await this._runTelnyxTextTurn(textTurn, agent, conversationMessages, speech);
+                } catch (err) {
+                    if (!err?.beforeReply || !modeStillCurrent()) throw err;
+                    console.warn("Telnyx text stream failed before replying; sending without streaming:", err);
+                    speech = null;
+                    reply = await this.sendPrompt("", sendOpts);
+                }
+            } else {
+                reply = await this.sendPrompt("", sendOpts);
+            }
             if (!modeStillCurrent()) {
                 this._clearCameraPhotoOverlays();
                 if (this.messageHistory.length && this.messageHistory[this.messageHistory.length - 1]?.role === "user") {
@@ -4982,7 +5111,7 @@ class AgentInterface {
                 gameTurn?.finish(false);
                 return;
             }
-            await gameTurn?.clipsDone();
+            await (clipsReady || gameTurn?.clipsDone());
             this.messageHistory.push({
                 role: "assistant",
                 text: reply.contentText || "",
@@ -5005,12 +5134,15 @@ class AgentInterface {
                 this._statusEl.textContent = err?.message || "Request failed";
                 this._statusEl.className = "error";
             }
+            // A streamed reply that failed part way has been heard, so it stays in the history.
+            const partial = speech ? String(err?.reply || "").trim() : "";
             if (
                 pendingUserTurn &&
                 modeStillCurrent() &&
                 this.messageHistory[this.messageHistory.length - 1] === pendingUserTurn
             ) {
-                this.messageHistory.pop();
+                if (partial) this.messageHistory.push({ role: "assistant", text: partial, at: new Date().toISOString() });
+                else this.messageHistory.pop();
                 this._renderHistory();
             }
             if (!typed) this._clearSentPromptSource(options);
@@ -5032,6 +5164,10 @@ class AgentInterface {
             spokenForFollowUp = "";
             ok = false;
         } finally {
+            if (textTurn) {
+                textTurn.cancel();
+                if (this._telnyxTextTurn === textTurn) this._telnyxTextTurn = null;
+            }
             this._sendInProgress = false;
             this._syncSendButtonState();
         }
@@ -5039,7 +5175,17 @@ class AgentInterface {
             gameTurn?.finish(false);
             return;
         }
-        if (ok && spokenForFollowUp) {
+        if (speech) {
+            await speech.finish(spokenForFollowUp, { ok, spoken: ok });
+            if (generation === this._speakGeneration) {
+                this._setVoiceStatus(this._telnyxSpeechLabel());
+                if (ok && this._statusEl && this._agentEnabled) {
+                    this._statusEl.textContent = "Done. (Telnyx streaming)";
+                    this._statusEl.className = "ok";
+                }
+                if (this._agentEnabled && this._isConversationMode()) this._armConversationPtt();
+            }
+        } else if (ok && spokenForFollowUp) {
             await this._afterAgentSpoke(spokenForFollowUp);
             if (this._statusEl && this._agentEnabled) {
                 this._statusEl.textContent = "Done.";

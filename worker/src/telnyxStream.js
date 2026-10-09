@@ -1,15 +1,18 @@
 /**
- * One streamed hold-to-talk turn. Browser WebSockets cannot send an Authorization header, so the page
- * hands its Telnyx key to this Worker, which holds both Telnyx sockets. A turn with no key uses the
- * Worker's key and is charged to the play session in the socket URL (?session=): speech-to-text by
- * the seconds sent, chat by tokens, voice by characters (see telnyxHosted.js), settled once per turn.
+ * One streamed turn: hold-to-talk, or a typed / game prompt. Browser WebSockets cannot send an
+ * Authorization header, so the page hands its Telnyx key to this Worker, which holds the Telnyx
+ * sockets. A turn with no key uses the Worker's key and is charged to the play session in the socket
+ * URL (?session=): speech-to-text by the seconds sent, chat by tokens, voice by characters (see
+ * telnyxHosted.js), settled once per turn.
  *
  *   page -> {type:"start", key, stt:{provider, model}, sttOptions:[{provider, model}], voice, voiceOptions:[id],
  *           speak} when the player starts talking (the *Options lists are the order to try; without
  *           them only `stt` and `voice` are used),
  *           binary 16 kHz mono 16-bit PCM frames while they talk,
  *           {type:"stop", chat:{models:[{id, thinkingOff}], messages, max_tokens, temperature}, transcriptMarker}
- *           on release (`chat.model` alone is still accepted)
+ *           on release (`chat.model` alone is still accepted).
+ *           A text turn sends {type:"start", input:"text", key, voice, voiceOptions, speak} then the same
+ *           "stop" with complete `chat.messages`: no audio, no transcript and no marker.
  *   page <- {type:"ready"}, {type:"partial", text}, {type:"transcript", text}, {type:"reply", text},
  *           {type:"audio", audio:<base64 MP3>}, then
  *           {type:"done", model, failedModels, sttModel, failedStt, voice, failedVoices, chargeCents, ...}
@@ -246,6 +249,17 @@ class TelnyxStreamSession {
             this.apiKey = this.billing.apiKey;
             this.hosted = true;
         }
+        this.speak = message.speak !== false;
+        this.voiceOptions = (Array.isArray(message.voiceOptions) && message.voiceOptions.length ? message.voiceOptions : [message.voice])
+            .map((v) => String(v || "").trim())
+            .filter(Boolean)
+            .slice(0, MAX_VOICES);
+        this.failedVoices = [];
+        if (this.speak && !this.voiceOptions.length) throw httpError(400, "Pick a Telnyx voice.");
+        if (message.input === "text") {
+            this.startText();
+            return;
+        }
         this.sttOptions = (Array.isArray(message.sttOptions) && message.sttOptions.length ? message.sttOptions : [message.stt])
             .filter((s) => String(s?.provider || "").trim())
             .slice(0, MAX_STT_MODELS)
@@ -254,13 +268,6 @@ class TelnyxStreamSession {
         this.sttAttempt = 0;
         this.failedStt = [];
         this.sttErrors = [];
-        this.speak = message.speak !== false;
-        this.voiceOptions = (Array.isArray(message.voiceOptions) && message.voiceOptions.length ? message.voiceOptions : [message.voice])
-            .map((v) => String(v || "").trim())
-            .filter(Boolean)
-            .slice(0, MAX_VOICES);
-        this.failedVoices = [];
-        if (this.speak && !this.voiceOptions.length) throw httpError(400, "Pick a Telnyx voice.");
 
         const t = Date.now();
         // The play session is checked while the sockets connect; no audio reaches Telnyx until it passes.
@@ -286,6 +293,43 @@ class TelnyxStreamSession {
         if (tts.value) this.attachSpeech(tts.value);
         this.send({ type: "ready", connectMs: this.timings.connect });
         if (this.stopAt) this.flushTranscript();
+    }
+
+    /**
+     * A text turn: the voice connects now, while the page is still building the prompt, and the chat
+     * starts once the prompt arrives and the play session has passed. Reply text that comes before the
+     * voice has connected is sent to it on connecting.
+     */
+    startText() {
+        this.textInput = true;
+        this.gate = this.hosted ? this.billing.open() : Promise.resolve();
+        this.gate.catch((error) => this.fail(error));
+        if (this.speak) {
+            const t = Date.now();
+            this.connectTts()
+                .then((socket) => {
+                    if (this.finished) {
+                        socket.close();
+                        return;
+                    }
+                    this.timings.connect = Date.now() - t;
+                    this.reached(`voice connected (${this.voice})`);
+                    this.attachSpeech(socket);
+                    const rest = this.spoken.slice(this.voicedUpTo);
+                    if (rest) this.sendSpeech(SENTENCE_END.test(rest) ? { text: rest, flush: true } : { text: rest });
+                    if (this.chatDone) this.endSpeech();
+                })
+                .catch((error) => this.fail(error));
+        }
+        this.send({ type: "ready" });
+        if (this.chat) this.beginTextReply();
+    }
+
+    beginTextReply() {
+        if (this.chatStarted || this.finished) return;
+        this.chatStarted = true;
+        this.reached("prompt received");
+        this.gate.then(() => this.runChat()).catch((error) => this.fail(error));
     }
 
     /** Opens the first speech-to-text model that connects, from `sttAttempt` on. */
@@ -426,6 +470,10 @@ class TelnyxStreamSession {
         };
         this.transcriptMarker = String(message.transcriptMarker || "");
         this.reached("released");
+        if (this.textInput) {
+            this.beginTextReply();
+            return;
+        }
         if (!this.stt) return;
         this.flushTranscript();
         if (this.finals.length && !this.interim) {
@@ -557,7 +605,9 @@ class TelnyxStreamSession {
     chatBody(model) {
         const messages = this.chat.messages.map((m) => ({ ...m }));
         const last = messages[messages.length - 1];
-        if (this.transcriptMarker && last?.role === "user" && last.content.includes(this.transcriptMarker)) {
+        if (this.textInput) {
+            // Text turns send the whole prompt.
+        } else if (this.transcriptMarker && last?.role === "user" && last.content.includes(this.transcriptMarker)) {
             last.content = last.content.replace(this.transcriptMarker, () => this.transcript);
         } else {
             messages.push({ role: "user", content: this.transcript });
@@ -694,6 +744,8 @@ class TelnyxStreamSession {
 
     endSpeech() {
         this.chatDone = true;
+        // Still connecting: the voice is sent the rest, and ended, once it attaches.
+        if (!this.tts) return;
         this.sendSpeech({ text: "" });
         clearTimeout(this.ttsTimer);
         this.ttsTimer = setTimeout(() => this.speechClosed(), TTS_CLOSE_TIMEOUT_MS);

@@ -580,6 +580,8 @@ class TelnyxVoice {
  * One streamed hold-to-talk turn: microphone → 16 kHz PCM → Worker socket while the player talks,
  * then transcript, reply text and MP3 reply audio back. Both Telnyx sockets open as soon as the
  * player starts talking, so connecting is hidden while they speak.
+ * A text turn (`input: "text"`, opened with `openText()`) has no microphone: the voice connects
+ * while the prompt is built, then `release` sends it and the reply streams back the same way.
  */
 class TelnyxStreamTurn {
     static INPUT_RATE = 16000;
@@ -590,8 +592,8 @@ class TelnyxStreamTurn {
     /**
      * `key` is the player's Telnyx key, or "" with `session` (a play session id) to use the Worker's
      * key on AI credit.
-     * @param {{ key: string, session?: string, stt: { provider: string, model: string }[], voice: string[], speak: boolean,
-     *   onPartial?: (text: string) => void, onError?: (err: Error) => void }} options
+     * @param {{ key: string, session?: string, input?: "audio"|"text", stt?: { provider: string, model: string }[], voice: string[],
+     *   speak: boolean, onPartial?: (text: string) => void, onError?: (err: Error) => void }} options
      */
     constructor(options) {
         this._options = options;
@@ -642,6 +644,13 @@ class TelnyxStreamTurn {
         return this._opening;
     }
 
+    /** Opens only the Worker socket, for a text turn. */
+    openText() {
+        this._openSocket();
+        this._opening = Promise.resolve();
+        return this._opening;
+    }
+
     async _open() {
         if (!navigator.mediaDevices?.getUserMedia) throw new Error("Microphone capture is not available.");
         this._openSocket();
@@ -665,15 +674,16 @@ class TelnyxStreamTurn {
     }
 
     _openSocket() {
-        const { key, session, stt, voice, speak } = this._options;
+        const { key, session, input, stt, voice, speak } = this._options;
         const url = new URL(TelnyxVoice.streamUrl());
         if (session) url.searchParams.set("session", session);
         const ws = new WebSocket(url);
         this._ws = ws;
+        const start = { type: "start", key, voice: voice[0] || "", voiceOptions: voice, speak };
+        if (input === "text") start.input = "text";
+        else Object.assign(start, { stt: stt[0], sttOptions: stt });
         ws.addEventListener("open", () => {
-            ws.send(
-                JSON.stringify({ type: "start", key, stt: stt[0], sttOptions: stt, voice: voice[0] || "", voiceOptions: voice, speak })
-            );
+            ws.send(JSON.stringify(start));
             for (const data of this._outbox.splice(0)) ws.send(data);
         });
         ws.addEventListener("message", (event) => this._onMessage(event));
