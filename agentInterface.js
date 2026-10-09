@@ -2319,8 +2319,20 @@ class AgentInterface {
             );
             overlay.classList.add(`sensor-camera-ptt-overlay--${phase}`);
 
-            if (this._pttLabelEl) {
-                this._pttLabelEl.textContent = labelText;
+            const label = this._pttLabelEl;
+            const alreadyThinking =
+                phase === "thinking" &&
+                label?.querySelector(".sensor-camera-ptt-dots") &&
+                label.firstChild?.textContent === labelText;
+            if (label && !alreadyThinking) {
+                label.textContent = labelText;
+                if (phase === "thinking") {
+                    const dots = document.createElement("span");
+                    dots.className = "sensor-camera-ptt-dots";
+                    dots.setAttribute("aria-hidden", "true");
+                    for (let i = 0; i < 3; i++) dots.appendChild(document.createElement("span"));
+                    label.appendChild(dots);
+                }
             }
             if (this._pttBtnEl) {
                 this._pttBtnEl.disabled = disabled;

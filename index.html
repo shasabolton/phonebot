@@ -1267,6 +1267,62 @@
       0%, 100% { box-shadow: 0 0 0 0 rgba(242, 140, 40, 0.45); }
       50% { box-shadow: 0 0 0 12px rgba(242, 140, 40, 0); }
     }
+    .sensor-camera-ptt-overlay--thinking .sensor-camera-ptt-label {
+      display: inline-flex;
+      align-items: baseline;
+      padding: 0.35em 0.9em;
+      border-radius: 999px;
+      background: rgba(230, 126, 34, 0.85);
+      border: 2px solid #ffe566;
+      font-size: clamp(1.15rem, 5vw, 1.5rem);
+      animation: sensor-camera-thinking-glow 1.4s ease-in-out infinite;
+    }
+    .sensor-camera-ptt-dots {
+      display: inline-flex;
+      gap: 0.18em;
+      margin-left: 0.25em;
+    }
+    .sensor-camera-ptt-dots span {
+      width: 0.28em;
+      height: 0.28em;
+      border-radius: 50%;
+      background: currentColor;
+      animation: sensor-camera-thinking-dot 1.2s ease-in-out infinite;
+    }
+    .sensor-camera-ptt-dots span:nth-child(2) { animation-delay: 0.15s; }
+    .sensor-camera-ptt-dots span:nth-child(3) { animation-delay: 0.3s; }
+    .sensor-camera-ptt-overlay--thinking .sensor-camera-ptt-btn {
+      position: relative;
+      opacity: 1;
+    }
+    .sensor-camera-ptt-overlay--thinking .sensor-camera-ptt-btn::after {
+      content: "";
+      position: absolute;
+      inset: -12px;
+      border-radius: 50%;
+      border: 4px solid transparent;
+      border-top-color: #ffe566;
+      border-right-color: rgba(255, 229, 102, 0.45);
+      animation: sensor-camera-thinking-spin 0.9s linear infinite;
+    }
+    @keyframes sensor-camera-thinking-glow {
+      0%, 100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(255, 229, 102, 0.6); }
+      50% { transform: scale(1.06); box-shadow: 0 0 18px 4px rgba(255, 229, 102, 0.55); }
+    }
+    @keyframes sensor-camera-thinking-dot {
+      0%, 60%, 100% { transform: translateY(0); opacity: 0.45; }
+      30% { transform: translateY(-0.35em); opacity: 1; }
+    }
+    @keyframes sensor-camera-thinking-spin {
+      to { transform: rotate(360deg); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .sensor-camera-ptt-overlay--thinking .sensor-camera-ptt-label,
+      .sensor-camera-ptt-dots span,
+      .sensor-camera-ptt-overlay--thinking .sensor-camera-ptt-btn::after {
+        animation-duration: 3s;
+      }
+    }
     .sensor-camera-flow-box-size {
       margin-top: 8px;
     }
