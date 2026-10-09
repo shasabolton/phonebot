@@ -19,7 +19,8 @@
  * The transcript replaces `transcriptMarker` in the last chat message, as in the hosted voice turn.
  * Speech-to-text models are tried in order: if one fails before the transcript is ready, the next one
  * is sent the whole recording. Chat models are tried in order: the next one is used if one fails
- * before any reply text is spoken.
+ * before any reply text is spoken. A voice that fails, even mid-reply, is reconnected and sent the
+ * sentences it had not finished.
  */
 
 import { estimateTokens } from "./telnyxHosted.js";
@@ -43,6 +44,12 @@ const FILE_STT_MODEL = "openai/whisper-large-v3-turbo";
 const SENTENCE_END = /[.!?…]["')\]]*\s*$/;
 /** Trailing silence lets the streaming recogniser commit a final word that was cut off by letting go. */
 const TAIL_SILENCE_BYTES = INPUT_RATE * 2 * 0.3;
+/** After release, a final followed by this long with no more results ends the transcript. */
+const STT_QUIET_MS = 600;
+/** A final ending this close to the end of the audio (before the tail silence) has heard everything. */
+const HEARD_ALL_SLACK_S = 0.25;
+/** Voice retries per turn: before any audio, or mid-reply from the first sentence not yet spoken. */
+const MAX_SPEECH_RETRIES = 2;
 /** Mistral tokenizers fail the whole request when given chat_template_kwargs. */
 const REJECTS_TEMPLATE_KWARGS = /mistral/i;
 
@@ -124,6 +131,8 @@ class TelnyxStreamSession {
         this.interim = "";
         this.rawReply = "";
         this.spoken = "";
+        /** How much of `spoken` Telnyx has finished voicing (see markSentenceVoiced). */
+        this.voicedUpTo = 0;
         this.reply = "";
         this.timings = {};
         // Handled one at a time so "stop" can never overtake the last audio frames.
@@ -193,6 +202,7 @@ class TelnyxStreamSession {
 
     closeUpstream() {
         clearTimeout(this.sttTimer);
+        clearTimeout(this.quietTimer);
         clearTimeout(this.ttsTimer);
         try {
             this.chatAbort?.abort();
@@ -221,7 +231,9 @@ class TelnyxStreamSession {
         }
         if (event.data.length > MAX_CONTROL_MESSAGE_CHARS) throw httpError(413, "Message is too large.");
         const message = JSON.parse(event.data);
-        if (message.type === "start") await this.start(message);
+        // Not awaited: audio that arrives while the sockets connect is recorded and replayed on attach,
+        // rather than queueing behind the connection and reaching speech-to-text in one late burst.
+        if (message.type === "start") this.start(message).catch((error) => this.fail(error));
         else if (message.type === "stop") this.stop(message);
     }
 
@@ -231,8 +243,6 @@ class TelnyxStreamSession {
         this.apiKey = String(message.key || "").trim();
         if (!this.apiKey) {
             if (!this.billing?.apiKey) throw httpError(401, "Enter your Telnyx API key.");
-            await this.billing.open();
-            this.chatRates = await this.billing.pricing.chatRates();
             this.apiKey = this.billing.apiKey;
             this.hosted = true;
         }
@@ -253,8 +263,13 @@ class TelnyxStreamSession {
         if (this.speak && !this.voiceOptions.length) throw httpError(400, "Pick a Telnyx voice.");
 
         const t = Date.now();
-        const [stt, tts] = await Promise.allSettled([this.connectStt(), this.speak ? this.connectTts() : Promise.resolve(null)]);
-        const failed = [stt, tts].find((result) => result.status === "rejected");
+        // The play session is checked while the sockets connect; no audio reaches Telnyx until it passes.
+        const [gate, stt, tts] = await Promise.allSettled([
+            this.hosted ? this.billing.open() : Promise.resolve(),
+            this.connectStt(),
+            this.speak ? this.connectTts() : Promise.resolve(null)
+        ]);
+        const failed = [gate, stt, tts].find((result) => result.status === "rejected");
         if (failed || this.finished) {
             for (const result of [stt, tts]) {
                 try {
@@ -360,9 +375,10 @@ class TelnyxStreamSession {
         const old = this.stt;
         this.stt = null;
         clearTimeout(this.sttTimer);
+        clearTimeout(this.quietTimer);
         this.finals = [];
         this.interim = "";
-        this.lastFinalEndedSpeech = false;
+        this.heardUntil = null;
         this.sttFrames = 0;
         this.sttSample = "";
         try {
@@ -391,12 +407,15 @@ class TelnyxStreamSession {
                 id: String(m.id || "").trim(),
                 thinkingOff: typeof m.thinkingOff === "boolean" ? m.thinkingOff : !REJECTS_TEMPLATE_KWARGS.test(String(m.id || ""))
             }))
-            .filter((m) => m.id && (!this.hosted || this.chatRates.has(m.id)))
+            .filter((m) => m.id)
             .slice(0, MAX_CHAT_MODELS);
-        if (!models.length) {
-            throw httpError(400, this.hosted ? "None of these chat models has a Telnyx price, so hosted credit can't pay for them." : "Pick a Telnyx chat model.");
-        }
+        if (!models.length) throw httpError(400, "Pick a Telnyx chat model.");
         if (!Array.isArray(chat.messages) || !chat.messages.length) throw httpError(400, "chat.messages is required.");
+        if (this.hosted) {
+            // Looked up while the transcript finishes; usually already cached.
+            this.ratesReady = this.billing.pricing.chatRates(models.map((m) => m.id));
+            this.ratesReady.catch(() => {});
+        }
         this.chat = {
             models,
             messages: chat.messages
@@ -409,8 +428,22 @@ class TelnyxStreamSession {
         this.reached("released");
         if (!this.stt) return;
         this.flushTranscript();
-        // Endpointing already finalised everything said before a pause, so there is nothing left to wait for.
-        if (this.finals.length && !this.interim && this.lastFinalEndedSpeech) this.transcriptReady("already final at release");
+        if (this.finals.length && !this.interim) {
+            // Final up to the end of the audio: nothing left to wait for.
+            if (this.heardAll()) this.transcriptReady("already final at release");
+            else this.waitForQuiet();
+        }
+    }
+
+    /** The recogniser has finalised speech up to the end of the audio (when it reports timings). */
+    heardAll() {
+        return this.heardUntil != null && this.heardUntil >= this.audioBytes / (INPUT_RATE * 2) - HEARD_ALL_SLACK_S;
+    }
+
+    /** After release: ready once the recogniser sends nothing more for a moment. Any new frame restarts it. */
+    waitForQuiet() {
+        clearTimeout(this.quietTimer);
+        this.quietTimer = setTimeout(() => this.transcriptReady("quiet after release"), STT_QUIET_MS);
     }
 
     flushTranscript() {
@@ -443,23 +476,36 @@ class TelnyxStreamSession {
             this.switchStt(httpError(502, `Telnyx streaming speech-to-text error: ${error}`));
             return;
         }
+        if (this.chatStarted) return;
         const text = String(data.transcript ?? data.channel?.alternatives?.[0]?.transcript ?? data.text ?? "").trim();
-        if (!text || this.chatStarted) return;
-        if (data.is_final ?? data.isFinal) {
-            this.finals.push(text);
-            this.interim = "";
-            this.lastFinalEndedSpeech = data.speech_final === true;
-            if (this.stopAt) this.transcriptReady("final after release");
-        } else {
-            this.interim = text;
+        const final = !!(data.is_final ?? data.isFinal);
+        if (final) {
+            const end = Number(data.start) + Number(data.duration);
+            if (Number.isFinite(end)) this.heardUntil = Math.max(this.heardUntil ?? 0, end);
         }
-        this.send({ type: "partial", text: [...this.finals, this.interim].join(" ").trim() });
+        if (text) {
+            if (final) {
+                this.finals.push(text);
+                this.interim = "";
+            } else {
+                this.interim = text;
+            }
+            this.send({ type: "partial", text: [...this.finals, this.interim].join(" ").trim() });
+        }
+        if (!this.stopAt) return;
+        // A final soon after release may only cover earlier speech while the rest is still being
+        // recognised, so wait for the answer to Finalize, the end of the audio, or a quiet moment.
+        clearTimeout(this.quietTimer);
+        if (data.from_finalize === true) this.transcriptReady("final from Finalize");
+        else if (final && this.heardAll()) this.transcriptReady("final reached the end of the audio");
+        else if (!this.interim && this.finals.length) this.waitForQuiet();
     }
 
     transcriptReady(reason) {
         if (this.chatStarted || this.finished || !this.stopAt) return;
         this.chatStarted = true;
         clearTimeout(this.sttTimer);
+        clearTimeout(this.quietTimer);
         const transcript = [...this.finals, this.interim].join(" ").trim();
         if (transcript) {
             this.beginReply(transcript, reason);
@@ -533,6 +579,13 @@ class TelnyxStreamSession {
         const t = Date.now();
         this.failedModels = [];
         const failures = [];
+        if (this.hosted) {
+            this.chatRates = await this.ratesReady;
+            this.chat.models = this.chat.models.filter((m) => this.chatRates.has(m.id));
+            if (!this.chat.models.length) {
+                throw httpError(400, "None of these chat models has a Telnyx price, so hosted credit can't pay for them.");
+            }
+        }
         for (const model of this.chat.models) {
             try {
                 await this.streamChat(model, t);
@@ -647,21 +700,35 @@ class TelnyxStreamSession {
     }
 
     /** A socket that has just died is caught by its close event, which retries with everything said so far. */
+    /** Text sent while a retry is connecting is not lost: the retry sends everything not yet voiced. */
     sendSpeech(message) {
+        if (!this.tts) return;
         try {
-            this.tts?.send(JSON.stringify(message));
+            this.tts.send(JSON.stringify(message));
             this.meterSpeech(message.text);
         } catch (_) {}
     }
 
     canRetrySpeech() {
-        return !this.audioSent && !this.speechRetries && !this.finished;
+        return !this.finished && (this.speechRetries || 0) < MAX_SPEECH_RETRIES;
     }
 
-    /** One retry when the voice fails before any audio; the new socket gets everything said so far. */
+    /**
+     * Telnyx ends each synthesised sentence with an isFinal frame: move `voicedUpTo` past the next
+     * sentence of `spoken`. If Telnyx joins or splits sentences differently, a retry may repeat or
+     * skip a little, which beats losing the rest of the reply.
+     */
+    markSentenceVoiced() {
+        const rest = this.spoken.slice(this.voicedUpTo);
+        const end = rest.match(/[.!?…]["')\]]*(\s+|$)/);
+        this.voicedUpTo = end ? this.voicedUpTo + end.index + end[0].length : this.spoken.length;
+    }
+
+    /** Opens a new voice socket and sends it everything not yet voiced (all of it, before any audio). */
     async retrySpeech(reason) {
-        this.speechRetries = 1;
-        this.reached(`voice failed (${reason}), retrying`);
+        this.speechRetries = (this.speechRetries || 0) + 1;
+        const left = this.spoken.length - this.voicedUpTo;
+        this.reached(`voice failed (${reason}), retrying with ${left} of ${this.spoken.length} characters left`);
         clearTimeout(this.ttsTimer);
         const old = this.tts;
         this.tts = null;
@@ -674,7 +741,8 @@ class TelnyxStreamSession {
             return;
         }
         this.attachSpeech(socket);
-        if (this.spoken) this.sendSpeech({ text: this.spoken, flush: true });
+        const rest = this.spoken.slice(this.voicedUpTo);
+        if (rest.trim()) this.sendSpeech({ text: rest, flush: true });
         if (this.chatDone) this.endSpeech();
     }
 
@@ -693,6 +761,7 @@ class TelnyxStreamSession {
             this.fail(httpError(502, `Telnyx streaming voice error: ${data.error}`));
             return;
         }
+        if (data.isFinal === true) this.markSentenceVoiced();
         if (!data.audio) return;
         if (!this.audioSent) {
             this.audioSent = true;
@@ -704,8 +773,10 @@ class TelnyxStreamSession {
 
     speechClosed() {
         if (this.finished) return;
-        if (this.canRetrySpeech()) {
-            this.retrySpeech(`closed${this.ttsClose ? ` with code ${this.ttsClose}` : ""} before any audio`).catch((error) => this.fail(error));
+        // Closing before any audio, or before the whole reply was sent to it, means the voice failed.
+        if ((!this.audioSent || !this.chatDone) && this.canRetrySpeech()) {
+            const closed = `closed${this.ttsClose ? ` with code ${this.ttsClose}` : ""}`;
+            this.retrySpeech(`${closed} ${this.audioSent ? "mid-reply" : "before any audio"}`).catch((error) => this.fail(error));
             return;
         }
         if (!this.chatDone) {

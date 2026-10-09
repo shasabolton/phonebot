@@ -2,7 +2,7 @@
  * Hosted Telnyx: the Worker's own key (secret TELNYX_API_KEY) on the player's AI credit.
  *
  * Prices, in US dollars before the arcade markup:
- *   chat            live from GET /ai/openai/models (`pricing.input` / `pricing.output` per 1M tokens);
+ *   chat            from GET /ai/openai/models (`pricing.input` / `pricing.output` per 1M tokens), cached;
  *                   models without a price need another provider's key and are refused
  *   speech-to-text  TELNYX_STT_USD_PER_MINUTE in wrangler.jsonc, by provider
  *   voice           TELNYX_TTS_USD_PER_MILLION_CHARS in wrangler.jsonc, by voice id prefix
@@ -13,7 +13,8 @@
  */
 
 const TELNYX_BASE = "https://api.telnyx.com/v2";
-const CHAT_RATES_TTL_MS = 15 * 60 * 1000;
+/** Prices are fetched again only for a model they don't list (models changed), at most this often. */
+const CHAT_RATES_REFETCH_MS = 60 * 1000;
 const MAX_TOKENS_CAP = 1024;
 const MAX_SPEECH_CHARS = 4000;
 const MAX_AUDIO_FILE_BYTES = 25_000_000;
@@ -32,13 +33,23 @@ export class TelnyxPricing {
         this.ttsTable = lowerKeys(env.TELNYX_TTS_USD_PER_MILLION_CHARS);
     }
 
-    /** @returns {Promise<Map<string, { input: number, output: number }>>} USD per 1M tokens, priced models only */
-    async chatRates() {
-        if (chatRatesCache.rates && Date.now() - chatRatesCache.at < CHAT_RATES_TTL_MS) return chatRatesCache.rates;
+    /**
+     * Kept for the life of the Worker instance; fetched again only when asked about a model the cached
+     * prices don't list, so a new or renamed model is picked up without a fetch on every turn.
+     * @param {string[]} [ids] the models about to be used
+     * @returns {Promise<Map<string, { input: number, output: number }>>} USD per 1M tokens, priced models only
+     */
+    async chatRates(ids = []) {
+        const { rates, at } = chatRatesCache;
+        if (rates && (ids.every((id) => rates.has(id)) || Date.now() - at < CHAT_RATES_REFETCH_MS)) return rates;
         chatRatesCache.pending ||= this.fetchChatRates().finally(() => {
             chatRatesCache.pending = null;
         });
-        return chatRatesCache.pending;
+        if (!rates) return chatRatesCache.pending;
+        return chatRatesCache.pending.catch(() => {
+            chatRatesCache.at = Date.now();
+            return rates;
+        });
     }
 
     async fetchChatRates() {
@@ -148,7 +159,7 @@ export async function proxyTelnyx(request, path, billing) {
 async function proxyChat(request, billing, auth) {
     const body = await readJson(request);
     const model = String(body.model || "").trim();
-    const rate = (await billing.pricing.chatRates()).get(model);
+    const rate = (await billing.pricing.chatRates([model])).get(model);
     if (!rate) {
         return Response.json(
             { error: { message: `${model || "That model"} has no Telnyx price, so hosted credit can't pay for it.` } },
