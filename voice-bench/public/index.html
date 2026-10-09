@@ -1,0 +1,307 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Voice bench: Telnyx vs Workers AI</title>
+    <style>
+        :root { font-family: system-ui, sans-serif; color: #1d232a; background: #f4f6f8; }
+        body { margin: 0 auto; max-width: 1200px; padding: 16px; }
+        h1 { font-size: 1.4rem; margin: 0 0 12px; }
+        h2 { font-size: 1.05rem; margin: 0 0 8px; }
+        section { background: #fff; border-radius: 10px; padding: 14px 16px; margin-bottom: 14px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 14px; }
+        label { display: block; font-size: .85rem; margin: 8px 0 3px; color: #4a5560; }
+        label.inline { display: inline-flex; align-items: center; gap: 6px; margin-right: 16px; color: #1d232a; font-size: .95rem; }
+        input[type=text], input[type=password], input[type=number], select, textarea {
+            width: 100%; box-sizing: border-box; padding: 7px 9px; border: 1px solid #c8d0d8; border-radius: 6px; font: inherit;
+        }
+        textarea { min-height: 64px; resize: vertical; }
+        .controls { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+        button { font: inherit; padding: 9px 14px; border-radius: 8px; border: 1px solid #b7c1cb; background: #fff; cursor: pointer; }
+        button:disabled { opacity: .5; cursor: default; }
+        #talk { background: #1f6feb; color: #fff; border: none; padding: 16px 28px; font-size: 1.1rem; user-select: none; touch-action: none; }
+        #talk.recording { background: #d1242f; }
+        #status { margin-top: 10px; font-size: .95rem; color: #4a5560; min-height: 1.2em; }
+        table { width: 100%; border-collapse: collapse; font-size: .88rem; }
+        th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #e3e8ed; vertical-align: top; }
+        th { color: #4a5560; font-weight: 600; white-space: nowrap; }
+        td.num, th.num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+        tr.telnyx td:first-child { border-left: 4px solid #8250df; }
+        tr.workersai td:first-child { border-left: 4px solid #f38020; }
+        tr.telnyxstream td:first-child { border-left: 4px solid #2da44e; }
+        .heard { font-weight: 700; }
+        .error { color: #d1242f; }
+        .muted { color: #7a8590; }
+        .convo { max-width: 420px; }
+        .convo div + div { margin-top: 3px; }
+        .hint { font-size: .82rem; color: #7a8590; margin-top: 4px; }
+        tr.timeline-row td { padding-top: 0; border-bottom: 2px solid #c8d0d8; }
+        /* width:0 + min-width:100% keeps a long timeline from widening the table; it scrolls inside the cell instead. */
+        .timeline-scroll { width: 0; min-width: 100%; overflow-x: auto; }
+        .timeline { display: grid; gap: 3px 8px; align-items: center; font-size: .75rem; padding-bottom: 6px; width: max-content; }
+        .timeline .lane-label { color: #4a5560; text-align: right; white-space: nowrap; position: sticky; left: 0; background: #fff; z-index: 3; padding-right: 4px; }
+        .timeline .track { position: relative; height: 16px; background: #f4f6f8; border-radius: 3px; }
+        .timeline .track.axis { height: 14px; background: none; color: #7a8590; }
+        .timeline .second { position: absolute; top: 0; bottom: 0; border-left: 1px solid #e3e8ed; }
+        .timeline .zero { position: absolute; top: -2px; bottom: -2px; border-left: 2px solid #d1242f; z-index: 2; }
+        .timeline .tick { position: absolute; top: 0; transform: translateX(-50%); white-space: nowrap; }
+        .timeline .zero-label { color: #d1242f; font-weight: 600; }
+        .timeline .seg { position: absolute; top: 2px; bottom: 2px; border-radius: 3px; color: #fff; font-size: .68rem; line-height: 12px; text-align: center; overflow: hidden; white-space: nowrap; z-index: 1; }
+        .timeline .seg.wait { opacity: .35; }
+        .timeline .seg.speak { background: #6e7781; }
+        .timeline .seg.stt { background: #1f6feb; }
+        .timeline .seg.chat { background: #8250df; }
+        .timeline .seg.tts { background: #f38020; }
+        .timeline .seg.audio { background: #2da44e; }
+    </style>
+</head>
+<body>
+    <h1>Voice bench: Telnyx vs Workers AI</h1>
+
+    <section>
+        <h2>Keys</h2>
+        <div class="grid">
+            <div>
+                <label for="telnyxKey">Telnyx API key</label>
+                <input id="telnyxKey" type="password" autocomplete="new-password" spellcheck="false" placeholder="KEY...">
+            </div>
+            <div>
+                <label for="passcode">Workers AI passcode (BENCH_PASSCODE in .dev.vars)</label>
+                <input id="passcode" type="password" autocomplete="new-password" spellcheck="false">
+            </div>
+        </div>
+        <label class="inline" style="margin-top:10px"><input id="remember" type="checkbox"> Remember key and passcode on this device</label>
+        <label class="inline"><input id="showSecrets" type="checkbox"> Show</label>
+    </section>
+
+    <section>
+        <h2>Shared settings</h2>
+        <label for="systemPrompt">System prompt (both providers)</label>
+        <textarea id="systemPrompt">You are a friendly little robot. Reply in one or two short spoken sentences. No markdown, lists or emojis.</textarea>
+        <div class="controls" style="margin-top:8px">
+            <label class="inline">Max reply tokens <input id="maxTokens" type="number" min="16" max="400" value="120" style="width:80px"></label>
+            <label class="inline"><input id="thinkingOff" type="checkbox" checked> Turn model thinking off</label>
+        </div>
+        <div class="hint">Gemma 4 thinks before answering unless thinking is off, which delays the first spoken word.</div>
+    </section>
+
+    <div class="grid">
+        <section>
+            <h2>Telnyx</h2>
+            <label class="inline"><input id="telnyxEnabled" type="checkbox" checked> Include in each turn</label>
+            <label for="telnyxStt">Speech-to-text model</label>
+            <select id="telnyxStt">
+                <option value="openai/whisper-large-v3-turbo">openai/whisper-large-v3-turbo (same as Workers AI)</option>
+                <option value="distil-whisper/distil-large-v2">distil-whisper/distil-large-v2 (faster, English only)</option>
+                <option value="deepgram/nova-3">deepgram/nova-3</option>
+            </select>
+            <label for="telnyxChat">Chat model</label>
+            <select id="telnyxChat">
+                <optgroup label="Presets">
+                    <option value="google/gemma-4-26B-A4B-it">google/gemma-4-26B-A4B-it (same as Workers AI)</option>
+                </optgroup>
+            </select>
+            <div class="controls" style="margin-top:6px">
+                <button id="loadTelnyxModels" type="button">Load chat models from Telnyx</button>
+            </div>
+            <label for="telnyxVoicePick">Voice</label>
+            <select id="telnyxVoicePick">
+                <optgroup label="Presets">
+                    <option value="Telnyx.Ultra.Clara">Telnyx.Ultra.Clara</option>
+                    <option value="Telnyx.Ultra.Asher">Telnyx.Ultra.Asher</option>
+                    <option value="Telnyx.Ultra.Callie">Telnyx.Ultra.Callie</option>
+                    <option value="Telnyx.KokoroTTS.af_heart">Telnyx.KokoroTTS.af_heart</option>
+                </optgroup>
+            </select>
+            <div class="controls" style="margin-top:6px">
+                <select id="telnyxVoiceProvider" style="width:auto">
+                    <option value="telnyx">Telnyx voices</option>
+                    <option value="minimax">MiniMax voices</option>
+                    <option value="aws">AWS Polly voices</option>
+                    <option value="azure">Azure voices</option>
+                    <option value="xai">xAI voices</option>
+                    <option value="soniox">Soniox voices</option>
+                </select>
+                <button id="loadTelnyxVoices" type="button">Load voices from Telnyx</button>
+            </div>
+            <label for="telnyxVoice">Voice ID sent to Telnyx (editable)</label>
+            <input id="telnyxVoice" type="text" value="Telnyx.Ultra.Clara">
+            <div class="hint">Picking a voice above fills this box. You can also paste any voice ID, such as one from Voice Design.</div>
+        </section>
+
+        <section>
+            <h2>Telnyx streaming</h2>
+            <label class="inline"><input id="telnyxstreamEnabled" type="checkbox"> Include in each turn</label>
+            <div class="hint">Audio goes to Telnyx live while you hold the button, and the reply is spoken as the chat writes it. Uses the Telnyx key and chat model.</div>
+            <label for="telnyxstreamStt">Streaming speech-to-text engine</label>
+            <select id="telnyxstreamStt">
+                <option value="deepgram-nova-3">Deepgram nova-3</option>
+                <option value="deepgram-flux">Deepgram Flux (built for voice agents)</option>
+                <option value="deepgram-nova-2">Deepgram nova-2 (older)</option>
+                <option value="speechmatics">Speechmatics</option>
+                <option value="soniox">Soniox</option>
+            </select>
+            <label for="telnyxstreamVoice">Streaming voice</label>
+            <select id="telnyxstreamVoice">
+                <optgroup label="Presets">
+                    <option value="Telnyx.KokoroTTS.af_heart">Telnyx.KokoroTTS.af_heart (US female)</option>
+                    <option value="Telnyx.KokoroTTS.am_adam">Telnyx.KokoroTTS.am_adam (US male)</option>
+                    <option value="Telnyx.KokoroTTS.bf_emma">Telnyx.KokoroTTS.bf_emma (UK female)</option>
+                    <option value="same">Same as the Telnyx voice ID box</option>
+                </optgroup>
+            </select>
+            <div class="controls" style="margin-top:6px">
+                <select id="telnyxstreamVoiceProvider" style="width:auto">
+                    <option value="telnyx">Telnyx voices</option>
+                    <option value="minimax">MiniMax voices</option>
+                    <option value="aws">AWS Polly voices</option>
+                    <option value="azure">Azure voices</option>
+                    <option value="xai">xAI voices</option>
+                    <option value="soniox">Soniox voices</option>
+                </select>
+                <button id="loadTelnyxstreamVoices" type="button">Load streaming voices from Telnyx</button>
+            </div>
+            <div class="hint">Ultra voices cannot stream, so they are left out of this list. If a voice fails with "connection failed", that voice does not stream either. For a like-for-like test, set the plain Telnyx voice to the same voice.</div>
+        </section>
+
+        <section>
+            <h2>Workers AI</h2>
+            <label class="inline"><input id="workersaiEnabled" type="checkbox" checked> Include in each turn</label>
+            <label for="workersaiStt">Speech-to-text model</label>
+            <select id="workersaiStt">
+                <option value="@cf/openai/whisper-large-v3-turbo">@cf/openai/whisper-large-v3-turbo</option>
+                <option value="@cf/openai/whisper-large-v3-turbo#fast">@cf/openai/whisper-large-v3-turbo, fast (beam size 1)</option>
+                <option value="@cf/deepgram/nova-3">@cf/deepgram/nova-3 (Deepgram, built for speed)</option>
+                <option value="@cf/openai/whisper">@cf/openai/whisper (older, smaller)</option>
+                <option value="@cf/openai/whisper-tiny-en">@cf/openai/whisper-tiny-en (tiny, English only)</option>
+            </select>
+            <label for="workersaiChat">Chat model</label>
+            <select id="workersaiChat">
+                <optgroup label="Presets (chat time from a quick test)">
+                    <option value="@cf/google/gemma-4-26b-a4b-it">@cf/google/gemma-4-26b-a4b-it (about 0.95 s)</option>
+                    <option value="@cf/qwen/qwen3-30b-a3b-fp8">@cf/qwen/qwen3-30b-a3b-fp8 (about 0.6 s)</option>
+                    <option value="@cf/meta/llama-3.2-3b-instruct">@cf/meta/llama-3.2-3b-instruct (small, about 0.6 s)</option>
+                    <option value="@cf/meta/llama-3.2-1b-instruct">@cf/meta/llama-3.2-1b-instruct (tiny, about 0.6 s)</option>
+                    <option value="@cf/ibm-granite/granite-4.0-h-micro">@cf/ibm-granite/granite-4.0-h-micro (small, about 0.8 s)</option>
+                    <option value="@cf/qwen/qwen3.8-27b">@cf/qwen/qwen3.8-27b (about 0.85–1.4 s)</option>
+                    <option value="@cf/mistralai/mistral-small-3.1-24b-instruct">@cf/mistralai/mistral-small-3.1-24b-instruct (about 1.0 s)</option>
+                    <option value="@cf/zai-org/glm-4.7-flash">@cf/zai-org/glm-4.7-flash (about 1.0–1.3 s)</option>
+                    <option value="@cf/aisingapore/gemma-sea-lion-v4-27b-it">@cf/aisingapore/gemma-sea-lion-v4-27b-it (about 1.1 s)</option>
+                    <option value="@cf/meta/llama-4-scout-17b-16e-instruct">@cf/meta/llama-4-scout-17b-16e-instruct (about 1.2 s)</option>
+                    <option value="@cf/meta/llama-3.1-8b-instruct-fp8">@cf/meta/llama-3.1-8b-instruct-fp8 (about 1.8 s)</option>
+                    <option value="@cf/meta/llama-3.3-70b-instruct-fp8-fast">@cf/meta/llama-3.3-70b-instruct-fp8-fast (largest, about 2.3 s)</option>
+                </optgroup>
+            </select>
+            <div class="controls" style="margin-top:6px">
+                <button id="loadWorkersaiModels" type="button">Load all chat models from Workers AI</button>
+            </div>
+            <div class="hint">The full list includes models your plan cannot use and reasoning models (gpt-oss, Nemotron) that may return no reply; those show an error in the turn row.</div>
+            <label for="workersaiTts">Speech model</label>
+            <select id="workersaiTts">
+                <option value="@cf/deepgram/aura-1">@cf/deepgram/aura-1</option>
+                <option value="@cf/deepgram/aura-2-en">@cf/deepgram/aura-2-en</option>
+                <option value="@cf/myshell-ai/melotts">@cf/myshell-ai/melotts (one voice, very cheap)</option>
+            </select>
+            <label for="workersaiVoice">Voice (speaker)</label>
+            <select id="workersaiVoice"></select>
+        </section>
+    </div>
+
+    <section>
+        <h2>Design a Telnyx voice from a description</h2>
+        <div class="grid">
+            <div>
+                <label for="designPrompt">Voice description</label>
+                <textarea id="designPrompt" placeholder="Male, early forties, Australian accent. Warm, relaxed and slightly gravelly. Speaks at an easy pace with a smile in his voice."></textarea>
+                <label for="designText">Sample sentence it reads</label>
+                <input id="designText" type="text" value="G'day, thanks for calling. What can I do for you today?">
+            </div>
+            <div>
+                <label for="designProvider">Voice model</label>
+                <select id="designProvider">
+                    <option value="telnyx">Telnyx Qwen3TTS (follows the description closely)</option>
+                    <option value="minimax">MiniMax (its own take on the description)</option>
+                </select>
+                <label for="designGender">Gender tag (needed to save)</label>
+                <select id="designGender">
+                    <option value="female">Female</option>
+                    <option value="male">Male</option>
+                    <option value="neutral">Neutral</option>
+                </select>
+                <label for="designName">Name to save it under</label>
+                <input id="designName" type="text" placeholder="e.g. Austin">
+                <div class="controls" style="margin-top:10px">
+                    <button id="designGenerate" type="button">Generate sample</button>
+                    <button id="designSave" type="button" disabled>Save and use this voice</button>
+                    <button id="designNew" type="button">Start a new design</button>
+                </div>
+                <audio id="designSample" controls hidden style="width:100%; margin-top:8px"></audio>
+            </div>
+        </div>
+        <div class="hint" id="designInfo">
+            Generate a sample, adjust the description and generate again until it sounds right (each try becomes a new version
+            of the same design), then save it. Saving fills the Telnyx voice ID box and selects it as the streaming voice.
+            Saved voices stay on your Telnyx account. Telnyx may charge for each sample.
+        </div>
+    </section>
+
+    <section>
+        <div class="controls">
+            <button id="talk">Hold to talk</button>
+            <button id="rerun" disabled>Re-run last recording</button>
+            <span class="controls" style="gap:6px">
+                <button id="parallel" disabled>Stream last recording as</button>
+                <input id="parallelCount" type="number" min="2" max="10" value="5" style="width:4em">
+                <span>conversations at once</span>
+            </span>
+            <button id="reset">Reset conversations</button>
+            <span>Hear:</span>
+            <label class="inline"><input type="radio" name="hear" value="telnyx" checked> Telnyx</label>
+            <label class="inline"><input type="radio" name="hear" value="telnyxstream"> Telnyx streaming</label>
+            <label class="inline"><input type="radio" name="hear" value="workersai"> Workers AI</label>
+        </div>
+        <div id="status">Hold the button, speak, then let go.</div>
+    </section>
+
+    <section>
+        <h2>Summary (median, slowest round trip)</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>Provider</th><th class="num">Turns</th><th class="num">Speech-to-text</th><th class="num">First token</th>
+                    <th class="num">Chat</th><th class="num">Speech first byte</th><th class="num">Speech</th>
+                    <th class="num">Reply starts</th><th class="num">Round trip</th><th class="num">Slowest round trip</th>
+                </tr>
+            </thead>
+            <tbody id="summary"></tbody>
+        </table>
+        <div class="hint">
+            <b>Reply starts</b> is the delay you hear: from letting go of the button to the first reply audio arriving in this page.
+            Round trip runs from letting go to the last of the reply audio. For streaming, speech-to-text is the wait after
+            letting go, and speech times start when the first reply words reach the voice. All times are in milliseconds.
+        </div>
+    </section>
+
+    <section>
+        <h2>Turns</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>Turn</th><th>Provider</th><th class="num">Speech-to-text</th><th class="num">First token</th>
+                    <th class="num">Chat</th><th class="num">Speech first byte</th><th class="num">Speech</th>
+                    <th class="num">Reply starts</th><th class="num">Round trip</th><th>Heard you / replied</th><th></th>
+                </tr>
+            </thead>
+            <tbody id="turns"></tbody>
+        </table>
+        <div class="hint">
+            Under each turn, the timeline counts from letting go (red line). Lighter parts are waiting: connecting to Telnyx,
+            waiting for the chat's first word, or waiting for the voice's first audio. Uploaded providers run each step one after
+            another; streaming overlaps them. Audio out is as long as the reply audio. Hover a bar for exact times.
+        </div>
+    </section>
+
+    <script src="bench.js"></script>
+</body>
+</html>

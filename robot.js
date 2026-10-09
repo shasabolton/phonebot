@@ -675,10 +675,13 @@ class Robot {
         const character = this._activeCharacter();
         this.getProcessingByType("audioPlayer")?.setVoiceFx?.(character?.voiceFx || null);
         const voice = String(character?.voice || "").trim();
-        const key = character ? `${character.id}|${voice}` : "";
+        const gender = character?.voiceGender || "";
+        const key = character ? `${character.id}|${voice}|${gender}` : "";
         if (key === this._appliedCharacterKey) return;
         this._appliedCharacterKey = key;
-        if (voice && typeof this.agentInterface?.setTtsVoice === "function") {
+        if (typeof this.agentInterface?.setCharacterVoice === "function") {
+            this.agentInterface.setCharacterVoice(voice, gender);
+        } else if (voice && typeof this.agentInterface?.setTtsVoice === "function") {
             this.agentInterface.setTtsVoice(voice);
         }
     }

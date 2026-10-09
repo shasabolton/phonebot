@@ -11,7 +11,7 @@
 		"head_sampling_rate": 1
 	},
 	"vars": {
-		"ALLOWED_ORIGINS": "https://shasabolton.github.io,http://localhost:8000",
+		"ALLOWED_ORIGINS": "https://shasabolton.github.io,http://localhost:8000,http://127.0.0.1:5502,http://localhost:5502",
 		"GROQ_ALLOWED_TRANSCRIBE_MODELS": "whisper-large-v3,whisper-large-v3-turbo",
 		"GROQ_ALLOWED_SPEECH_MODELS": "canopylabs/orpheus-v1-english,canopylabs/orpheus-arabic-saudi",
 		"GROQ_TRANSCRIBE_CENTS": "1",

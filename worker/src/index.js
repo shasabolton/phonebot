@@ -12,6 +12,7 @@ import {
     extractAssistantContentText,
     readChatCompletionStream
 } from "../../groqChatRecover.js";
+import { handleTelnyxStream } from "./telnyxStream.js";
 
 /** Shared arcade pricing: player credit equals payment; provider cost × markup is debited. */
 const ARCADE_DEFAULT_PRICE_CENTS = 200;
@@ -61,6 +62,11 @@ export default {
             if (path === "/api/ai/voice-turn" && request.method === "POST") {
                 assertAllowedOrigin(request, env);
                 return corsResponse(request, env, await proxyGroqVoiceTurn(request, env, ctx));
+            }
+            // Player's own Telnyx key only (sent in the socket's start message); no hosted credit is used.
+            if (path === "/api/telnyx/stream" && request.method === "GET") {
+                assertAllowedOrigin(request, env);
+                return handleTelnyxStream(request);
             }
 
             const match = path.match(/^\/api\/session\/([0-9a-f-]+)(?:\/(start|complete))?$/i);

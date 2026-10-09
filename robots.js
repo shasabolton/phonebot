@@ -332,6 +332,25 @@ window.ROBOTS_DATA = {
                         temperature: 0.9,
                         maxTokens: 1024,
                         reasoningEffort: "low"
+                    },
+                    {
+                        name: "Telnyx",
+                        provider: "telnyx",
+                        baseUrl: "https://api.telnyx.com/v2",
+                        chatPath: "/ai/openai/chat/completions",
+                        transcriptionPath: "/ai/audio/transcriptions",
+                        // Tested and working, tried first in this order while Telnyx still offers them;
+                        // after these, models are picked automatically. Run telnyxPreferences() in the
+                        // console after playing to get updated lists to paste here.
+                        preferredChatModels: ["google/gemma-4-26B-A4B-it"],
+                        preferredStreamingTranscription: ["deepgram|deepgram/nova-3"],
+                        // Stand-ins when a character's voice isn't available, matched by gender.
+                        preferredVoices: ["Telnyx.KokoroTTS.am_adam"],
+                        transcriptionModel: "openai/whisper-large-v3-turbo",
+                        // Voice with no character active.
+                        voice: "Telnyx.KokoroTTS.am_adam",
+                        temperature: 0.9,
+                        maxTokens: 400
                     }
                 ]
             }

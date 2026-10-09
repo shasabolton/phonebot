@@ -1,0 +1,16 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "phonebot-voice-bench",
+	"main": "src/index.js",
+	"compatibility_date": "2026-10-01",
+	"assets": {
+		"directory": "./public"
+	},
+	"ai": {
+		"binding": "AI",
+		"remote": true
+	},
+	"observability": {
+		"enabled": true
+	}
+}

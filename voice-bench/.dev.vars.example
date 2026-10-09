@@ -1,0 +1,3 @@
+# Copy to .dev.vars (never committed). Type the same value into the page's
+# "Workers AI passcode" box to unlock Workers AI.
+BENCH_PASSCODE=pick-something-long

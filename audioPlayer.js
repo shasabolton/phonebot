@@ -556,6 +556,64 @@ class AudioPlayerAiModel {
     }
 
     /**
+     * Play MP3 that arrives in pieces (streamed TTS) through the same tap as playBlob, starting
+     * with the first piece. Voice pitch is not applied. Returns null where the browser has no
+     * MediaSource for MP3; the caller then plays the whole clip with playBlob.
+     * @param {string} [label]
+     * @returns {{ push: (bytes: Uint8Array) => void, end: () => void, done: Promise<void> }|null}
+     */
+    startMp3Stream(label = "TTS") {
+        const Source = window.ManagedMediaSource || window.MediaSource;
+        if (!Source || typeof Source.isTypeSupported !== "function" || !Source.isTypeSupported("audio/mpeg")) {
+            return null;
+        }
+        this._beginPlay();
+        const media = new Source();
+        const queue = [];
+        let buffer = null;
+        let ending = false;
+        const pump = () => {
+            if (!buffer || buffer.updating || media.readyState !== "open") return;
+            try {
+                if (queue.length) buffer.appendBuffer(queue.shift());
+                else if (ending) media.endOfStream();
+            } catch (err) {
+                console.error("Streamed audio append failed:", err);
+            }
+        };
+        media.addEventListener(
+            "sourceopen",
+            () => {
+                try {
+                    buffer = media.addSourceBuffer("audio/mpeg");
+                    buffer.addEventListener("updateend", pump);
+                    pump();
+                } catch (err) {
+                    console.error("Streamed audio could not start:", err);
+                }
+            },
+            { once: true }
+        );
+        this._revokeTtsUrl();
+        const audio = this._ensureAudio();
+        // ManagedMediaSource (iOS Safari) only plays with remote playback turned off.
+        if (Source === window.ManagedMediaSource) audio.disableRemotePlayback = true;
+        this._ttsObjectUrl = URL.createObjectURL(media);
+        const done = this._playUrl(this._ttsObjectUrl, label, `stream:${Date.now()}`, 1);
+        return {
+            push(bytes) {
+                queue.push(bytes);
+                pump();
+            },
+            end() {
+                ending = true;
+                pump();
+            },
+            done
+        };
+    }
+
+    /**
      * Play a static URL (e.g. pre-recorded Simon Says clips) through the same tap.
      * With a pitch set, the file is fetched and shifted first.
      * @param {string} url

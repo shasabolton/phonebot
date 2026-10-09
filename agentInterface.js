@@ -8,6 +8,16 @@ class AgentInterface {
     static STORAGE_REMEMBER = "phonebot.agent.remember";
     /** Manual Groq chat model for BYOK; empty = automatic pick. */
     static STORAGE_CHAT_MODEL = "phonebot.agent.chatModel";
+    /** Telnyx picks (`stt`, `chat`, `voice`) are saved under this prefix; empty = the agent's default (chat: Auto). */
+    static STORAGE_TELNYX_PREFIX = "phonebot.telnyx.";
+    /** Telnyx chat models tried per turn before giving up. */
+    static TELNYX_CHAT_ATTEMPTS = 3;
+    /** Telnyx streaming speech-to-text models tried per turn before giving up. */
+    static TELNYX_STT_ATTEMPTS = 3;
+    /** Telnyx voices tried per turn before giving up. */
+    static TELNYX_VOICE_ATTEMPTS = 3;
+    /** Keep streaming briefly after finger-up; the Worker adds its own silence tail for the recogniser. */
+    static TELNYX_RELEASE_TAIL_MS = 200;
     /** Per-model sampling temperatures, used only for manually picked models. First match wins. */
     static MODEL_TEMPERATURES = [
         { match: /gpt-oss/i, temperature: 0.7 },
@@ -70,6 +80,37 @@ class AgentInterface {
         this._chatModelOptions = [];
         this._chatModelAutoId = null;
         this._chatModelListError = "";
+        this._telnyxRow = null;
+        this._telnyxSttSelect = null;
+        this._telnyxChatSelect = null;
+        this._telnyxVoiceSelect = null;
+        this._telnyxRefreshBtn = null;
+        this._telnyxHintEl = null;
+        /** Live lists from the player's Telnyx account (key in `_telnyxListsKey`). */
+        this._telnyxLists = { stt: [], chat: [], voices: [], skippedUltra: 0 };
+        this._telnyxListsKey = "";
+        this._telnyxListsToken = 0;
+        this._telnyxListsLoading = false;
+        this._telnyxListError = "";
+        this._telnyxListsTimer = 0;
+        /** @type {Promise<void>|null} */
+        this._telnyxListsPromise = null;
+        /** Telnyx key typed this session, kept for Telnyx voices while another agent is selected. */
+        this._telnyxSessionKey = "";
+        /** Telnyx chat models that failed this session; Auto skips them. */
+        this._telnyxBadModels = new Set();
+        /** Telnyx streaming speech-to-text models ("provider|model") that failed this session. */
+        this._telnyxBadStt = new Set();
+        /** Telnyx voices that failed this session. */
+        this._telnyxBadVoices = new Set();
+        /** What answered this session, for `telnyxPreferences()`. */
+        this._telnyxWorked = { chat: new Set(), stt: new Set(), voice: new Set() };
+        /** The active character's voice, set by the robot; null when no character (or it keeps the current voice). */
+        this._characterVoice = null;
+        if (window.TelnyxVoice) window.TelnyxVoice.keySource = () => this.telnyxApiKey();
+        window.telnyxPreferences = () => this.telnyxPreferences();
+        /** Streamed hold-to-talk turn in progress (capturing or waiting for the reply). */
+        this._telnyxTurn = null;
         this._templateSelect = null;
         this._insertTemplateBtn = null;
         this._promptInput = null;
@@ -194,6 +235,7 @@ class AgentInterface {
      * @returns {Promise<{ chat: string|null, vision: string|null, stt: string|null, tts: string|null }|null>}
      */
     async ensureSessionGroqModels() {
+        if (this._isTelnyxProvider()) return null;
         if (this._sessionModels) return this._sessionModels;
         if (this._sessionModelsPromise) return this._sessionModelsPromise;
 
@@ -265,7 +307,7 @@ class AgentInterface {
         if (!models) return;
         for (const agent of this.agents) {
             if (!agent || typeof agent !== "object") continue;
-            if (String(agent.provider || "").trim().toLowerCase() === "gemini") continue;
+            if (this._isGeminiProvider(agent) || this._isTelnyxProvider(agent)) continue;
             if (models.chat) agent.model = models.chat;
             if (models.stt) agent.transcriptionModel = models.stt;
             if (models.tts) agent.speechModel = models.tts;
@@ -400,10 +442,10 @@ class AgentInterface {
         return !!this._clientApiKey();
     }
 
-    /** Without a key of their own, Groq-compatible agents use hosted AI credit (Gemini has no hosted path). */
+    /** Without a key of their own, Groq-compatible agents use hosted AI credit (Gemini and Telnyx have no hosted path). */
     _useHostedAi() {
         if (this._clientApiKey() || !window.playBilling) return false;
-        return !this._isGeminiProvider();
+        return !this._isGeminiProvider() && !this._isTelnyxProvider();
     }
 
     /** Before any hosted AI request: shows the top-up popup when credit is $0. */
@@ -436,7 +478,7 @@ class AgentInterface {
     /** True when a send can go out now: a key of their own, or hosted credit left. */
     async _aiAvailableForPendingSend() {
         if (this._clientApiKey()) {
-            if (this._isGeminiProvider()) return true;
+            if (this._isGeminiProvider() || this._isTelnyxProvider()) return true;
             if (typeof window.GroqModelSelect?.fetchAndSelectGroqModels !== "function") return true;
             // Model lookup fails on a bad or half-typed key; keep waiting rather than burn the prompt.
             return !!(await this.ensureSessionGroqModels());
@@ -504,7 +546,11 @@ class AgentInterface {
     async _applyPasswordFromPaywall(password) {
         const key = String(password || "").trim();
         if (!key) return { ok: false, error: "Enter a password." };
-        if (!this._isGeminiProvider() && typeof window.GroqModelSelect?.fetchAndSelectGroqModels === "function") {
+        if (
+            !this._isGeminiProvider() &&
+            !this._isTelnyxProvider() &&
+            typeof window.GroqModelSelect?.fetchAndSelectGroqModels === "function"
+        ) {
             try {
                 await window.GroqModelSelect.fetchAndSelectGroqModels(key);
             } catch (_) {
@@ -701,7 +747,7 @@ class AgentInterface {
     /** The picker only applies to the player's own Groq key; hosted credit keeps the Worker's pick. */
     _syncChatModelUi() {
         if (!this._chatModelSelect) return;
-        if (this._chatModelRow) this._chatModelRow.hidden = this._isGeminiProvider();
+        if (this._chatModelRow) this._chatModelRow.hidden = this._isGeminiProvider() || this._isTelnyxProvider();
         const byok = !!this._clientApiKey();
         this._chatModelSelect.disabled = !byok;
         if (this._chatModelRefreshBtn) this._chatModelRefreshBtn.disabled = !byok;
@@ -736,6 +782,463 @@ class AgentInterface {
         return this._isGeminiProvider(agent);
     }
 
+    _isTelnyxProvider(agent = this.getSelectedAgent()) {
+        return String(agent?.provider || "").trim().toLowerCase() === "telnyx";
+    }
+
+    _isTelnyxVoiceId(voiceId) {
+        return !!window.TelnyxVoice?.isVoiceId?.(voiceId);
+    }
+
+    /**
+     * Telnyx pick saved from the agent panel; empty means Auto (the agent's voice for `voice`).
+     * `stt` values are "provider|model".
+     * @param {"stt"|"chat"|"voice"} kind
+     */
+    _telnyxChoice(kind, _agent) {
+        try {
+            return String(localStorage.getItem(AgentInterface.STORAGE_TELNYX_PREFIX + kind) || "").trim();
+        } catch (_) {
+            return "";
+        }
+    }
+
+    /** Tested models or voices from the agent config in robots.js, best first. */
+    _telnyxPreferred(kind, agent = this.getSelectedAgent()) {
+        const list = { stt: agent?.preferredStreamingTranscription, chat: agent?.preferredChatModels, voice: agent?.preferredVoices }[kind];
+        return (Array.isArray(list) ? list : [list]).map((v) => String(v || "").trim()).filter(Boolean);
+    }
+
+    /**
+     * The active character's voice. Telnyx uses it when the account offers it, else the most reliable
+     * voice of the same gender; a Telnyx voice under Groq becomes the Groq voice of the same gender.
+     * @param {string} voiceId "" when there is no character or it keeps the current voice
+     * @param {string} [gender] the character's saved voiceGender, used when the voice can't be looked up
+     */
+    setCharacterVoice(voiceId, gender = "") {
+        const id = String(voiceId || "").trim();
+        this._characterVoice = id ? { id, gender: window.TelnyxVoice?.normalGender?.(gender) || "" } : null;
+        if (id && !this._isTelnyxVoiceId(id)) {
+            this.setTtsVoice(id);
+        } else if (id) {
+            const wanted = this._voiceGender(id) || this._characterVoice.gender;
+            const groq = (window.GroqTts?.VOICES || []).find((v) => this._voiceGender(v.id) === wanted);
+            if (groq) this.setTtsVoice(groq.id);
+        }
+        this._renderTelnyxOptions();
+    }
+
+    /** "male", "female" or "" for a voice in the live Telnyx list or the Groq catalog. */
+    _voiceGender(voiceId) {
+        const normal = window.TelnyxVoice?.normalGender || (() => "");
+        const telnyx = (this._telnyxLists.voices || []).find((v) => v.id === voiceId);
+        if (telnyx?.gender) return normal(telnyx.gender);
+        const label = String((window.GroqTts?.VOICES || []).find((v) => v.id === voiceId)?.label || "");
+        return /♂/.test(label) ? "male" : /♀/.test(label) ? "female" : "";
+    }
+
+    /**
+     * Telnyx voices to try, in order. With a character: its own voice when Telnyx offers it, then the
+     * most reliable stand-ins of the same gender. Without: the pick in the agent panel (else the
+     * agent's voice in robots.js), then stand-ins of that voice's gender. Voices that failed this
+     * session go last; until the voice list loads, voices are tried unchecked.
+     * @param {{ ignorePick?: boolean }} [options] ignorePick: what Default would use
+     * @returns {string[]}
+     */
+    _telnyxVoiceChoices(agent = this.getSelectedAgent(), options = {}) {
+        const voices = this._telnyxLists.voices || [];
+        const offered = (id) => this._isTelnyxVoiceId(id) && (!voices.length || voices.some((v) => v.id === id));
+        const character = this._characterVoice;
+        const pick = options.ignorePick ? "" : this._telnyxChoice("voice", agent);
+        const wanted = character ? [character.id] : [pick, String(agent?.voice || "").trim()].filter(Boolean);
+        const gender = wanted.map((id) => this._voiceGender(id)).find(Boolean) || character?.gender || "";
+        const standIns = window.TelnyxVoice?.rankVoices
+            ? window.TelnyxVoice.rankVoices(voices, {
+                  gender,
+                  language: navigator.language,
+                  tested: [...this._telnyxPreferred("voice", agent), ...this._telnyxWorked.voice]
+              }).map((v) => v.id)
+            : [];
+        const candidates = [...wanted.filter(offered), ...standIns];
+        if (!voices.length) candidates.push(...this._telnyxPreferred("voice", agent));
+        const list = [];
+        for (const id of candidates) if (!this._telnyxBadVoices.has(id) && !list.includes(id)) list.push(id);
+        for (const id of candidates) if (!list.includes(id)) list.push(id);
+        return list.slice(0, AgentInterface.TELNYX_VOICE_ATTEMPTS);
+    }
+
+    _telnyxVoice(agent = this.getSelectedAgent()) {
+        return this._telnyxVoiceChoices(agent)[0] || "";
+    }
+
+    _noteTelnyxVoiceFailures(failed) {
+        const ids = (Array.isArray(failed) ? failed : []).filter(Boolean);
+        if (!ids.length) return;
+        console.error("Telnyx voices failed and were skipped:", ids);
+        for (const id of ids) this._telnyxBadVoices.add(id);
+        this._renderTelnyxOptions();
+    }
+
+    _setTelnyxChoice(kind, value) {
+        try {
+            const v = String(value || "").trim();
+            if (v) localStorage.setItem(AgentInterface.STORAGE_TELNYX_PREFIX + kind, v);
+            else localStorage.removeItem(AgentInterface.STORAGE_TELNYX_PREFIX + kind);
+        } catch (_) {}
+    }
+
+    /**
+     * Telnyx chat models to try, in order: the player's pick, the tested models from robots.js, then
+     * the automatic ranking. Models Telnyx no longer offers are skipped (until the lists load, the
+     * pick and tested models are tried unchecked), and so are models that failed this session.
+     * @param {{ ignorePick?: boolean }} [options] ignorePick: what Auto would use
+     * @returns {{ id: string, thinkingOff: boolean }[]}
+     */
+    _telnyxChatModels(agent = this.getSelectedAgent(), options = {}) {
+        const ranked = this._telnyxLists.chat || [];
+        const pick = options.ignorePick ? "" : this._telnyxChoice("chat", agent);
+        const rejectsKwargs = window.TelnyxVoice?.REJECTS_TEMPLATE_KWARGS || /mistral/i;
+        const offered = (id) => ranked.find((m) => m.id === id) || (ranked.length ? null : { id, thinkingOff: !rejectsKwargs.test(id) });
+        const usable = (m) => !this._telnyxBadModels.has(m.id);
+        const list = [];
+        const add = (m) => {
+            if (m && !list.some((x) => x.id === m.id)) list.push(m);
+        };
+        add(pick && offered(pick));
+        const tested = this._telnyxPreferred("chat", agent).map(offered).filter(Boolean);
+        const auto = ranked.filter((m) => m.auto);
+        for (const m of [...tested, ...auto].filter(usable)) add(m);
+        if (!list.length) for (const m of [...tested, ...auto]) add(m);
+        return list.slice(0, AgentInterface.TELNYX_CHAT_ATTEMPTS).map((m) => ({ id: m.id, thinkingOff: !!m.thinkingOff }));
+    }
+
+    /** Remember models that failed so Auto moves on to the next one for the rest of the session. */
+    _noteTelnyxModelFailures(failed) {
+        const ids = (Array.isArray(failed) ? failed : []).filter(Boolean);
+        if (!ids.length) return;
+        console.error("Telnyx chat models failed and were skipped:", ids);
+        for (const id of ids) this._telnyxBadModels.add(id);
+        this._renderTelnyxOptions();
+    }
+
+    /** Streaming speech-to-text models with the tested ones first (see TelnyxVoice.rankSttModels). */
+    _rankedTelnyxStt(agent = this.getSelectedAgent()) {
+        const listed = this._telnyxLists.stt || [];
+        const rank = window.TelnyxVoice?.rankSttModels;
+        return rank
+            ? rank(listed, this._telnyxPreferred("stt", agent))
+            : listed.map((m) => ({ ...m, value: `${m.provider}|${m.model}`, tested: false }));
+    }
+
+    /**
+     * Streaming speech-to-text models to try, in order: the player's pick, then the tested ones from
+     * robots.js, then the best guesses. Same skipping rules as `_telnyxChatModels`.
+     * @param {{ ignorePick?: boolean }} [options]
+     * @returns {{ provider: string, model: string }[]}
+     */
+    _telnyxSttChoices(agent = this.getSelectedAgent(), options = {}) {
+        const listed = new Set((this._telnyxLists.stt || []).map((m) => `${m.provider}|${m.model}`));
+        const offered = (v) => !!v && (!listed.size || listed.has(v));
+        const ranked = this._rankedTelnyxStt(agent).map((m) => m.value);
+        const pick = options.ignorePick ? "" : this._telnyxChoice("stt", agent);
+        const candidates = [...this._telnyxPreferred("stt", agent), ...ranked].filter(offered);
+        const values = [];
+        const add = (v) => {
+            if (v && !values.includes(v)) values.push(v);
+        };
+        if (offered(pick)) add(pick);
+        for (const v of candidates) if (!this._telnyxBadStt.has(v)) add(v);
+        if (!values.length) for (const v of candidates) add(v);
+        return values.slice(0, AgentInterface.TELNYX_STT_ATTEMPTS).map((v) => {
+            const [provider, ...model] = v.split("|");
+            return { provider, model: model.join("|") };
+        });
+    }
+
+    /** @returns {{ provider: string, model: string }} */
+    _telnyxSttChoice(agent = this.getSelectedAgent()) {
+        return this._telnyxSttChoices(agent)[0] || { provider: "", model: "" };
+    }
+
+    _noteTelnyxSttFailures(failed) {
+        const values = (Array.isArray(failed) ? failed : []).filter(Boolean);
+        if (!values.length) return;
+        console.error("Telnyx streaming speech-to-text models failed and were skipped:", values);
+        for (const v of values) this._telnyxBadStt.add(v);
+        this._renderTelnyxOptions();
+    }
+
+    _noteTelnyxWorked(kind, value) {
+        if (value) this._telnyxWorked[kind].add(value);
+    }
+
+    /**
+     * Console helper (`telnyxPreferences()`): the tested-model lists for the Telnyx agent in
+     * robots.js with what worked this session added and anything Telnyx no longer offers removed,
+     * ready to paste. Models that failed are only reported: one failure may be a passing glitch.
+     * @returns {string}
+     */
+    telnyxPreferences() {
+        const agent = this.agents.find((a) => this._isTelnyxProvider(a));
+        const offered = {
+            chat: new Set((this._telnyxLists.chat || []).map((m) => m.id)),
+            stt: new Set((this._telnyxLists.stt || []).map((m) => `${m.provider}|${m.model}`)),
+            voice: new Set((this._telnyxLists.voices || []).map((v) => v.id))
+        };
+        const gone = [];
+        const merge = (kind) => {
+            const current = this._telnyxPreferred(kind, agent).filter((v) => {
+                const listed = !offered[kind].size || offered[kind].has(v);
+                if (!listed) gone.push(v);
+                return listed;
+            });
+            return [...current, ...[...this._telnyxWorked[kind]].filter((v) => !current.includes(v))];
+        };
+        const lines = [
+            `preferredChatModels: ${JSON.stringify(merge("chat"))},`,
+            `preferredStreamingTranscription: ${JSON.stringify(merge("stt"))},`,
+            `preferredVoices: ${JSON.stringify(merge("voice"))},`
+        ];
+        const worked = [...this._telnyxWorked.chat, ...this._telnyxWorked.stt, ...this._telnyxWorked.voice];
+        const failed = [...this._telnyxBadModels, ...this._telnyxBadStt, ...this._telnyxBadVoices];
+        console.info(
+            "Paste over the matching lines of the Telnyx agent in robots.js.\n" +
+                `Worked this session: ${worked.join(", ") || "nothing yet"}.\n` +
+                `Failed this session (still listed; remove them if they keep failing): ${failed.join(", ") || "nothing"}.\n` +
+                `Removed because Telnyx no longer offers them: ${gone.join(", ") || "nothing"}.`
+        );
+        return lines.join("\n");
+    }
+
+    /**
+     * The player's Telnyx key: the key box while the Telnyx agent is selected, else the key last
+     * used with it (this session or remembered), so other panels can use Telnyx voices.
+     */
+    telnyxApiKey() {
+        if (this._isTelnyxProvider()) {
+            const key = this._clientApiKey();
+            if (key) this._telnyxSessionKey = key;
+            return key;
+        }
+        const agent = this.agents.find((a) => this._isTelnyxProvider(a));
+        return this._telnyxSessionKey || (agent ? this._loadKeyForAgent(agent.name) : "");
+    }
+
+    /**
+     * Telnyx voices for other panels (the character editor), loading them if needed.
+     * @returns {Promise<{ hasKey: boolean, voices: object[], error: string }>}
+     */
+    async telnyxVoices(options = {}) {
+        if (!this.telnyxApiKey()) return { hasKey: false, voices: [], error: "" };
+        await this._loadTelnyxLists(options);
+        // A newer load may have started meanwhile (the key changed); wait for that one.
+        await this._telnyxListsPromise;
+        return { hasKey: true, voices: this._telnyxLists.voices, error: this._telnyxListError };
+    }
+
+    /** Add a voice saved from Voice Design to the Telnyx voice lists. */
+    addTelnyxVoice(voice) {
+        if (!voice?.id || this._telnyxLists.voices.some((v) => v.id === voice.id)) return;
+        this._telnyxLists = { ...this._telnyxLists, voices: [voice, ...this._telnyxLists.voices] };
+        this._renderTelnyxOptions();
+        this._syncTelnyxUi();
+    }
+
+    /**
+     * Loads the account's streaming speech-to-text models, chat models and voices into the
+     * Telnyx pickers. Skipped when this key's lists are already loaded unless `force`.
+     * @returns {Promise<void>} settles once the lists are loaded
+     */
+    _loadTelnyxLists(options = {}) {
+        const key = this.telnyxApiKey();
+        const api = window.TelnyxVoice;
+        if (!key || !api) {
+            this._syncTelnyxUi();
+            return Promise.resolve();
+        }
+        if (!options.force && key === this._telnyxListsKey) return this._telnyxListsPromise || Promise.resolve();
+        this._telnyxListsPromise = this._fetchTelnyxLists(key, api);
+        return this._telnyxListsPromise;
+    }
+
+    async _fetchTelnyxLists(key, api) {
+        const token = ++this._telnyxListsToken;
+        this._telnyxListsKey = key;
+        this._telnyxListsLoading = true;
+        this._telnyxListError = "";
+        this._syncTelnyxUi();
+        const [stt, chat, voices] = await Promise.allSettled([
+            api.listStreamingSttModels(key),
+            api.listChatModels(key),
+            api.listVoices(key)
+        ]);
+        if (token !== this._telnyxListsToken) return;
+        this._telnyxListsLoading = false;
+        const errors = [];
+        for (const [name, result] of [
+            ["speech-to-text models", stt],
+            ["chat models", chat],
+            ["voices", voices]
+        ]) {
+            if (result.status !== "rejected") continue;
+            console.error(`Telnyx ${name} could not be loaded:`, result.reason);
+            errors.push(result.reason?.message || String(result.reason));
+        }
+        if (errors.length) this._telnyxListsKey = "";
+        this._telnyxLists = {
+            stt: stt.value || [],
+            chat: chat.value || [],
+            voices: voices.value?.voices || [],
+            skippedUltra: voices.value?.skippedUltra || 0
+        };
+        this._telnyxListError = errors.join(" · ");
+        this._renderTelnyxOptions();
+        this._syncTelnyxUi();
+    }
+
+    /**
+     * Fill a picker with grouped options, keeping a saved pick that the list doesn't have.
+     * @param {HTMLSelectElement|null} select
+     * @param {{ label?: string, options: { value: string, label: string, title?: string }[] }[]} groups
+     * @param {string} choice
+     * @param {(value: string) => string} [labelFor] label for a pick missing from the list
+     */
+    _fillTelnyxSelect(select, groups, choice, labelFor = (v) => v) {
+        if (!select) return;
+        select.replaceChildren();
+        const known = new Set();
+        for (const group of groups) {
+            if (!group.options.length) continue;
+            let parent = select;
+            if (group.label) {
+                parent = document.createElement("optgroup");
+                parent.label = group.label;
+                select.appendChild(parent);
+            }
+            for (const o of group.options) {
+                const opt = document.createElement("option");
+                opt.value = o.value;
+                opt.textContent = o.label;
+                if (o.title) opt.title = o.title;
+                parent.appendChild(opt);
+                if (o.value) known.add(o.value);
+            }
+        }
+        if (choice && !known.has(choice)) {
+            const opt = document.createElement("option");
+            opt.value = choice;
+            opt.textContent = known.size ? `${labelFor(choice)} (not on your account)` : labelFor(choice);
+            select.prepend(opt);
+        }
+        select.value = choice;
+    }
+
+    _renderTelnyxOptions() {
+        const agent = this.getSelectedAgent();
+        const { stt, chat, voices } = this._telnyxLists;
+        const sttLabel = (value) => {
+            const [provider, ...model] = value.split("|");
+            return `${model.join("|") || "default model"} (${provider})`;
+        };
+        const sttOption = (m) => ({
+            value: m.value,
+            label: this._telnyxBadStt.has(m.value) ? `${sttLabel(m.value)}, failed this session` : sttLabel(m.value)
+        });
+        const rankedStt = this._rankedTelnyxStt(agent);
+        const autoStt = this._telnyxSttChoices(agent, { ignorePick: true })[0];
+        this._fillTelnyxSelect(
+            this._telnyxSttSelect,
+            [
+                { options: [{ value: "", label: autoStt ? `Auto (now ${sttLabel(`${autoStt.provider}|${autoStt.model}`)})` : "Auto" }] },
+                { label: "Tested (robots.js), tried first", options: rankedStt.filter((m) => m.tested).map(sttOption) },
+                { label: "Others, best guess first", options: rankedStt.filter((m) => !m.tested).map(sttOption) }
+            ],
+            this._telnyxChoice("stt", agent),
+            (v) => (stt.length ? `${sttLabel(v)}, Auto is used instead` : sttLabel(v))
+        );
+        const cost = (m) =>
+            Number.isFinite(m.costPerTurn) ? `${m.currency === "USD" ? "$" : `${m.currency} `}${(m.costPerTurn * 1000).toFixed(2)} per 1,000 turns` : "";
+        const chatOption = (m) => {
+            const failed = this._telnyxBadModels.has(m.id) ? "failed this session" : "";
+            const details = [m.sizeLabel, cost(m), m.tier === "unlisted" ? "preview" : "", m.reason, failed].filter(Boolean);
+            return { value: m.id, label: details.length ? `${m.id} (${details.join(", ")})` : m.id, title: m.id };
+        };
+        const autoChat = this._telnyxChatModels(agent, { ignorePick: true })[0];
+        const testedIds = this._telnyxPreferred("chat", agent);
+        const tested = testedIds.map((id) => chat.find((m) => m.id === id)).filter(Boolean);
+        const untested = chat.filter((m) => !testedIds.includes(m.id));
+        this._fillTelnyxSelect(
+            this._telnyxChatSelect,
+            [
+                { options: [{ value: "", label: autoChat ? `Auto (now ${autoChat.id})` : "Auto" }] },
+                { label: "Tested (robots.js), tried first", options: tested.map(chatOption) },
+                { label: "Picked automatically, best first", options: untested.filter((m) => m.auto).map(chatOption) },
+                { label: "Not picked automatically", options: untested.filter((m) => !m.auto).map(chatOption) }
+            ],
+            this._telnyxChoice("chat", agent),
+            (v) => (chat.length ? `${v}, Auto is used instead` : v)
+        );
+        const providerNames = window.TelnyxVoice?.PROVIDER_NAMES || {};
+        const byProvider = new Map();
+        const voiceLabel = (v) => {
+            const details = [v.language, v.gender, this._telnyxBadVoices.has(v.id) ? "failed this session" : ""].filter(Boolean);
+            return details.length ? `${v.name} (${details.join(", ")})` : v.name;
+        };
+        for (const v of voices) {
+            if (!byProvider.has(v.provider)) byProvider.set(v.provider, []);
+            byProvider.get(v.provider).push({ value: v.id, label: voiceLabel(v), title: v.id });
+        }
+        const character = this._characterVoice;
+        const usedId = this._telnyxVoiceChoices(agent, { ignorePick: true })[0] || "";
+        const used = voices.find((v) => v.id === usedId);
+        const usedName = used ? voiceLabel(used) : usedId || "none available";
+        const defaultLabel = !character
+            ? `Default: ${usedName}`
+            : usedId === character.id
+              ? `Character's voice: ${usedName}`
+              : `Character's voice isn't available here; stand-in: ${usedName}`;
+        this._fillTelnyxSelect(
+            this._telnyxVoiceSelect,
+            [
+                { options: [{ value: "", label: defaultLabel, title: character ? character.id : "" }] },
+                ...[...byProvider].map(([provider, options]) => ({
+                    label: `${providerNames[provider] || provider} voices`,
+                    options
+                }))
+            ],
+            character ? "" : this._telnyxChoice("voice", agent),
+            (v) => (voices.length ? `${v}, Default is used instead` : v)
+        );
+        if (this._telnyxVoiceSelect) {
+            this._telnyxVoiceSelect.disabled = !!character;
+            this._telnyxVoiceSelect.title = character
+                ? "The active character sets the voice (Characters, then Edit)."
+                : "Voice when no character is active.";
+        }
+    }
+
+    _syncTelnyxUi() {
+        const telnyx = this._isTelnyxProvider();
+        if (this._telnyxRow) this._telnyxRow.hidden = !telnyx;
+        if (!telnyx) return;
+        const hasKey = !!this._clientApiKey();
+        if (this._telnyxRefreshBtn) this._telnyxRefreshBtn.disabled = !hasKey || this._telnyxListsLoading;
+        if (!this._telnyxHintEl) return;
+        const { stt, chat, voices, skippedUltra } = this._telnyxLists;
+        this._telnyxHintEl.className = hasKey && this._telnyxListError ? "error" : "muted";
+        this._telnyxHintEl.textContent = !hasKey
+            ? "Enter your Telnyx API key (it starts with KEY) to load your account's models and voices. Telnyx has no hosted credit yet."
+            : this._telnyxListsLoading
+              ? "Loading models and voices from Telnyx…"
+              : this._telnyxListError
+                ? `Some Telnyx lists didn't load: ${this._telnyxListError}`
+                : stt.length || chat.length || voices.length
+                  ? `From your account: ${stt.length} streaming speech-to-text models, ${chat.length} chat models billed by Telnyx ` +
+                    `(${chat.filter((m) => m.auto).length} picked automatically), ${voices.length} voices` +
+                    (skippedUltra ? ` (${skippedUltra} Ultra voices left out because they can't stream).` : ".")
+                  : "Lists not loaded yet. Click Refresh Telnyx lists.";
+    }
+
     _resolveChatUrl(agent) {
         if (!agent) return null;
         if (agent.chatUrl) return String(agent.chatUrl).trim();
@@ -758,6 +1261,9 @@ class AgentInterface {
     }
 
     _resolveTranscriptionModel(agent) {
+        if (this._isTelnyxProvider(agent)) {
+            return String(agent.transcriptionModel || "").trim() || "openai/whisper-large-v3-turbo";
+        }
         if (this._sessionModels?.stt) return this._sessionModels.stt;
         const fromAgent = agent && String(agent.transcriptionModel || "").trim();
         if (fromAgent) return fromAgent;
@@ -770,6 +1276,10 @@ class AgentInterface {
         const agent = this.getSelectedAgent();
         if (this._isGeminiProvider(agent)) {
             return this._resolveModel(agent) || window.GeminiAudioTurn?.DEFAULT_MODEL || "gemini-3.6-flash";
+        }
+        if (this._isTelnyxProvider(agent) && this._isConversationMode()) {
+            const { provider, model } = this._telnyxSttChoice(agent);
+            return `Telnyx streaming ${model || provider}`;
         }
         return this._resolveTranscriptionModel(agent);
     }
@@ -861,6 +1371,7 @@ class AgentInterface {
     }
 
     _resolveModel(agent, options = {}) {
+        if (this._isTelnyxProvider(agent)) return this._telnyxChatModels(agent)[0]?.id || "";
         const wantVision =
             options.wantVision != null
                 ? !!options.wantVision
@@ -944,6 +1455,32 @@ class AgentInterface {
      * @returns {Promise<Blob>}
      */
     async synthesizeSpeechBlob(text, options = {}) {
+        const telnyxVoice = this._isTelnyxVoiceId(options.voice) ? String(options.voice).trim() : "";
+        if (telnyxVoice || this._isTelnyxProvider()) {
+            const apiKey = this.telnyxApiKey();
+            if (!apiKey) throw new Error("Enter your Telnyx API key (on the Telnyx agent) for Telnyx speech.");
+            if (typeof window.TelnyxVoice?.synthesizeSpeech !== "function") {
+                throw new Error("Telnyx helper is not loaded.");
+            }
+            const voices = telnyxVoice ? [telnyxVoice] : this._telnyxVoiceChoices();
+            if (!voices.length) throw new Error("No Telnyx voice is available. Click Refresh Telnyx lists.");
+            const failed = [];
+            try {
+                for (const [i, voice] of voices.entries()) {
+                    try {
+                        const blob = await window.TelnyxVoice.synthesizeSpeech(apiKey, this._cleanSpeechText(text), voice);
+                        if (!telnyxVoice) this._noteTelnyxWorked("voice", voice);
+                        return blob;
+                    } catch (err) {
+                        if (i === voices.length - 1 || /HTTP (401|402|403|429)\b/.test(String(err?.message))) throw err;
+                        console.error(`Telnyx voice ${voice} failed; trying the next one.`, err);
+                        failed.push(voice);
+                    }
+                }
+            } finally {
+                if (!telnyxVoice) this._noteTelnyxVoiceFailures(failed);
+            }
+        }
         if (this._isBrowserTtsVoice(options.voice ?? this._ttsVoice)) {
             throw new Error("Web TTS does not return an audio blob.");
         }
@@ -1040,11 +1577,12 @@ class AgentInterface {
      */
     async synthesizeSpeechFile(text, options = {}) {
         const voice = String(options.voice || "").trim() || this._ttsVoice;
-        if (this._isBrowserTtsVoice(voice)) {
+        const telnyx = this._isTelnyxProvider() || this._isTelnyxVoiceId(voice);
+        if (!telnyx && this._isBrowserTtsVoice(voice)) {
             throw new Error("Web TTS can't make an audio file. Choose a different voice.");
         }
         const content = String(text || "").trim();
-        const chunks = this._isGeminiProvider()
+        const chunks = this._isGeminiProvider() || telnyx
             ? [this._cleanSpeechText(content)].filter(Boolean)
             : typeof window.GroqTts?.splitInput === "function"
               ? window.GroqTts.splitInput(content)
@@ -1154,6 +1692,11 @@ class AgentInterface {
      */
     setTtsVoice(voiceId) {
         const id = String(voiceId || "").trim();
+        if (this._isTelnyxVoiceId(id)) {
+            this._setTelnyxChoice("voice", id);
+            this._renderTelnyxOptions();
+            return id;
+        }
         if (this._isGeminiProvider()) {
             this._ttsVoice =
                 typeof window.GeminiAudioTurn?.saveVoice === "function"
@@ -1206,13 +1749,20 @@ class AgentInterface {
                     ? window.GeminiAudioTurn.DEFAULT_VOICE
                     : "Kore";
         }
+        const telnyx = this._isTelnyxProvider();
         if (this._voiceSelectLabel) {
             this._voiceSelectLabel.textContent = gemini
                 ? "Voice (Gemini TTS)"
                 : "Voice (Web TTS or Groq Orpheus)";
+            this._voiceSelectLabel.hidden = telnyx;
         }
+        if (this._voiceSelect) this._voiceSelect.hidden = telnyx;
         if (this._keyInput) {
-            this._keyInput.placeholder = gemini ? "AIza… (Google AI Studio)" : "sk-… or gsk_…";
+            this._keyInput.placeholder = gemini
+                ? "AIza… (Google AI Studio)"
+                : telnyx
+                  ? "KEY… (your Telnyx API key)"
+                  : "sk-… or gsk_…";
         }
         if (this._voiceSelect) {
             this._voiceSelect.replaceChildren();
@@ -1229,6 +1779,12 @@ class AgentInterface {
                     voiceList[0].id;
             }
             this._voiceSelect.value = this._ttsVoice;
+        }
+        if (telnyx) {
+            this._setVoiceStatus(
+                "Telnyx: hold-to-talk turns stream speech-to-text, chat and voice through the phonebot Worker on your key; typed messages use plain Telnyx speech."
+            );
+            return;
         }
         this._setVoiceStatus(
             this._isBrowserTtsVoice()
@@ -1271,7 +1827,8 @@ class AgentInterface {
     }
 
     async _speakSynthesizedAsync(content, generation) {
-        if (this._isBrowserTtsVoice()) {
+        const telnyx = this._isTelnyxProvider();
+        if (!telnyx && this._isBrowserTtsVoice()) {
             this._setVoiceStatus("Speaking (Web TTS)…");
             await this._speakBrowserFallback(content);
             if (generation === this._speakGeneration) {
@@ -1286,12 +1843,14 @@ class AgentInterface {
             return;
         }
         const gemini = this._isGeminiProvider();
-        const chunks = gemini
+        const chunks = gemini || telnyx
             ? [this._cleanSpeechText(content)].filter(Boolean)
             : typeof window.GroqTts?.splitInput === "function"
               ? window.GroqTts.splitInput(content)
               : [content];
         if (!chunks.length) return;
+        const voice = telnyx ? this._telnyxVoice() : this._ttsVoice;
+        const provider = gemini ? "Gemini" : telnyx ? "Telnyx" : "Groq";
         let usedBrowserFallback = false;
         try {
             this._apiKey = this._keyInput ? String(this._keyInput.value || "").trim() : this._apiKey;
@@ -1300,31 +1859,25 @@ class AgentInterface {
                 const chunk = chunks[i];
                 const partLabel =
                     chunks.length > 1 ? ` (${i + 1}/${chunks.length})` : "";
-                this._setVoiceStatus(
-                    gemini
-                        ? `Gemini TTS (${this._ttsVoice})…`
-                        : `Groq TTS (${this._ttsVoice})${partLabel}…`
-                );
+                this._setVoiceStatus(`${provider} TTS (${voice})${partLabel}…`);
                 const blob = await this.synthesizeSpeechBlob(chunk, { voice: this._ttsVoice });
                 if (generation !== this._speakGeneration) return;
                 await this._playSpeechBlob(blob, chunk, generation, {
                     speakingLabel: gemini
-                        ? `Speaking (Gemini ${this._ttsVoice})…`
-                        : `Speaking (${this._ttsVoice})${partLabel}…`,
+                        ? `Speaking (Gemini ${voice})…`
+                        : `Speaking (${voice})${partLabel}…`,
                     idleLabel: gemini
                         ? "Gemini TTS (AI Studio)."
-                        : "Groq Orpheus TTS (uses API credits).",
-                    playLabel: gemini
-                        ? `Gemini TTS (${this._ttsVoice})`
-                        : `Groq TTS (${this._ttsVoice})${partLabel}`
+                        : telnyx
+                          ? "Telnyx speech (your key)."
+                          : "Groq Orpheus TTS (uses API credits).",
+                    playLabel: `${provider} TTS (${voice})${partLabel}`
                 });
             }
         } catch (err) {
             console.warn("TTS error, falling back to browser speechSynthesis:", err);
             if (generation !== this._speakGeneration) return;
-            this._setVoiceStatus(
-                `${gemini ? "Gemini" : "Groq"} TTS failed — using browser voice. (${err?.message || err})`
-            );
+            this._setVoiceStatus(`${provider} TTS failed — using browser voice. (${err?.message || err})`);
             usedBrowserFallback = true;
             await this._speakBrowserFallback(content);
         } finally {
@@ -1356,23 +1909,8 @@ class AgentInterface {
         if (showPtt) this._setPttState("talking");
         this._setVoiceStatus(labels.speakingLabel);
         window.__phonebotTtsSpeaking = true;
-        const playTimeoutMs = 60000;
         try {
-            await Promise.race([
-                player.playBlob(blob, labels.playLabel),
-                new Promise((_, reject) => {
-                    const arm = () =>
-                        setTimeout(async () => {
-                            if (this.robot?.isPaused?.()) {
-                                await this.robot.whenResumed();
-                                arm();
-                                return;
-                            }
-                            reject(new Error(`TTS playback timed out after ${playTimeoutMs / 1000}s.`));
-                        }, playTimeoutMs);
-                    arm();
-                })
-            ]);
+            await this._withPlaybackTimeout(player.playBlob(blob, labels.playLabel));
         } finally {
             window.__phonebotTtsSpeaking = false;
             if (generation === this._speakGeneration) {
@@ -1380,6 +1918,30 @@ class AgentInterface {
                 if (showPtt) this._armConversationPtt();
             }
         }
+    }
+
+    /** Rejects if playback runs past a minute; time spent with the robot paused doesn't count. */
+    _withPlaybackTimeout(playback, timeoutMs = 60000) {
+        let timer = null;
+        let settled = false;
+        const timeout = new Promise((_, reject) => {
+            const arm = () => {
+                if (settled) return;
+                timer = setTimeout(async () => {
+                    if (this.robot?.isPaused?.()) {
+                        await this.robot.whenResumed();
+                        arm();
+                        return;
+                    }
+                    reject(new Error(`TTS playback timed out after ${timeoutMs / 1000}s.`));
+                }, timeoutMs);
+            };
+            arm();
+        });
+        return Promise.race([playback, timeout]).finally(() => {
+            settled = true;
+            clearTimeout(timer);
+        });
     }
 
     async _speakProvidedAudioBlob(audioBlob, spokenText, generation) {
@@ -1743,6 +2305,10 @@ class AgentInterface {
         }
         this._pttFinishToken += 1;
         this._pttFinishing = false;
+        if (this._telnyxTurn) {
+            this._telnyxTurn.cancel();
+            this._telnyxTurn = null;
+        }
         if (this._pttMediaRecorder && this._pttMediaRecorder.state !== "inactive") {
             try {
                 this._pttMediaRecorder.stop();
@@ -1766,7 +2332,8 @@ class AgentInterface {
         if (this._pttRecording) return;
         if (!this._pttCanInteract() && !this._pttWaitResolve) return;
         try {
-            await this._startPttRecording();
+            if (this._usesTelnyxStreamTurn()) await this._startTelnyxStreamTurn();
+            else await this._startPttRecording();
         } catch (err) {
             console.error("PTT recording start failed:", err);
             this._abortPttRecording();
@@ -1780,6 +2347,10 @@ class AgentInterface {
 
     async _onPttPointerUp(_ev) {
         if (!this._pttRecording || this._pttFinishing) return;
+        if (this._telnyxTurn) {
+            await this._finishTelnyxStreamTurn();
+            return;
+        }
         const blob = await this._finishPttRecording();
         const waitResolve = this._pttWaitResolve;
         if (typeof waitResolve === "function") {
@@ -1792,6 +2363,275 @@ class AgentInterface {
             void this._handleConversationPttBlob(blob);
         } else if (this._usesPttInput()) {
             this._armConversationPtt();
+        }
+    }
+
+    /** Telnyx hold-to-talk streams the whole turn through the Worker instead of recording a clip. */
+    _usesTelnyxStreamTurn() {
+        return (
+            this._isTelnyxProvider() &&
+            this._isConversationMode() &&
+            this._agentEnabled &&
+            !this._pttWaitResolve
+        );
+    }
+
+    /** Must not await before `turn.open()`: the microphone's audio context is created inside the press. */
+    async _startTelnyxStreamTurn() {
+        const key = this._clientApiKey();
+        if (!key) throw new Error("Enter your Telnyx API key in the agent panel first.");
+        if (typeof window.TelnyxStreamTurn !== "function") {
+            throw new Error("Telnyx streaming didn't load (telnyxVoice.js).");
+        }
+        const stt = this._telnyxSttChoices();
+        if (!stt.length) {
+            throw new Error(
+                `No Telnyx streaming speech-to-text model is available${this._telnyxListError ? `: ${this._telnyxListError}` : "."} Click Refresh Telnyx lists.`
+            );
+        }
+        this._abortPttRecording();
+        const turn = new window.TelnyxStreamTurn({
+            key,
+            stt,
+            voice: this._telnyxVoiceChoices(),
+            speak: !!this._voiceOn,
+            onPartial: (text) => {
+                if (this._telnyxTurn !== turn || !text || !this._statusEl) return;
+                this._statusEl.textContent = `Heard: ${text}`;
+                this._statusEl.className = "muted";
+            },
+            onError: (err) => {
+                if (this._statusEl) {
+                    this._statusEl.textContent = err?.message || "Telnyx stream failed.";
+                    this._statusEl.className = "error";
+                }
+                // Still holding: drop the turn now. After release the running turn handles it.
+                if (this._telnyxTurn === turn && this._pttRecording && !this._pttFinishing) {
+                    this._abortPttRecording();
+                    this._armConversationPtt();
+                }
+            }
+        });
+        this._telnyxTurn = turn;
+        this._pttRecording = true;
+        this._pttRecordStartedAt = Date.now();
+        this._setPttState("listening");
+        this._pttMaxTimer = setTimeout(() => {
+            void this._onPttPointerUp({ type: "maxduration" });
+        }, AgentInterface.PTT_MAX_RECORD_MS);
+        await turn.open();
+    }
+
+    async _finishTelnyxStreamTurn() {
+        const turn = this._telnyxTurn;
+        if (!turn || this._pttFinishing) return;
+        this._pttFinishing = true;
+        const finishToken = ++this._pttFinishToken;
+        if (this._pttMaxTimer) {
+            clearTimeout(this._pttMaxTimer);
+            this._pttMaxTimer = null;
+        }
+        const holdMs = Date.now() - (this._pttRecordStartedAt || Date.now());
+        try {
+            await new Promise((r) => setTimeout(r, AgentInterface.TELNYX_RELEASE_TAIL_MS));
+            if (finishToken !== this._pttFinishToken || this._telnyxTurn !== turn) return;
+            this._pttRecording = false;
+            this._pttRecordStartedAt = 0;
+        } finally {
+            if (finishToken === this._pttFinishToken) this._pttFinishing = false;
+        }
+        if (holdMs < AgentInterface.PTT_MIN_HOLD_MS) {
+            turn.cancel();
+            this._telnyxTurn = null;
+            this._setPttState("idle", { hint: "Didn't catch that — hold a little longer" });
+            return;
+        }
+        await this._runTelnyxStreamTurn(turn);
+    }
+
+    /**
+     * Sends the chat request as the player lets go; the Worker adds the transcript at the marker,
+     * then streams back the reply and its speech, which plays as it arrives.
+     * @param {TelnyxStreamTurn} turn
+     */
+    async _runTelnyxStreamTurn(turn) {
+        const generation = this._speakGeneration;
+        const agent = this.getSelectedAgent();
+        const voice = this._telnyxVoice(agent);
+        const player = this._getAudioPlayer();
+        const playLabel = `Telnyx (${voice})`;
+        this._sendInProgress = true;
+        this._syncSendButtonState();
+        this._setPttState("processing");
+        if (this._statusEl) {
+            this._statusEl.textContent = "Finishing the transcript…";
+            this._statusEl.className = "muted";
+        }
+        if (this._rememberInput) this._rememberKey = !!this._rememberInput.checked;
+        if (agent) this._persistKeyForAgent(agent.name, this._clientApiKey());
+
+        const gameTurn = this._beginGamePlayerTurn();
+        const textOnly = (content) =>
+            Array.isArray(content)
+                ? content.filter((p) => p?.type === "text").map((p) => p.text).join("\n\n")
+                : String(content ?? "");
+        let clipsReady = Promise.resolve();
+        let userEntry = null;
+        let reply = "";
+        let replyPushed = false;
+        const pieces = [];
+        let stream = null;
+        let playback = null;
+        const live = () => generation === this._speakGeneration && this._agentEnabled;
+        const startPlayback = async () => {
+            await clipsReady;
+            if (!live()) return;
+            if (this._isConversationMode()) this._setPttState("talking");
+            this._setVoiceStatus(`Speaking (Telnyx ${voice})…`);
+            window.__phonebotTtsSpeaking = true;
+            stream = typeof player?.startMp3Stream === "function" ? player.startMp3Stream(playLabel) : null;
+            if (!stream) return;
+            stream.done.catch((err) => console.error("Telnyx streamed playback failed:", err));
+            for (const bytes of pieces.splice(0)) stream.push(bytes);
+        };
+
+        let ok = false;
+        let done = null;
+        try {
+            const marker = `__PHONEBOT_TRANSCRIPT_${crypto.randomUUID()}__`;
+            const stateBlock = this._buildCurrentStateForIntroductionPrompt();
+            const userTemplate = this._withGameTurnInstruction(
+                this._buildUserTurnContent(stateBlock, null, marker),
+                gameTurn.text
+            );
+            const prior = this._buildPriorConversationMessages();
+            const outboundTemplate = await this._mergeIntroductionIntoFirstUserMessage(userTemplate, prior.length);
+            const messages = this._withSingleTurnReminder(
+                this._toChatTemplate(this._withSystemPrompt([...prior, { role: "user", content: outboundTemplate }]))
+            ).map((m) => ({ role: m.role, content: textOnly(m.content) }));
+            await this._loadTelnyxLists();
+            const models = this._telnyxChatModels(agent);
+            if (!models.length) {
+                throw new Error(
+                    `No Telnyx chat model is available${this._telnyxListError ? `: ${this._telnyxListError}` : "."} Click Refresh Telnyx lists.`
+                );
+            }
+            const chat = {
+                models,
+                model: models[0].id,
+                messages,
+                temperature: this._resolveTemperature(agent, models[0].id, null),
+                max_tokens: this._resolveMaxTokens(agent, messages)
+            };
+
+            done = await turn.release(
+                { chat, transcriptMarker: marker },
+                {
+                    onTranscript: (text) => {
+                        if (!live() || userEntry) return;
+                        const outboundUser = outboundTemplate.replace(marker, () => text);
+                        userEntry = {
+                            role: "user",
+                            text: prior.length ? this._withGameTurnInstruction(text, gameTurn.text) : outboundUser,
+                            fullPrompt: outboundUser,
+                            at: new Date().toISOString()
+                        };
+                        this.messageHistory.push(userEntry);
+                        this._renderHistory();
+                        this._setPttState("thinking");
+                        if (this._statusEl) {
+                            this._statusEl.textContent = `Heard: ${text} — thinking…`;
+                            this._statusEl.className = "muted";
+                        }
+                        clipsReady = gameTurn.clipsDone();
+                    },
+                    onReply: (text) => {
+                        reply = String(text || "").trim();
+                    },
+                    onAudio: (bytes) => {
+                        if (!live()) return;
+                        if (stream) stream.push(bytes);
+                        else pieces.push(bytes);
+                        if (!playback) playback = startPlayback();
+                    }
+                }
+            );
+            this._noteTelnyxModelFailures(done?.failedModels);
+            this._noteTelnyxSttFailures(done?.failedStt);
+            this._noteTelnyxVoiceFailures(done?.failedVoices);
+            this._noteTelnyxWorked("chat", done?.model);
+            this._noteTelnyxWorked("stt", done?.sttModel);
+            this._noteTelnyxWorked("voice", done?.voice);
+            if (done && userEntry && live()) {
+                reply = String(done.reply || reply).trim();
+                await clipsReady;
+                this.messageHistory.push({ role: "assistant", text: reply, at: new Date().toISOString() });
+                replyPushed = true;
+                this._renderHistory();
+                await this._maybeRunActionFromResponse(reply, reply);
+                console.info(
+                    `Telnyx stream turn (${done.sttModel || "speech-to-text not reported"}, ${done.model || "chat model not reported"}) timings (ms):`,
+                    done.timings || {},
+                    `speech retries: ${done.speechRetries || 0}`
+                );
+                ok = true;
+            }
+        } catch (err) {
+            turn.cancel();
+            if (!err?.logged) console.error("Telnyx stream turn failed:", err);
+            this._noteTelnyxModelFailures(err?.failedModels);
+            this._noteTelnyxSttFailures(err?.failedStt);
+            this._noteTelnyxVoiceFailures(err?.failedVoices);
+            if (this._statusEl) {
+                this._statusEl.textContent = err?.message || "Telnyx voice turn failed.";
+                this._statusEl.className = "error";
+            }
+            reply = String(err?.reply || reply).trim();
+            if (userEntry && !replyPushed && !reply) {
+                const at = this.messageHistory.lastIndexOf(userEntry);
+                if (at >= 0) this.messageHistory.splice(at, 1);
+                this._renderHistory();
+            } else if (userEntry && !replyPushed && reply) {
+                this.messageHistory.push({ role: "assistant", text: reply, at: new Date().toISOString() });
+                replyPushed = true;
+                this._renderHistory();
+            }
+        } finally {
+            this._sendInProgress = false;
+            this._syncSendButtonState();
+        }
+
+        try {
+            if (playback) await playback;
+            if (!live()) return;
+            if (stream) {
+                stream.end();
+                await this._withPlaybackTimeout(stream.done);
+            } else if (pieces.length && player && typeof player.playBlob === "function") {
+                await this._playSpeechBlob(new Blob(pieces.splice(0), { type: "audio/mpeg" }), reply, generation, {
+                    speakingLabel: `Speaking (Telnyx ${voice})…`,
+                    idleLabel: "Telnyx speech (your key).",
+                    playLabel
+                });
+            } else if (this._voiceOn && reply && replyPushed) {
+                if (ok) await this._speakSynthesizedAsync(reply, generation);
+                else await this._speakBrowserFallback(reply);
+            }
+        } catch (err) {
+            console.error("Telnyx reply playback failed:", err);
+            if (live() && reply) await this._speakBrowserFallback(reply);
+        } finally {
+            if (this._telnyxTurn === turn) this._telnyxTurn = null;
+            window.__phonebotTtsSpeaking = false;
+            if (generation === this._speakGeneration) {
+                this._setVoiceStatus("Telnyx speech (your key).");
+                if (ok && this._statusEl && this._agentEnabled) {
+                    this._statusEl.textContent = "Done. (Telnyx streaming turn)";
+                    this._statusEl.className = "ok";
+                }
+                if (this._agentEnabled && this._isConversationMode()) this._armConversationPtt();
+            }
+            gameTurn.finish(ok);
         }
     }
 
@@ -2356,9 +3196,9 @@ class AgentInterface {
             .join("\n\n");
     }
 
-    /** [tag] directions the active voice can perform; [] for Web TTS and Gemini. */
+    /** [tag] directions the active voice can perform; [] for Web TTS, Gemini and Telnyx. */
     _speechDirectionTags() {
-        if (this._isGeminiProvider() || this._isBrowserTtsVoice()) return [];
+        if (this._isGeminiProvider() || this._isTelnyxProvider() || this._isBrowserTtsVoice()) return [];
         const tags = window.GroqModelSelect?.ORPHEUS_ALLOWED_DIRECTIONS;
         return Array.isArray(tags) ? tags : [];
     }
@@ -2461,7 +3301,7 @@ class AgentInterface {
      * and the automatic pick keep the agent's configured temperature.
      */
     _resolveTemperature(agent, model, responseFormat) {
-        if (this._chatModelChoice && !responseFormat && this._clientApiKey()) {
+        if (this._chatModelChoice && !responseFormat && this._clientApiKey() && !this._isTelnyxProvider(agent)) {
             const tuned = AgentInterface.MODEL_TEMPERATURES.find((t) => t.match.test(String(model || "")));
             if (tuned) return tuned.temperature;
         }
@@ -2957,11 +3797,16 @@ class AgentInterface {
             });
         }
 
+        if (this._isTelnyxProvider(agent)) await this._loadTelnyxLists();
         const model = this._resolveModel(agent, {
             wantVision: sendCameraImage || this._messagesIncludeVisionImage(conversationMessages)
         });
         if (!model) {
-            throw new Error("Set a model on the agent or pick a chat model.");
+            throw new Error(
+                this._isTelnyxProvider(agent)
+                    ? `No Telnyx chat model is available${this._telnyxListError ? `: ${this._telnyxListError}` : "."} Click Refresh Telnyx lists.`
+                    : "Set a model on the agent or pick a chat model."
+            );
         }
         if (
             this._messagesIncludeVisionImage(conversationMessages) &&
@@ -2984,11 +3829,13 @@ class AgentInterface {
                   ? this.config.chatResponseFormat
                   : null;
 
+        const telnyx = this._isTelnyxProvider(agent);
         const streamReply =
+            !telnyx &&
             !hostedArcadeChat &&
             !responseFormat &&
             typeof window.GroqChatRecover?.readChatCompletionStream === "function";
-        const reasoningEffort = this._resolveReasoningEffort(agent, model, options.reasoningEffort);
+        const reasoningEffort = telnyx ? null : this._resolveReasoningEffort(agent, model, options.reasoningEffort);
         const body = {
             model,
             messages: responseFormat ? conversationMessages : this._withSingleTurnReminder(conversationMessages),
@@ -3019,62 +3866,95 @@ class AgentInterface {
             }
         }
 
-        const controller = typeof AbortController === "function" ? new AbortController() : null;
-        const timeoutMs = 90000;
-        const timeoutId =
-            controller &&
-            setTimeout(() => {
+        const send = async (model) => {
+            const controller = typeof AbortController === "function" ? new AbortController() : null;
+            const timeoutMs = telnyx ? 30000 : 90000;
+            const timeoutId =
+                controller &&
+                setTimeout(() => {
+                    try {
+                        controller.abort();
+                    } catch (_) {}
+                }, timeoutMs);
+            let res;
+            try {
+                res = hostedArcadeChat
+                    ? await window.playBilling.fetchHostedChat(body, controller?.signal)
+                    : await fetch(url, {
+                          method: String(agent.method || "POST").toUpperCase(),
+                          headers,
+                          body: JSON.stringify(body),
+                          signal: controller?.signal
+                      });
+                if (await window.playBilling?.handlePaymentRequired?.(res, this._billingContext())) {
+                    this._billingPaused = true;
+                    throw AgentInterface._creditRequiredError("AI budget used. Pay to continue.");
+                }
+            } catch (err) {
+                if (err?.name === "AbortError") {
+                    throw new Error(`Request timed out after ${Math.round(timeoutMs / 1000)}s.`);
+                }
+                throw err;
+            } finally {
+                if (timeoutId) clearTimeout(timeoutId);
+            }
+
+            if (!res.ok) {
+                return this._chatErrorReply(res.status, await res.text(), model);
+            }
+            if (body.stream && res.body && /text\/event-stream/i.test(res.headers.get("Content-Type") || "")) {
+                const streamed = await window.GroqChatRecover.readChatCompletionStream(res, model);
+                if (streamed.errorText) return this._chatErrorReply(400, streamed.errorText, model);
+                if (streamed.cut) {
+                    console.warn("AgentInterface: model started a second message; kept only the first reply.", {
+                        model: streamed.json.model,
+                        requestId: streamed.json.x_groq?.id,
+                        reasoning: streamed.json.choices[0].message.reasoning
+                    });
+                }
+                return this._chatReplyFromJson(streamed.json, JSON.stringify(streamed.json));
+            }
+
+            const rawText = await res.text();
+            let json;
+            try {
+                json = JSON.parse(rawText);
+            } catch (_) {
+                throw new Error("Response was not JSON.");
+            }
+            return this._chatReplyFromJson(json, rawText);
+        };
+
+        if (!telnyx) return await send(model);
+        return await this._sendTelnyxChatWithFallback(agent, body, send);
+    }
+
+    /**
+     * Tries the Telnyx chat models in order until one replies. Key, credit and rate-limit errors
+     * stop straight away: another model would fail the same way.
+     */
+    async _sendTelnyxChatWithFallback(agent, body, send) {
+        const models = this._telnyxChatModels(agent);
+        const failed = [];
+        try {
+            for (const [i, m] of models.entries()) {
+                body.model = m.id;
+                if (m.thinkingOff) body.chat_template_kwargs = { enable_thinking: false };
+                else delete body.chat_template_kwargs;
                 try {
-                    controller.abort();
-                } catch (_) {}
-            }, timeoutMs);
-        let res;
-        try {
-            res = hostedArcadeChat
-                ? await window.playBilling.fetchHostedChat(body, controller?.signal)
-                : await fetch(url, {
-                      method: String(agent.method || "POST").toUpperCase(),
-                      headers,
-                      body: JSON.stringify(body),
-                      signal: controller?.signal
-                  });
-            if (await window.playBilling?.handlePaymentRequired?.(res, this._billingContext())) {
-                this._billingPaused = true;
-                throw AgentInterface._creditRequiredError("AI budget used. Pay to continue.");
+                    const result = await send(m.id);
+                    this._noteTelnyxWorked("chat", m.id);
+                    return result;
+                } catch (err) {
+                    if (i === models.length - 1 || /^HTTP (401|402|403|429)\b/.test(String(err?.message))) throw err;
+                    console.error(`Telnyx chat model ${m.id} failed; trying the next one.`, err);
+                    failed.push(m.id);
+                }
             }
-        } catch (err) {
-            if (err?.name === "AbortError") {
-                throw new Error(`Request timed out after ${Math.round(timeoutMs / 1000)}s.`);
-            }
-            throw err;
         } finally {
-            if (timeoutId) clearTimeout(timeoutId);
+            this._noteTelnyxModelFailures(failed);
         }
-
-        if (!res.ok) {
-            return this._chatErrorReply(res.status, await res.text(), model);
-        }
-        if (body.stream && res.body && /text\/event-stream/i.test(res.headers.get("Content-Type") || "")) {
-            const streamed = await window.GroqChatRecover.readChatCompletionStream(res, model);
-            if (streamed.errorText) return this._chatErrorReply(400, streamed.errorText, model);
-            if (streamed.cut) {
-                console.warn("AgentInterface: model started a second message; kept only the first reply.", {
-                    model: streamed.json.model,
-                    requestId: streamed.json.x_groq?.id,
-                    reasoning: streamed.json.choices[0].message.reasoning
-                });
-            }
-            return this._chatReplyFromJson(streamed.json, JSON.stringify(streamed.json));
-        }
-
-        const rawText = await res.text();
-        let json;
-        try {
-            json = JSON.parse(rawText);
-        } catch (_) {
-            throw new Error("Response was not JSON.");
-        }
-        return this._chatReplyFromJson(json, rawText);
+        throw new Error("No Telnyx chat model is available. Click Refresh Telnyx lists.");
     }
 
     /** `{ rawText, json, contentText }` for a chat completion; throws when it has no content. */
@@ -4434,6 +5314,9 @@ class AgentInterface {
         this._syncVoiceUiForSelectedAgent();
         this._syncAiBudgetUi();
         this._syncChatModelUi();
+        this._renderTelnyxOptions();
+        this._syncTelnyxUi();
+        if (this._isTelnyxProvider()) void this._loadTelnyxLists();
     }
 
     buildGUI(container) {
@@ -4486,6 +5369,11 @@ class AgentInterface {
             this._syncChatModelUi();
             if (this._apiKey) void this.ensureSessionGroqModels();
             this._schedulePendingResumeForKey();
+            clearTimeout(this._telnyxListsTimer);
+            this._syncTelnyxUi();
+            if (this._isTelnyxProvider()) {
+                this._telnyxListsTimer = setTimeout(() => void this._loadTelnyxLists(), 600);
+            }
         });
 
         const clearKeyBtn = document.createElement("button");
@@ -4495,6 +5383,7 @@ class AgentInterface {
         clearKeyBtn.addEventListener("click", () => {
             keyInput.value = "";
             this._apiKey = "";
+            if (this._isTelnyxProvider()) this._telnyxSessionKey = "";
             const agent = this.getSelectedAgent();
             if (agent) this._persistKeyForAgent(agent.name, "");
             this._sessionModels = null;
@@ -4502,6 +5391,7 @@ class AgentInterface {
             this._syncVoiceUiForSelectedAgent();
             this._syncAiBudgetUi();
             this._syncChatModelUi();
+            this._syncTelnyxUi();
             void this.ensureSessionGroqModels();
             if (this._statusEl) {
                 this._statusEl.className = "muted";
@@ -4545,6 +5435,33 @@ class AgentInterface {
         chatModelRow.appendChild(chatModelSelect);
         chatModelRow.appendChild(chatModelRefreshBtn);
         chatModelRow.appendChild(chatModelHint);
+
+        const telnyxRow = document.createElement("div");
+        telnyxRow.hidden = true;
+        const telnyxSelect = (id, text, kind) => {
+            const label = document.createElement("label");
+            label.textContent = text;
+            label.htmlFor = id;
+            const select = document.createElement("select");
+            select.id = id;
+            select.style.width = "100%";
+            select.addEventListener("change", () => this._setTelnyxChoice(kind, select.value));
+            telnyxRow.appendChild(label);
+            telnyxRow.appendChild(select);
+            return select;
+        };
+        const telnyxSttSelect = telnyxSelect("robotAgentTelnyxStt", "Speech-to-text (streaming)", "stt");
+        const telnyxChatSelect = telnyxSelect("robotAgentTelnyxChat", "Chat model", "chat");
+        const telnyxVoiceSelect = telnyxSelect("robotAgentTelnyxVoice", "Voice (streaming)", "voice");
+        const telnyxRefreshBtn = document.createElement("button");
+        telnyxRefreshBtn.type = "button";
+        telnyxRefreshBtn.textContent = "Refresh Telnyx lists";
+        telnyxRefreshBtn.addEventListener("click", () => void this._loadTelnyxLists({ force: true }));
+        const telnyxHint = document.createElement("p");
+        telnyxHint.className = "muted";
+        telnyxHint.style.margin = "4px 0 0";
+        telnyxRow.appendChild(telnyxRefreshBtn);
+        telnyxRow.appendChild(telnyxHint);
 
         const voiceWrap = document.createElement("label");
         voiceWrap.style.display = "flex";
@@ -4677,6 +5594,7 @@ class AgentInterface {
         controls.appendChild(clearKeyBtn);
         controls.appendChild(rememberWrap);
         controls.appendChild(chatModelRow);
+        controls.appendChild(telnyxRow);
         controls.appendChild(aiBudget);
         controls.appendChild(voiceWrap);
         controls.appendChild(voiceSelectLabel);
@@ -4713,6 +5631,12 @@ class AgentInterface {
         this._chatModelRefreshBtn = chatModelRefreshBtn;
         this._chatModelHintEl = chatModelHint;
         this._renderChatModelOptions();
+        this._telnyxRow = telnyxRow;
+        this._telnyxSttSelect = telnyxSttSelect;
+        this._telnyxChatSelect = telnyxChatSelect;
+        this._telnyxVoiceSelect = telnyxVoiceSelect;
+        this._telnyxRefreshBtn = telnyxRefreshBtn;
+        this._telnyxHintEl = telnyxHint;
         this._templateSelect = templateSelect;
         this._insertTemplateBtn = insertTemplateBtn;
         this._promptInput = promptInput;
@@ -4729,7 +5653,9 @@ class AgentInterface {
         // Browsers restore form values after load; re-assert what we actually stored.
         requestAnimationFrame(() => {
             this._syncKeyFromSelection();
-            if (this._clientApiKey() && !this._isGeminiProvider()) void this.ensureSessionGroqModels();
+            if (this._clientApiKey() && !this._isGeminiProvider() && !this._isTelnyxProvider()) {
+                void this.ensureSessionGroqModels();
+            }
         });
         this._syncVoiceUiForSelectedAgent();
         this._syncAiBudgetUi();
@@ -4744,6 +5670,8 @@ class AgentInterface {
             window.playBilling.setPasswordHandler(null);
         }
         clearTimeout(this._pendingKeyTimer);
+        clearTimeout(this._telnyxListsTimer);
+        this._telnyxListsToken += 1;
         this._pendingSend = null;
         if (this._containerEl && this._containerEl.parentNode) {
             this._containerEl.parentNode.removeChild(this._containerEl);
@@ -4761,6 +5689,12 @@ class AgentInterface {
         this._chatModelSelect = null;
         this._chatModelRefreshBtn = null;
         this._chatModelHintEl = null;
+        this._telnyxRow = null;
+        this._telnyxSttSelect = null;
+        this._telnyxChatSelect = null;
+        this._telnyxVoiceSelect = null;
+        this._telnyxRefreshBtn = null;
+        this._telnyxHintEl = null;
         this._templateSelect = null;
         this._insertTemplateBtn = null;
         this._promptInput = null;

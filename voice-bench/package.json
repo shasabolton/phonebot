@@ -1,0 +1,13 @@
+{
+  "name": "phonebot-voice-bench",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "check": "wrangler deploy --dry-run --outdir .wrangler-dist"
+  },
+  "devDependencies": {
+    "wrangler": "^4.123.0"
+  }
+}

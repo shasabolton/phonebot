@@ -11,6 +11,8 @@
  * @property {string} name
  * @property {string} bio Prompt sent as a system message on every AI turn while active.
  * @property {string} voice TTS voice id; "" keeps whatever voice is selected.
+ * @property {"male"|"female"|""} voiceGender The voice's gender, so a voice of the same gender can
+ *   stand in when the voice isn't available (another provider, or retired).
  * @property {object|null} voiceFx Effects on everything the character plays (see voiceFx.js);
  *   null = none.
  * @property {CharacterGame[]} games The character's own games, in dashboard order.
@@ -173,6 +175,7 @@ class PhonebotCharacters {
             name,
             bio: String(raw.bio || "").trim(),
             voice: String(raw.voice || "").trim(),
+            voiceGender: ["male", "female"].includes(raw.voiceGender) ? raw.voiceGender : "",
             voiceFx: window.PhonebotVoiceFx?.forProfile(raw.voiceFx) || null,
             games,
             builtInGames: [...new Set(builtInGames)],
@@ -655,6 +658,7 @@ class PhonebotCharacters {
             name: character.name,
             bio: character.bio,
             voice: character.voice,
+            ...(character.voiceGender ? { voiceGender: character.voiceGender } : {}),
             ...(character.voiceFx ? { voiceFx: { ...character.voiceFx } } : {}),
             games: (character.games || []).map((g) => ({ id: g.id, name: g.name })),
             builtInGames: [...(character.builtInGames || [])],
@@ -717,6 +721,32 @@ class PhonebotCharacters {
  */
 class CharactersPanel {
     static VOICE_TEST_PHRASE = "This is a test of how my voice sounds with these effects.";
+    /** Search words that mean a gender; "male" would otherwise also match "female". */
+    static GENDER_WORDS = Object.freeze({
+        male: "male", man: "male", men: "male", boy: "male", guy: "male", masculine: "male",
+        female: "female", woman: "female", women: "female", girl: "female", lady: "female", feminine: "female"
+    });
+
+    /**
+     * Voice search: every word must match. Gender words match the voice's gender, other words any
+     * part of its searchable text.
+     * @param {string} query
+     * @returns {(voice: { text: string, gender?: string }) => boolean}
+     */
+    static voiceMatcher(query) {
+        const words = String(query || "").toLowerCase().split(/\s+/).filter(Boolean);
+        const genderOf = (g) => {
+            const v = String(g || "").trim().toLowerCase();
+            return v.startsWith("f") || v.startsWith("w") ? "female" : v.startsWith("m") ? "male" : v;
+        };
+        return (voice) => {
+            const text = String(voice.text || "").toLowerCase();
+            return words.every((word) => {
+                const gender = CharactersPanel.GENDER_WORDS[word];
+                return gender ? genderOf(voice.gender) === gender : text.includes(word);
+            });
+        };
+    }
 
     /**
      * @param {object} robot needs `getCharacterGameOptions()`, `editCustomGame()` and
@@ -1105,15 +1135,102 @@ class CharactersPanel {
         bioLabel.appendChild(bioInput);
 
         const voiceLabel = label("Voice");
+        const voiceSearch = document.createElement("input");
+        voiceSearch.type = "search";
+        voiceSearch.className = "custom-messages-game-meta-name-input";
+        voiceSearch.placeholder = "Search voices, e.g. female en-GB, minimax male, Kokoro";
+        voiceSearch.autocomplete = "off";
+        voiceSearch.setAttribute("aria-label", "Search voices");
         const voiceSelect = document.createElement("select");
         voiceSelect.className = "custom-messages-game-meta-name-input";
-        for (const v of PhonebotCharacters.voiceOptions()) {
-            const opt = document.createElement("option");
-            opt.value = v.id;
-            opt.textContent = v.label;
-            voiceSelect.appendChild(opt);
-        }
+        voiceLabel.appendChild(voiceSearch);
         voiceLabel.appendChild(voiceSelect);
+        const voiceHint = hint("");
+        const Telnyx = window.TelnyxVoice;
+        const getAgent = () => this.robot?.agentInterface || null;
+        const telnyxKey = () => getAgent()?.telnyxApiKey?.() || "";
+        /** Voices on the player's Telnyx key, grouped by provider after the Groq voices. */
+        let telnyxVoices = [];
+        /** Search results as "shown of total", for the hint. */
+        let voiceCounts = null;
+        /** "male", "female" or "" for a voice in the Groq catalog or the Telnyx list. */
+        const voiceGenderOf = (id) => {
+            const groq = PhonebotCharacters.voiceOptions().find((v) => v.id === id);
+            const raw = telnyxVoices.find((v) => v.id === id)?.gender || (groq && (/♂/.test(groq.label) ? "male" : /♀/.test(groq.label) ? "female" : ""));
+            const g = String(raw || "").trim().toLowerCase();
+            return g.startsWith("f") || g.startsWith("w") ? "female" : g.startsWith("m") ? "male" : "";
+        };
+        const renderVoices = (wanted = voiceSelect.value) => {
+            const matches = CharactersPanel.voiceMatcher(voiceSearch.value);
+            const shown = (voice) => voice.id === wanted || matches(voice);
+            const names = Telnyx?.PROVIDER_NAMES || {};
+            const [keep, ...groqVoices] = PhonebotCharacters.voiceOptions().map((v, i) => ({
+                ...v,
+                text: `${v.label} ${v.id} ${i ? "groq" : ""}`,
+                gender: /♂/.test(v.label) ? "male" : /♀/.test(v.label) ? "female" : ""
+            }));
+            const telnyx = telnyxVoices.map((v) => ({
+                ...v,
+                text: [v.name, v.id, v.language, v.accent, v.age, names[v.provider] || v.provider, "telnyx"].join(" ")
+            }));
+            const groqShown = groqVoices.filter(shown);
+            const telnyxShown = telnyx.filter(shown);
+            voiceCounts = voiceSearch.value.trim()
+                ? { shown: groqShown.length + telnyxShown.length, total: groqVoices.length + telnyx.length }
+                : null;
+            const add = (parent, value, text, title) => {
+                const opt = document.createElement("option");
+                opt.value = value;
+                opt.textContent = text;
+                if (title) opt.title = title;
+                parent.appendChild(opt);
+            };
+            const group = (text) => {
+                const el = document.createElement("optgroup");
+                el.label = text;
+                voiceSelect.appendChild(el);
+                return el;
+            };
+            voiceSelect.replaceChildren();
+            add(voiceSelect, keep.id, keep.label);
+            if (groqShown.length) {
+                const groq = group("Groq and browser voices");
+                for (const v of groqShown) add(groq, v.id, v.label);
+            }
+            const groups = new Map();
+            for (const v of telnyxShown) {
+                if (!groups.has(v.provider)) {
+                    groups.set(v.provider, group(`Telnyx: ${names[v.provider] || v.provider} voices`));
+                }
+                const details = [v.language, v.accent, v.age, v.gender].filter(Boolean).join(", ");
+                add(groups.get(v.provider), v.id, details ? `${v.name} (${details})` : v.name, v.id);
+            }
+            if (wanted && ![...voiceSelect.options].some((o) => o.value === wanted)) {
+                add(voiceSelect, wanted, wanted);
+            }
+            voiceSelect.value = wanted;
+        };
+        renderVoices("");
+        voiceSearch.addEventListener("input", () => {
+            renderVoices();
+            syncVoiceHint();
+        });
+        const syncVoiceHint = () => {
+            if (voiceCounts) {
+                voiceHint.textContent = voiceCounts.shown
+                    ? `Showing ${voiceCounts.shown} of ${voiceCounts.total} voices. Voices only have a name, language and gender to search, so words like "kind" or "old" won't match; use Design a Telnyx voice for those.`
+                    : `No voices match. Search by name, language (en-GB), gender (male, woman) or provider (minimax, azure).`;
+                return;
+            }
+            if (!Telnyx) return;
+            const telnyxPicked = Telnyx.isVoiceId(voiceSelect.value);
+            voiceHint.textContent = !telnyxKey()
+                ? "For Telnyx voices, select the Telnyx agent and enter your Telnyx API key, then reopen this editor."
+                : telnyxPicked
+                  ? "Telnyx voices speak while the Telnyx agent is selected. With Groq the character keeps the Groq voice."
+                  : `${telnyxVoices.length} Telnyx voices from your account are in the list.`;
+        };
+        voiceSelect.addEventListener("change", syncVoiceHint);
 
         const Fx = window.PhonebotVoiceFx;
         let fx = Fx ? Fx.normalize(null) : null;
@@ -1184,6 +1301,7 @@ class CharactersPanel {
             try {
                 blob = await makeBlob();
             } catch (err) {
+                console.error("Voice test clip failed:", err);
                 if (run === testRun) fxStatus.textContent = err?.message || "Could not make the test clip.";
                 return;
             }
@@ -1196,36 +1314,191 @@ class CharactersPanel {
                 await player.playBlob(blob, label);
                 if (run === testRun) fxStatus.textContent = "";
             } catch (err) {
+                console.error("Voice test playback failed:", err);
                 if (run === testRun) fxStatus.textContent = `Could not play: ${err?.message || err}`;
             } finally {
                 if (run === testRun) testPlaying = null;
             }
         };
+        const testTextLabel = label("Test sentence");
+        const testTextInput = document.createElement("input");
+        testTextInput.type = "text";
+        testTextInput.className = "custom-messages-game-meta-name-input";
+        testTextInput.value = CharactersPanel.VOICE_TEST_PHRASE;
+        testTextInput.maxLength = 500;
+        testTextLabel.appendChild(testTextInput);
+        const testText = () => testTextInput.value.trim() || CharactersPanel.VOICE_TEST_PHRASE;
+
         const listenBtn = button("Listen to voice", "secondary", () => {
-            const agent = this.robot?.agentInterface;
+            const agent = getAgent();
             const voice = voiceSelect.value;
+            const text = testText();
+            const clipKey = `${voice}|${text}`;
             void playTest(async () => {
-                if (voice && testClips.has(voice)) return testClips.get(voice);
+                if (voice && testClips.has(clipKey)) return testClips.get(clipKey);
                 if (typeof agent?.synthesizeSpeechFile !== "function") {
                     throw new Error("This robot has no TTS to test with.");
                 }
                 listenBtn.disabled = true;
                 fxStatus.textContent = "Making the test clip…";
                 try {
-                    const blob = await agent.synthesizeSpeechFile(CharactersPanel.VOICE_TEST_PHRASE, {
-                        voice
-                    });
-                    if (voice) testClips.set(voice, blob);
+                    const blob = await agent.synthesizeSpeechFile(text, { voice });
+                    if (voice) testClips.set(clipKey, blob);
                     return blob;
                 } finally {
                     listenBtn.disabled = false;
                 }
             }, "Voice test");
         });
-        listenBtn.title = `Say “${CharactersPanel.VOICE_TEST_PHRASE}” with this voice and these effects`;
+        listenBtn.title = "Say the test sentence with this voice and these effects";
         const listenActions = document.createElement("div");
         listenActions.className = "custom-messages-actions";
         listenActions.appendChild(listenBtn);
+
+        const designSection = document.createElement("details");
+        designSection.className = "characters-fx";
+        designSection.hidden = !Telnyx;
+        const designSummary = document.createElement("summary");
+        designSummary.className = "custom-messages-game-meta-label";
+        designSummary.textContent = "Design a Telnyx voice";
+        const designBody = document.createElement("div");
+        designBody.className = "characters-fx-body";
+        const designPromptLabel = label("Voice description");
+        const designPrompt = document.createElement("textarea");
+        designPrompt.className = "custom-messages-text";
+        designPrompt.maxLength = 2000;
+        designPrompt.placeholder =
+            "Male, early forties, Australian accent. Warm, relaxed and slightly gravelly. Speaks at an easy pace with a smile in his voice.";
+        designPromptLabel.appendChild(designPrompt);
+        const picker = (text, choices) => {
+            const el = label(text);
+            const select = document.createElement("select");
+            select.className = "custom-messages-game-meta-name-input";
+            for (const [value, optionText] of choices) {
+                const opt = document.createElement("option");
+                opt.value = value;
+                opt.textContent = optionText;
+                select.appendChild(opt);
+            }
+            el.appendChild(select);
+            return { label: el, select };
+        };
+        const { label: designProviderLabel, select: designProvider } = picker(
+            "Voice model",
+            (Telnyx?.DESIGN_PROVIDERS || []).map((p) => [p.id, p.label])
+        );
+        const { label: designGenderLabel, select: designGender } = picker("Gender tag (needed to save)", [
+            ["female", "Female"],
+            ["male", "Male"],
+            ["neutral", "Neutral"]
+        ]);
+        const designStatus = hint(
+            "Describe the voice and generate a sample; it reads the test sentence below. Adjust the description and " +
+                "generate again until it sounds right (each try is a new version of the same design), then save it. " +
+                "Saved voices stay on your Telnyx account. Telnyx may charge for each sample."
+        );
+        /** The design being iterated on: { id, version, provider, sample, saved }. */
+        let design = null;
+        let designBusy = false;
+        const designActions = document.createElement("div");
+        designActions.className = "custom-messages-actions";
+        const syncDesign = () => {
+            const hasKey = !!telnyxKey();
+            generateBtn.disabled = designBusy || !hasKey;
+            replayBtn.disabled = designBusy || !design;
+            saveDesignBtn.disabled = designBusy || !hasKey || !design || design.saved;
+        };
+        const generateBtn = button("Generate sample", "secondary", async () => {
+            const key = telnyxKey();
+            if (!key) {
+                designStatus.textContent = "Select the Telnyx agent and enter your Telnyx API key first.";
+                return;
+            }
+            const provider = designProvider.value;
+            const continuing = design && design.provider === provider;
+            designBusy = true;
+            syncDesign();
+            designStatus.textContent = "Telnyx is generating the sample voice (this can take several seconds)…";
+            try {
+                const result = await Telnyx.designVoice(key, {
+                    prompt: designPrompt.value,
+                    text: testText(),
+                    provider,
+                    voiceDesignId: continuing ? design.id : null,
+                    name: nameInput.value.trim() || "phonebot voice"
+                });
+                design = { ...result, saved: false };
+                designStatus.textContent =
+                    `Version ${result.version} of this design (not saved yet). Change the description and generate ` +
+                    "again to try another version, or save this one.";
+                void playTest(async () => result.sample, "Voice design sample");
+            } catch (err) {
+                console.error("Telnyx voice design failed:", err);
+                designStatus.textContent = `Could not generate the voice: ${err?.message || err}`;
+            } finally {
+                designBusy = false;
+                syncDesign();
+            }
+        });
+        const replayBtn = button("Play sample again", "secondary", () => {
+            if (design) void playTest(async () => design.sample, "Voice design sample");
+        });
+        const saveDesignBtn = button("Save as this character's voice", "secondary", async () => {
+            const key = telnyxKey();
+            if (!design || !key) return;
+            designBusy = true;
+            syncDesign();
+            designStatus.textContent = `Saving version ${design.version} as a voice on your Telnyx account…`;
+            try {
+                const voice = await Telnyx.saveDesignedVoice(key, {
+                    voiceDesignId: design.id,
+                    version: design.version,
+                    provider: design.provider,
+                    gender: designGender.value,
+                    name: nameInput.value.trim()
+                });
+                design.saved = true;
+                getAgent()?.addTelnyxVoice?.(voice);
+                if (!telnyxVoices.some((v) => v.id === voice.id)) telnyxVoices = [voice, ...telnyxVoices];
+                renderVoices(voice.id);
+                syncVoiceHint();
+                designStatus.textContent =
+                    `Saved as “${voice.name}” (${voice.id}) and picked as this character's voice. Click Done to keep it.`;
+            } catch (err) {
+                console.error("Telnyx voice save failed:", err);
+                designStatus.textContent = `Could not save the voice: ${err?.message || err}`;
+            } finally {
+                designBusy = false;
+                syncDesign();
+            }
+        });
+        const newDesignBtn = button("Start a new design", "secondary", () => {
+            design = null;
+            designStatus.textContent = "Starting fresh: the next sample creates a new design.";
+            syncDesign();
+        });
+        designActions.append(generateBtn, replayBtn, saveDesignBtn, newDesignBtn);
+        designBody.append(designPromptLabel, designProviderLabel, designGenderLabel, designActions, designStatus);
+        designSection.append(designSummary, designBody);
+        syncDesign();
+
+        const loadTelnyxVoices = async () => {
+            const agent = getAgent();
+            if (!Telnyx || typeof agent?.telnyxVoices !== "function") return;
+            if (telnyxKey()) voiceHint.textContent = "Loading Telnyx voices…";
+            try {
+                const result = await agent.telnyxVoices();
+                if (this._editorOverlay !== overlay) return;
+                telnyxVoices = result.voices || [];
+                renderVoices();
+                syncVoiceHint();
+                if (result.error) voiceHint.textContent = `Some Telnyx voices didn't load: ${result.error}`;
+            } catch (err) {
+                console.error("Telnyx voices could not be loaded:", err);
+                if (this._editorOverlay === overlay) voiceHint.textContent = `Telnyx voices didn't load: ${err?.message || err}`;
+            }
+            syncDesign();
+        };
 
         if (Fx) {
             presetSelect.className = "custom-messages-game-meta-name-input";
@@ -1319,7 +1592,10 @@ class CharactersPanel {
         meta.appendChild(nameLabel);
         meta.appendChild(bioLabel);
         meta.appendChild(voiceLabel);
+        meta.appendChild(voiceHint);
+        meta.appendChild(designSection);
         meta.appendChild(fxSection);
+        meta.appendChild(testTextLabel);
         meta.appendChild(listenActions);
         meta.appendChild(fxStatus);
         meta.appendChild(gamesSection);
@@ -1352,11 +1628,13 @@ class CharactersPanel {
         /** Save the form as it stands. @returns {Character|null} */
         const commit = () => {
             const current = characterId ? PhonebotCharacters.get(characterId) : null;
+            const voice = voiceSelect.value;
             const saved = PhonebotCharacters.save({
                 id: characterId,
                 name: nameInput.value,
                 bio: bioInput.value,
-                voice: voiceSelect.value,
+                voice,
+                voiceGender: voiceGenderOf(voice) || (current?.voice === voice ? current.voiceGender : ""),
                 voiceFx: fx,
                 games: current ? current.games : [],
                 builtInGames: [...checkedBuiltIns(), ...otherBuiltIns],
@@ -1510,6 +1788,8 @@ class CharactersPanel {
         };
 
         fill(character);
+        syncVoiceHint();
+        void loadTelnyxVoices();
         setTimeout(() => nameInput.focus(), 0);
     }
 }
