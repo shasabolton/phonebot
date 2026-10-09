@@ -96,6 +96,21 @@ class PlayBilling {
 
     async _ensureAiCredit({ robotSlug } = {}) {
         const slug = this._resolveRobotSlug(robotSlug);
+        if (await this.resumeAiSession({ robotSlug: slug })) return true;
+        return this.topUpCredit({
+            robotSlug: slug,
+            title: "AI credit needed",
+            message: PlayBilling.AI_CREDIT_NEEDED_MESSAGE
+        });
+    }
+
+    /**
+     * Makes this player's saved play session active when it still has credit, without the top-up
+     * popup. The credit bar shows saved credit from page load, but the session only becomes active
+     * here. @returns {Promise<boolean>} true when an active session has credit left
+     */
+    async resumeAiSession({ robotSlug } = {}) {
+        const slug = this._resolveRobotSlug(robotSlug);
         this._lastRobotSlug = slug;
         const active = this._active;
         if (
@@ -112,26 +127,18 @@ class PlayBilling {
             this._readStored(key) ||
             this._findLegacyModeSessionId(slug) ||
             this._readCreditCache()?.sessionId;
-        if (sessionId) {
-            const session = await this._getSession(sessionId).catch(() => null);
-            const usable =
-                session &&
-                session.robotSlug === slug &&
-                ["paid", "active"].includes(session.status) &&
-                this._sessionRemainingCents(session) > 0;
-            if (usable) {
-                localStorage.setItem(key, session.id);
-                this._clearLegacyModeSessionKeys(slug);
-                this._setActive(await this._startSession(session.id));
-                return true;
-            }
-        }
-
-        return this.topUpCredit({
-            robotSlug: slug,
-            title: "AI credit needed",
-            message: PlayBilling.AI_CREDIT_NEEDED_MESSAGE
-        });
+        if (!sessionId) return false;
+        const session = await this._getSession(sessionId).catch(() => null);
+        const usable =
+            session &&
+            session.robotSlug === slug &&
+            ["paid", "active"].includes(session.status) &&
+            this._sessionRemainingCents(session) > 0;
+        if (!usable) return false;
+        localStorage.setItem(key, session.id);
+        this._clearLegacyModeSessionKeys(slug);
+        this._setActive(await this._startSession(session.id));
+        return true;
     }
 
     /** Worker clamps credit so balance never exceeds $10. */

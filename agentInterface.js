@@ -1083,6 +1083,11 @@ class AgentInterface {
      * @returns {Promise<{ hasKey: boolean, source: string, voices: object[], error: string }>}
      */
     async telnyxVoices(options = {}) {
+        if (this._isHostedTelnyx(this._telnyxAccess()) && !window.playBilling?.getActiveSessionId?.()) {
+            await window.playBilling?.resumeAiSession?.(this._billingContext()).catch((err) => {
+                console.warn("Play session could not be resumed for Telnyx voices:", err);
+            });
+        }
         const source = this.telnyxVoiceSource();
         if (!source) return { hasKey: false, source, voices: [], error: "" };
         await this._loadTelnyxLists(options);

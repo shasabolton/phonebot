@@ -1492,7 +1492,7 @@ class CharactersPanel {
         const loadTelnyxVoices = async () => {
             const agent = getAgent();
             if (!Telnyx || typeof agent?.telnyxVoices !== "function") return;
-            if (telnyxSource()) voiceHint.textContent = "Loading Telnyx voices…";
+            voiceHint.textContent = "Loading Telnyx voices…";
             try {
                 const result = await agent.telnyxVoices();
                 if (this._editorOverlay !== overlay) return;
