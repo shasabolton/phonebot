@@ -28,7 +28,10 @@ class AgentInterface {
     /** Heading for text a game sends, so the model never takes it for something the player said. */
     static GAME_INSTRUCTION_LABEL = "Game instruction (not said by the player)";
     /** Appended to the outgoing user message only; never stored in history. */
-    static SINGLE_TURN_REMINDER = "Reply with one turn only, then stop and wait for the player's answer.";
+    static SINGLE_TURN_REMINDER =
+        "Reply with one turn only, then stop and wait for the player's answer. " +
+        'Start with a very short natural filler of one to three words that suits the moment, such as "Okay.", "Hmm.", "Let me see." or "Oh!", ending with punctuation. ' +
+        "Vary it from turn to turn and never repeat the last one.";
 
     /**
      * @param {Robot} robot
