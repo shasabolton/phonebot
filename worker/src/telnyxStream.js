@@ -55,6 +55,8 @@ const HEARD_ALL_SLACK_S = 0.25;
 const MAX_SPEECH_RETRIES = 2;
 /** Mistral tokenizers fail the whole request when given chat_template_kwargs. */
 const REJECTS_TEMPLATE_KWARGS = /mistral/i;
+/** Qwen, Gemma and GLM templates read `enable_thinking`; Kimi reads `thinking`. Templates ignore the other. */
+const THINKING_OFF_KWARGS = Object.freeze({ enable_thinking: false, thinking: false });
 
 /** `transcription_engine` names for the lowercase providers in GET /speech-to-text/providers. */
 const STT_ENGINES = {
@@ -620,7 +622,7 @@ class TelnyxStreamSession {
             stream: true
         };
         // Some Telnyx models return empty or cut-off replies with reasoning on.
-        if (model.thinkingOff) body.chat_template_kwargs = { enable_thinking: false };
+        if (model.thinkingOff) body.chat_template_kwargs = { ...THINKING_OFF_KWARGS };
         return body;
     }
 

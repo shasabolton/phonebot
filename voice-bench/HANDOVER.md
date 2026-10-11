@@ -95,7 +95,8 @@ voice `Telnyx.Qwen3TTS.<clone id>`.
 - **Microphone capture** for streaming uses an AudioWorklet (`public/pcm-capture.js`) and a box-filter resampler
   to 16 kHz (`createResampler` in `bench.js`).
 - **Chat models**: some Telnyx models return empty or cut-off replies when reasoning is on; the bench sends
-  `chat_template_kwargs: {enable_thinking: false}` except for Mistral models, which reject it.
+  `chat_template_kwargs: {enable_thinking: false, thinking: false}` (Qwen/Gemma/GLM read the first, Kimi the
+  second) except for Mistral models, which reject it.
 
 ## The app today (integration points)
 

@@ -4168,7 +4168,8 @@ class AgentInterface {
         try {
             for (const [i, m] of models.entries()) {
                 body.model = m.id;
-                if (m.thinkingOff) body.chat_template_kwargs = { enable_thinking: false };
+                // Qwen, Gemma and GLM templates read `enable_thinking`; Kimi reads `thinking`.
+                if (m.thinkingOff) body.chat_template_kwargs = { enable_thinking: false, thinking: false };
                 else delete body.chat_template_kwargs;
                 try {
                     const result = await send(m.id);

@@ -278,7 +278,8 @@ function chatOptions(settings, transcript) {
         stream: true
     };
     if (settings.thinkingOff && !REJECTS_TEMPLATE_KWARGS.test(settings.chatModel)) {
-        body.chat_template_kwargs = { enable_thinking: false };
+        // Qwen, Gemma and GLM templates read `enable_thinking`; Kimi reads `thinking`.
+        body.chat_template_kwargs = { enable_thinking: false, thinking: false };
     }
     return body;
 }
