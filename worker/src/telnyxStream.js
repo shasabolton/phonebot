@@ -712,7 +712,15 @@ class TelnyxStreamSession {
         }
         if (this.finished) return;
         this.reply = visibleReply(this.rawReply, true).trim();
-        if (!this.reply) throw httpError(502, `Telnyx chat (${model.id}) returned no text.`);
+        if (!this.reply) {
+            const detail = [
+                `${stats.reasoning.length} characters of reasoning`,
+                this.rawReply ? `${this.rawReply.length} characters inside thinking tags` : "",
+                `finish_reason ${stats.finishReason || "not sent"}`,
+                stats.usage?.completion_tokens != null ? `${stats.usage.completion_tokens} of ${body.max_tokens} tokens used` : ""
+            ].filter(Boolean);
+            throw httpError(502, `Telnyx chat (${model.id}) returned no text (${detail.join(", ")}).`);
+        }
     }
 
     /** Sends the voice whatever reply text it has not had yet, starting a sentence as soon as it ends. */
@@ -886,7 +894,7 @@ async function openTelnyxSocket(label, path, apiKey) {
 /**
  * Reads an OpenAI-style SSE chat stream, passing each piece of visible reply text (not reasoning) to
  * onPiece. onData is called for every event, reasoning included, to show the model is working.
- * `stats` collects the reasoning text and any `usage` Telnyx sends, for billing.
+ * `stats` collects the reasoning text and any `usage` Telnyx sends, for billing, and the finish reason.
  */
 async function readChatStream(body, onPiece, onData = () => {}, stats = {}) {
     const reader = body.pipeThrough(new TextDecoderStream()).getReader();
@@ -911,6 +919,7 @@ async function readChatStream(body, onPiece, onData = () => {}, stats = {}) {
             }
             if (json?.error) throw httpError(502, `Telnyx chat error: ${json.error.message || JSON.stringify(json.error)}`);
             if (json?.usage) stats.usage = json.usage;
+            if (json?.choices?.[0]?.finish_reason) stats.finishReason = json.choices[0].finish_reason;
             const delta = json?.choices?.[0]?.delta;
             const reasoning = delta?.reasoning_content || delta?.reasoning;
             if (typeof reasoning === "string") stats.reasoning = (stats.reasoning || "") + reasoning;
