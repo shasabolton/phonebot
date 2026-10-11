@@ -910,7 +910,7 @@ class CharactersPanel {
         const hint = document.createElement("p");
         hint.className = "custom-messages-hint muted";
         hint.textContent =
-            "Tap a name to play as that character. Edit a character to change its games. Upload restores a character zip.";
+            "Tap a name to play as that character. Edit a character to change its games; repo characters are view only. Upload restores a character zip.";
         card.appendChild(hint);
 
         const list = document.createElement("div");
@@ -974,6 +974,7 @@ class CharactersPanel {
                     active: character.id === activeId,
                     onSelect: () => PhonebotCharacters.setActive(character.id),
                     onEdit: () => void this._openEditor(character),
+                    editLabel: character.builtin ? "View" : "Edit",
                     removeLabel: character.builtin ? "Reset" : "Delete",
                     onRemove: canRemove ? () => this._onRemove(character) : null
                 })
@@ -1108,6 +1109,8 @@ class CharactersPanel {
         const builtInIds = new Set(builtInOptions.map((g) => g.id));
         const builtInLabels = new Map(builtInOptions.map((g) => [g.id, g.label]));
 
+        /** Repo characters are view only, like repo games. */
+        const readOnly = !!character?.builtin;
         /** "" until a new character is first saved. */
         let characterId = character?.id || "";
         /** @type {CharacterGameEntry[]} */
@@ -1122,15 +1125,24 @@ class CharactersPanel {
             "custom-messages-overlay custom-messages-editor-overlay characters-editor-overlay";
         overlay.setAttribute("role", "dialog");
         overlay.setAttribute("aria-modal", "true");
-        overlay.setAttribute("aria-label", character ? "Edit character" : "New character");
+        const titleText = readOnly ? "View character" : character ? "Edit character" : "New character";
+        overlay.setAttribute("aria-label", titleText);
 
         const card = document.createElement("div");
         card.className = "custom-messages-card";
 
         const title = document.createElement("h2");
         title.className = "custom-messages-title";
-        title.textContent = character ? "Edit character" : "New character";
+        title.textContent = titleText;
         card.appendChild(title);
+        if (readOnly) {
+            const readOnlyHint = document.createElement("p");
+            readOnlyHint.className = "custom-messages-hint muted";
+            readOnlyHint.textContent = character.edited
+                ? "This character comes from the repo, so it is read only here. It shows the edits saved in this browser; Reset in the character list goes back to the repo version."
+                : "This character comes from the repo, so it is read only here. Change its files in the repo.";
+            card.appendChild(readOnlyHint);
+        }
 
         const label = (text) => {
             const el = document.createElement("label");
@@ -1612,7 +1624,11 @@ class CharactersPanel {
         gamesHeading.classList.add("characters-section-heading");
         gamesSection.appendChild(gamesHeading);
         gamesSection.appendChild(
-            hint("Repo games are read only and always load the latest version from the repo. Games you add here save in this browser as you edit them. Download backup saves the character and its games as a zip.")
+            hint(
+                readOnly
+                    ? "Repo games are read only and always load the latest version from the repo. Download saves the character and its games as a zip."
+                    : "Repo games are read only and always load the latest version from the repo. Games you add here save in this browser as you edit them. Download backup saves the character and its games as a zip."
+            )
         );
         gamesSection.appendChild(gamesList);
         gamesSection.appendChild(gamesActions);
@@ -1748,7 +1764,7 @@ class CharactersPanel {
             if (!ownGames.length) {
                 const empty = document.createElement("p");
                 empty.className = "custom-messages-hint muted";
-                empty.textContent = "No games yet. Tap New game to make one.";
+                empty.textContent = readOnly ? "No games." : "No games yet. Tap New game to make one.";
                 gamesList.appendChild(empty);
             }
             for (const game of ownGames) {
@@ -1804,8 +1820,8 @@ class CharactersPanel {
         const actions = document.createElement("div");
         actions.className = "custom-messages-actions";
 
-        const saveBtn = button("Download backup", "custom-messages-submit", async () => {
-            const saved = commit();
+        const saveBtn = button(readOnly ? "Download" : "Download backup", "custom-messages-submit", async () => {
+            const saved = readOnly ? PhonebotCharacters.get(characterId) : commit();
             if (!saved) return;
             saveBtn.disabled = true;
             saveBtn.textContent = "Saving…";
@@ -1817,13 +1833,16 @@ class CharactersPanel {
             }
             this._closeEditor();
         });
-        saveBtn.title = "Save and download as a zip";
+        saveBtn.title = readOnly ? "Download the character and its games as a zip" : "Save and download as a zip";
         const doneBtn = button("Done", "secondary", () => {
             if (commit()) this._closeEditor();
         });
         doneBtn.title = "Save changes and close";
-        const cancelBtn = button("Cancel", "secondary", () => this._closeEditor());
-        cancelBtn.title = "Close without saving character changes. Game edits are already saved.";
+        doneBtn.hidden = readOnly;
+        const cancelBtn = button(readOnly ? "Close" : "Cancel", "secondary", () => this._closeEditor());
+        cancelBtn.title = readOnly
+            ? "Close"
+            : "Close without saving character changes. Game edits are already saved.";
         const syncSave = () => {
             const disabled = !nameInput.value.trim();
             saveBtn.disabled = disabled;
@@ -1854,6 +1873,19 @@ class CharactersPanel {
         };
 
         fill(character);
+        if (readOnly) {
+            // The voice can still be heard with its effects; nothing about the character changes.
+            nameInput.readOnly = true;
+            bioInput.readOnly = true;
+            voiceSearch.remove();
+            voiceSelect.disabled = true;
+            designSection.hidden = true;
+            presetSelect.disabled = true;
+            for (const { input } of fxSliders.values()) input.disabled = true;
+            for (const check of builtInChecks.values()) check.disabled = true;
+            homeSelect.disabled = true;
+            gamesActions.remove();
+        }
         syncVoiceHint();
         void loadTelnyxVoices();
         setTimeout(() => nameInput.focus(), 0);

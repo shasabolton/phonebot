@@ -10,6 +10,10 @@
     {
       "id": "chatWithSanta",
       "name": "Introduction then chat"
+    },
+    {
+      "id": "christmasLogistics",
+      "name": "Christmas Logistics"
     }
   ],
   "builtInGames": [],
