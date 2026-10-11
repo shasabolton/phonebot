@@ -83,12 +83,14 @@ class AudioPlayerAiModel {
         this._playEndedWaiters = [];
         /** A clip was playing when the robot paused; it carries on from there on resume. */
         this._heldByRobotPause = false;
+        /** The current clip is an editor preview, which plays whether or not the robot is paused. */
+        this._ignoresRobotPause = false;
     }
 
     /** Robot paused: hold what's playing where it is. */
     pauseForRobot() {
         const audio = this._audio;
-        if (!audio || audio.paused || audio.ended) return;
+        if (!audio || audio.paused || audio.ended || this._ignoresRobotPause) return;
         this._heldByRobotPause = true;
         audio.pause();
         this._setStatus("Paused.");
@@ -543,11 +545,14 @@ class AudioPlayerAiModel {
      * Play a Blob/File through the same Web Audio tap used by audioMouthFilter.
      * @param {Blob|File} blob
      * @param {string} [label]
+     * @param {{ ignoreRobotPause?: boolean }} [options] ignoreRobotPause: play even while the
+     *   robot is paused (editor previews).
      * @returns {Promise<void>} Resolves when playback ends or is stopped.
      */
-    async playBlob(blob, label = "TTS") {
+    async playBlob(blob, label = "TTS", { ignoreRobotPause = false } = {}) {
         if (!blob) throw new Error("No audio blob to play.");
         const token = this._beginPlay();
+        this._ignoresRobotPause = ignoreRobotPause;
         const shifted = await this._pitchShift(blob);
         if (token !== this._playToken) return;
         this._revokeTtsUrl();
@@ -649,6 +654,7 @@ class AudioPlayerAiModel {
     _beginPlay() {
         this._playToken += 1;
         this._heldByRobotPause = false;
+        this._ignoresRobotPause = false;
         this._resolvePlayEndedWaiters();
         this._ensureAudio().pause();
         return this._playToken;
@@ -663,7 +669,7 @@ class AudioPlayerAiModel {
      */
     async _playUrl(src, label, loadedId, clipPitch) {
         const token = this._playToken;
-        await this.robot?.whenResumed?.();
+        if (!this._ignoresRobotPause) await this.robot?.whenResumed?.();
         if (token !== this._playToken) return;
         const audio = this._ensureAudio();
         audio.pause();
@@ -732,7 +738,10 @@ class AudioPlayerAiModel {
             void this.playSrc(entry.url, entry.label).catch(() => {});
             return;
         }
-        if (!resuming) this._loadSelected();
+        if (!resuming) {
+            this._ignoresRobotPause = false;
+            this._loadSelected();
+        }
         this.ensurePlaybackTap();
         if (this._audioContext && this._audioContext.state === "suspended") {
             await this._audioContext.resume().catch(() => {});
@@ -766,6 +775,7 @@ class AudioPlayerAiModel {
     stop() {
         this._playToken += 1;
         this._heldByRobotPause = false;
+        this._ignoresRobotPause = false;
         if (!this._audio) {
             this._resolvePlayEndedWaiters();
             this._syncTransportButtons();

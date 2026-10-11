@@ -1383,7 +1383,7 @@ class CharactersPanel {
             else fxStatus.textContent = "Playing. Open Voice effects to change how it sounds.";
             testPlaying = { blob, label };
             try {
-                await player.playBlob(blob, label);
+                await player.playBlob(blob, label, { ignoreRobotPause: true });
                 if (run === testRun) fxStatus.textContent = "";
             } catch (err) {
                 console.error("Voice test playback failed:", err);

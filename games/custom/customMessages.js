@@ -1694,7 +1694,7 @@ class CustomMessagesGame {
     _finishActionsList() {
         this._closeActionsList();
         if (!this._editOnly) return;
-        if (typeof this.robot?.restartCustomGame === "function") this.robot.restartCustomGame();
+        if (typeof this.robot?.finishCustomGameEdit === "function") this.robot.finishCustomGameEdit();
     }
 
     _closeActionsList() {

@@ -1,0 +1,42 @@
+{
+  "format": "phonebot.game.v1",
+  "name": "Wish List",
+  "messages": [
+    {
+      "id": "cm-mv3nj3ps-0rikly",
+      "trigger": "gameLoad",
+      "loop": "once",
+      "onEnd": "",
+      "delaySec": 0,
+      "constraints": {
+        "face": "any"
+      },
+      "text": "Ask the person what they want for christmas.",
+      "speechText": "",
+      "fileName": "",
+      "sendCamera": false,
+      "clearHistory": true,
+      "maxWords": 50,
+      "reasoningEffort": "low",
+      "audioUrl": ""
+    },
+    {
+      "id": "cm-mv3q3h5o-5gbmf1",
+      "trigger": "gameLoad",
+      "loop": "once",
+      "onEnd": "end:none",
+      "delaySec": 0,
+      "constraints": {
+        "face": "any"
+      },
+      "text": "Tell the person that you have heard enough wish list items and will need to think about which ones you can make for next christmas. They can choose another option from the menu to continue chatting.",
+      "speechText": "",
+      "fileName": "",
+      "sendCamera": false,
+      "clearHistory": false,
+      "maxWords": 30,
+      "reasoningEffort": "low",
+      "audioUrl": ""
+    }
+  ]
+}

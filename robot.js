@@ -612,7 +612,24 @@ class Robot {
         const Game = window.CustomMessagesGame;
         if (typeof Game !== "function" || !gameId) return false;
         Game.requestEditGame(gameId);
-        return this.restartCustomGame();
+        if (this._modeRunning()) return this.restartCustomGame();
+        // Before the start flow is done no mode runs, so the editor opens on its own.
+        this._stopLocalGame();
+        this._localGame = new Game(this);
+        this._localGame.start();
+        return true;
+    }
+
+    /** Editor Done: back to plain Custom once the robot is running, else nothing runs. */
+    finishCustomGameEdit() {
+        if (this._modeRunning()) return this.restartCustomGame();
+        this._stopLocalGame();
+        return true;
+    }
+
+    /** The start flow is done and the mode is active, so its game may run. */
+    _modeRunning() {
+        return this._modeReady && !(this.getStartFlowConfig() && this._startFlowOverlay);
     }
 
     /** Enter Custom mode, or restart it so it loads the active (or pending-edit) game. */
