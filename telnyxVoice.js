@@ -277,8 +277,11 @@ class TelnyxVoice {
      * Orders chat models from the account's own model list using only what each model says about
      * itself, so it keeps working as models are added and retired:
      *   - only chat models Telnyx prices: an unpriced one needs the upstream provider's own key (e.g. Groq);
-     *   - picked automatically if it runs on the default service tier, has room for a game's prompt and
-     *     is big enough (or Telnyx recommends it for assistants);
+     *   - picked automatically only if Telnyx runs it (`owned_by: "telnyx"`): models it passes on to
+     *     OpenAI, Google and others are priced too but refuse requests without that provider's key
+     *     (error 10015). If no priced model is marked as Telnyx's own, this rule is skipped;
+     *   - and if it runs on the default service tier, has room for a game's prompt and is big enough
+     *     (or Telnyx recommends it for assistants);
      *   - then listed models before "unlisted" (preview) ones, then the cheapest per game turn.
      * Models that miss the bar stay in the list (after the automatic ones) with the reason, for picking by hand.
      * @returns {{ id: string, auto: boolean, reason: string, costPerTurn: number, currency: string,
@@ -297,6 +300,9 @@ class TelnyxVoice {
         };
         // If Telnyx ever stops sending prices at all, don't throw every model away.
         const needPrice = raws.some(priced);
+        const ownedByTelnyx = (raw) => String(raw.owned_by || "").toLowerCase() === "telnyx";
+        // Likewise if it stops marking its own models.
+        const needHosted = raws.some((raw) => ownedByTelnyx(raw) && (!needPrice || priced(raw)));
         const models = [];
         for (const raw of raws) {
             const id = String(raw.id || raw.name || "").trim();
@@ -309,10 +315,11 @@ class TelnyxVoice {
             const context = Number(raw.context_length) || 0;
             const service = Array.isArray(raw.service_tiers) ? raw.service_tiers.map((s) => String(s).toLowerCase()) : null;
             const recommended = raw.recommended_for_assistants === true;
-            const hosted = String(raw.owned_by || "").toLowerCase() === "telnyx";
+            const hosted = ownedByTelnyx(raw);
             const sizeLabel = size ? String(raw.parameters_str || "").trim() || `${(size / 1e9).toFixed(1)}B` : "";
             let reason = "";
-            if (service && !service.includes("default")) reason = `${service.join("/")} service tier only`;
+            if (needHosted && !hosted) reason = `needs your own ${raw.owned_by || "provider"} API key`;
+            else if (service && !service.includes("default")) reason = `${service.join("/")} service tier only`;
             else if (context && context < T.MIN_CHAT_CONTEXT) reason = `only ${context} tokens of context`;
             else if (!recommended && !(size >= T.MIN_CHAT_PARAMETERS)) reason = size ? `${sizeLabel} may be too small` : "size unknown";
             models.push({
