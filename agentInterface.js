@@ -1332,7 +1332,9 @@ class AgentInterface {
               : `Auto (now ${autoChat.id})`;
         const testedIds = this._telnyxPreferred("chat", agent);
         const tested = testedIds.map((id) => chat.find((m) => m.id === id)).filter(Boolean);
-        const untested = chat.filter((m) => !testedIds.includes(m.id));
+        const photoTested = this._telnyxPhotoShortlist.map((id) => chat.find((m) => m.id === id)).filter(Boolean);
+        // A model on both lists is shown in both groups, each in its list's order.
+        const untested = chat.filter((m) => !testedIds.includes(m.id) && !this._telnyxPhotoShortlist.includes(m.id));
         this._fillTelnyxSelect(
             this._telnyxChatSelect,
             [
@@ -1341,6 +1343,7 @@ class AgentInterface {
                     label: this._telnyxShortlist.length ? "Tested, Auto tries these in order" : "Tested (robots.js), Auto tries these in order",
                     options: tested.map(chatOption)
                 },
+                { label: "Tested with photos, Auto tries these in order for camera turns", options: photoTested.map(chatOption) },
                 { label: "Untested, may suit by hand", options: untested.filter((m) => m.auto).map(chatOption) },
                 { label: "Unlikely to work", options: untested.filter((m) => !m.auto).map(chatOption) }
             ],
@@ -1407,7 +1410,8 @@ class AgentInterface {
                   ? `Some Telnyx lists didn't load: ${this._telnyxListError}`
                   : stt.length || chat.length || voices.length
                     ? `${hosted ? "Hosted (AI credit)" : "From your account"}: ${stt.length} streaming speech-to-text models, ` +
-                      `${chat.length} chat models billed by Telnyx (${this._telnyxPreferred("chat").length} tested), ${voices.length} voices` +
+                      `${chat.length} chat models billed by Telnyx (${this._telnyxPreferred("chat").length} tested` +
+                      `${this._telnyxPhotoShortlist.length ? `, ${this._telnyxPhotoShortlist.length} tested with photos` : ""}), ${voices.length} voices` +
                       (skippedUltra ? ` (${skippedUltra} Ultra voices left out because they can't stream).` : ".")
                     : "Lists not loaded yet. Click Refresh Telnyx lists.";
     }
