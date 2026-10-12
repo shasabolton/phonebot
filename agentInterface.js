@@ -8,7 +8,7 @@ class AgentInterface {
     static STORAGE_REMEMBER = "phonebot.agent.remember";
     /** Manual Groq chat model for BYOK; empty = automatic pick. */
     static STORAGE_CHAT_MODEL = "phonebot.agent.chatModel";
-    /** Telnyx picks (`stt`, `chat`, `voice`) are saved under this prefix; empty = the agent's default (chat: Auto). */
+    /** Telnyx picks (`stt`, `voice`) are saved under this prefix; empty = the agent's default. The chat pick isn't saved. */
     static STORAGE_TELNYX_PREFIX = "phonebot.telnyx.";
     /** Telnyx chat models tried per turn before giving up (the Worker's stream route takes at most 4). */
     static TELNYX_CHAT_ATTEMPTS = 4;
@@ -102,8 +102,16 @@ class AgentInterface {
         this._telnyxListsPromise = null;
         /** Telnyx key typed this session, kept for Telnyx voices while another agent is selected. */
         this._telnyxSessionKey = "";
-        /** Telnyx chat models that failed this session; Auto skips them. */
+        /** Telnyx chat model picked by hand; "" = Auto. Not saved, so every page load starts on Auto. */
+        this._telnyxChatPick = "";
+        try {
+            localStorage.removeItem(AgentInterface.STORAGE_TELNYX_PREFIX + "chat");
+        } catch (_) {}
+        /** Telnyx chat models that failed a text turn this session; Auto skips them. */
         this._telnyxBadModels = new Set();
+        /** Telnyx chat models that answered / failed a turn with a camera photo this session. */
+        this._telnyxPhotoOk = new Set();
+        this._telnyxPhotoBad = new Set();
         /** Telnyx streaming speech-to-text models ("provider|model") that failed this session. */
         this._telnyxBadStt = new Set();
         /** Telnyx voices that failed this session. */
@@ -813,11 +821,12 @@ class AgentInterface {
     }
 
     /**
-     * Telnyx pick saved from the agent panel; empty means Auto (the agent's voice for `voice`).
-     * `stt` values are "provider|model".
+     * Telnyx pick from the agent panel; empty means Auto (the agent's voice for `voice`).
+     * `stt` values are "provider|model". The chat pick lasts until the page reloads.
      * @param {"stt"|"chat"|"voice"} kind
      */
     _telnyxChoice(kind, _agent) {
+        if (kind === "chat") return this._telnyxChatPick;
         try {
             return String(localStorage.getItem(AgentInterface.STORAGE_TELNYX_PREFIX + kind) || "").trim();
         } catch (_) {
@@ -913,6 +922,11 @@ class AgentInterface {
     }
 
     _setTelnyxChoice(kind, value) {
+        if (kind === "chat") {
+            this._telnyxChatPick = String(value || "").trim();
+            this._renderTelnyxOptions();
+            return;
+        }
         try {
             const v = String(value || "").trim();
             if (v) localStorage.setItem(AgentInterface.STORAGE_TELNYX_PREFIX + kind, v);
@@ -925,7 +939,10 @@ class AgentInterface {
      * `_telnyxPreferred`). Only if the account offers none of the tested models is the automatic
      * ranking used instead. Models Telnyx no longer offers are skipped (until the lists load, the
      * pick and tested models are tried unchecked), and so are models that failed this session.
-     * @param {{ ignorePick?: boolean }} [options] ignorePick: what Auto would use
+     * With `photo`, Auto only tries models that take images (Telnyx says so, or one answered a
+     * photo this session): tested ones first, then the other automatic picks, then tested models
+     * Telnyx says nothing about. Models that failed a photo are skipped for photos only.
+     * @param {{ ignorePick?: boolean, photo?: boolean }} [options] ignorePick: what Auto would use
      * @returns {{ id: string, thinkingOff: boolean }[]}
      */
     _telnyxChatModels(agent = this.getSelectedAgent(), options = {}) {
@@ -933,25 +950,53 @@ class AgentInterface {
         const pick = options.ignorePick ? "" : this._telnyxChoice("chat", agent);
         const rejectsKwargs = window.TelnyxVoice?.REJECTS_TEMPLATE_KWARGS || /mistral/i;
         const offered = (id) => ranked.find((m) => m.id === id) || (ranked.length ? null : { id, thinkingOff: !rejectsKwargs.test(id) });
-        const usable = (m) => !this._telnyxBadModels.has(m.id);
+        const usable = (m) => !this._telnyxBadModels.has(m.id) && !(options.photo && this._telnyxPhotoBad.has(m.id));
         const list = [];
         const add = (m) => {
             if (m && !list.some((x) => x.id === m.id)) list.push(m);
         };
         add(pick && offered(pick));
+        const picked = list.length;
         let tested = this._telnyxPreferred("chat", agent).map(offered).filter(Boolean);
         if (!tested.length) tested = ranked.filter((m) => m.auto);
-        for (const m of tested.filter(usable)) add(m);
+        if (options.photo) {
+            const takesPhotos = (m) => this._telnyxPhotoOk.has(m.id) || m.vision === true;
+            for (const m of [...tested, ...ranked.filter((r) => r.auto)]) if (usable(m) && takesPhotos(m)) add(m);
+            for (const m of tested) if (usable(m) && m.vision == null) add(m);
+            if (list.length === picked) for (const m of tested.filter(usable)) add(m);
+        } else {
+            for (const m of tested.filter(usable)) add(m);
+        }
         if (!list.length) for (const m of tested) add(m);
         return list.slice(0, AgentInterface.TELNYX_CHAT_ATTEMPTS).map((m) => ({ id: m.id, thinkingOff: !!m.thinkingOff }));
     }
 
-    /** Remember models that failed so Auto moves on to the next one for the rest of the session. */
-    _noteTelnyxModelFailures(failed) {
+    /**
+     * Remember models that failed so Auto moves on to the next one for the rest of the session
+     * (for photos only, after a photo turn). A hand pick that failed goes back to Auto.
+     */
+    _noteTelnyxModelFailures(failed, options = {}) {
         const ids = (Array.isArray(failed) ? failed : []).filter(Boolean);
         if (!ids.length) return;
-        console.error("Telnyx chat models failed and were skipped:", ids);
-        for (const id of ids) this._telnyxBadModels.add(id);
+        console.error(`Telnyx chat models failed${options.photo ? " with a photo" : ""} and were skipped:`, ids);
+        for (const id of ids) {
+            if (options.photo) {
+                this._telnyxPhotoBad.add(id);
+                this._telnyxPhotoOk.delete(id);
+            } else {
+                this._telnyxBadModels.add(id);
+            }
+        }
+        if (ids.includes(this._telnyxChatPick)) this._telnyxChatPick = "";
+        this._renderTelnyxOptions();
+    }
+
+    /** The model that answered a turn; with a photo, Auto may use it for photos from now on. */
+    _noteTelnyxChatWorked(id, options = {}) {
+        this._noteTelnyxWorked("chat", id);
+        if (!options.photo || !id || this._telnyxPhotoOk.has(id)) return;
+        this._telnyxPhotoOk.add(id);
+        this._telnyxPhotoBad.delete(id);
         this._renderTelnyxOptions();
     }
 
@@ -1246,19 +1291,35 @@ class AgentInterface {
         );
         const cost = (m) =>
             Number.isFinite(m.costPerTurn) ? `${m.currency === "USD" ? "$" : `${m.currency} `}${(m.costPerTurn * 1000).toFixed(2)} per 1,000 turns` : "";
+        const photos = (m) =>
+            this._telnyxPhotoBad.has(m.id)
+                ? "failed with a photo"
+                : this._telnyxPhotoOk.has(m.id)
+                  ? "took a photo"
+                  : m.vision === true
+                    ? "takes photos"
+                    : m.vision === false
+                      ? "no photos"
+                      : "";
         const chatOption = (m) => {
             const failed = this._telnyxBadModels.has(m.id) ? "failed this session" : "";
-            const details = [m.sizeLabel, cost(m), m.tier === "unlisted" ? "preview" : "", m.reason, failed].filter(Boolean);
+            const details = [m.sizeLabel, cost(m), m.tier === "unlisted" ? "preview" : "", photos(m), m.reason, failed].filter(Boolean);
             return { value: m.id, label: details.length ? `${m.id} (${details.join(", ")})` : m.id, title: m.id };
         };
         const autoChat = this._telnyxChatModels(agent, { ignorePick: true })[0];
+        const autoPhoto = this._telnyxChatModels(agent, { ignorePick: true, photo: true })[0];
+        const autoLabel = !autoChat
+            ? "Auto"
+            : autoPhoto && autoPhoto.id !== autoChat.id
+              ? `Auto (now ${autoChat.id}; photos ${autoPhoto.id})`
+              : `Auto (now ${autoChat.id})`;
         const testedIds = this._telnyxPreferred("chat", agent);
         const tested = testedIds.map((id) => chat.find((m) => m.id === id)).filter(Boolean);
         const untested = chat.filter((m) => !testedIds.includes(m.id));
         this._fillTelnyxSelect(
             this._telnyxChatSelect,
             [
-                { options: [{ value: "", label: autoChat ? `Auto (now ${autoChat.id})` : "Auto" }] },
+                { options: [{ value: "", label: autoLabel }] },
                 {
                     label: this._telnyxShortlist.length ? "Tested, Auto tries these in order" : "Tested (robots.js), Auto tries these in order",
                     options: tested.map(chatOption)
@@ -1468,11 +1529,11 @@ class AgentInterface {
     }
 
     _resolveModel(agent, options = {}) {
-        if (this._isTelnyxProvider(agent)) return this._telnyxChatModels(agent)[0]?.id || "";
         const wantVision =
             options.wantVision != null
                 ? !!options.wantVision
                 : !!(this._sendCameraImageInput?.checked ?? this._sendCameraImage);
+        if (this._isTelnyxProvider(agent)) return this._telnyxChatModels(agent, { photo: wantVision })[0]?.id || "";
         const fromSession = this._sessionChatModel(wantVision);
         if (fromSession) return fromSession;
         return String(agent?.model || "").trim();
@@ -4188,7 +4249,8 @@ class AgentInterface {
      * stop straight away: another model would fail the same way.
      */
     async _sendTelnyxChatWithFallback(agent, body, send) {
-        const models = this._telnyxChatModels(agent);
+        const photo = this._messagesIncludeVisionImage(body.messages);
+        const models = this._telnyxChatModels(agent, { photo });
         const failed = [];
         try {
             for (const [i, m] of models.entries()) {
@@ -4198,22 +4260,19 @@ class AgentInterface {
                 else delete body.chat_template_kwargs;
                 try {
                     const result = await send(m.id);
-                    this._noteTelnyxWorked("chat", m.id);
+                    this._noteTelnyxChatWorked(m.id, { photo });
                     return result;
                 } catch (err) {
-                    if (
-                        i === models.length - 1 ||
-                        err?.code === AgentInterface.CREDIT_REQUIRED ||
-                        /^HTTP (401|402|403|429)\b/.test(String(err?.message))
-                    ) {
+                    if (err?.code === AgentInterface.CREDIT_REQUIRED || /^HTTP (401|402|403|429)\b/.test(String(err?.message))) {
                         throw err;
                     }
-                    console.error(`Telnyx chat model ${m.id} failed; trying the next one.`, err);
                     failed.push(m.id);
+                    if (i === models.length - 1) throw err;
+                    console.error(`Telnyx chat model ${m.id} failed; trying the next one.`, err);
                 }
             }
         } finally {
-            this._noteTelnyxModelFailures(failed);
+            this._noteTelnyxModelFailures(failed, { photo });
         }
         throw new Error("No Telnyx chat model is available. Click Refresh Telnyx lists.");
     }

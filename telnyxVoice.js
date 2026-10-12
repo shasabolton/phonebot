@@ -285,7 +285,8 @@ class TelnyxVoice {
      *   - then listed models before "unlisted" (preview) ones, then the cheapest per game turn.
      * Models that miss the bar stay in the list (after the automatic ones) with the reason, for picking by hand.
      * @returns {{ id: string, auto: boolean, reason: string, costPerTurn: number, currency: string,
-     *   size: number, sizeLabel: string, tier: string, hosted: boolean, thinkingOff: boolean }[]}
+     *   size: number, sizeLabel: string, tier: string, hosted: boolean, thinkingOff: boolean, vision: boolean|null }[]}
+     *   `vision`: whether Telnyx says the model takes images (null when it doesn't say).
      */
     static rankChatModels(list) {
         const T = TelnyxVoice;
@@ -333,7 +334,13 @@ class TelnyxVoice {
                 tier: String(raw.tier || "").toLowerCase(),
                 hosted,
                 // Proxied models (OpenAI, Google...) may reject the open-model switch that turns thinking off.
-                thinkingOff: hosted && !T.REJECTS_TEMPLATE_KWARGS.test(id)
+                thinkingOff: hosted && !T.REJECTS_TEMPLATE_KWARGS.test(id),
+                vision:
+                    raw.is_vision_supported === true || task === "image-text-to-text"
+                        ? true
+                        : raw.is_vision_supported === false
+                          ? false
+                          : null
             });
         }
         const preview = (m) => (m.tier === "unlisted" ? 1 : 0);
