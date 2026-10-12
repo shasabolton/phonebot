@@ -2301,7 +2301,8 @@ class AgentInterface {
     }
 
     /**
-     * @param {"idle"|"listening"|"processing"|"thinking"|"talking"} state
+     * "starting" is held down while the microphone opens: still enabled, so the release is not lost.
+     * @param {"idle"|"starting"|"listening"|"processing"|"thinking"|"talking"} state
      * @param {{ hint?: string, label?: string }} [options]
      */
     _setPttState(state, options = {}) {
@@ -2311,6 +2312,7 @@ class AgentInterface {
 
         const labels = {
             idle: "Hold button while you talk",
+            starting: "Starting mic…",
             listening: "Listening",
             processing: "Processing…",
             thinking: "Thinking",
@@ -2328,6 +2330,7 @@ class AgentInterface {
         if (overlay) {
             overlay.classList.remove(
                 "sensor-camera-ptt-overlay--idle",
+                "sensor-camera-ptt-overlay--starting",
                 "sensor-camera-ptt-overlay--listening",
                 "sensor-camera-ptt-overlay--processing",
                 "sensor-camera-ptt-overlay--thinking",
@@ -2353,7 +2356,7 @@ class AgentInterface {
             if (this._pttBtnEl) {
                 this._pttBtnEl.disabled = disabled;
                 this._pttBtnEl.setAttribute("aria-label", labelText);
-                this._pttBtnEl.setAttribute("aria-pressed", phase === "listening" ? "true" : "false");
+                this._pttBtnEl.setAttribute("aria-pressed", phase === "listening" || phase === "starting" ? "true" : "false");
             }
         }
         this._syncDashboardMicState(phase, { disabled, label: labelText });
@@ -2378,10 +2381,10 @@ class AgentInterface {
                   (p === "idle" && !this._pttCanInteract());
         const label =
             String(options.label || "").trim() ||
-            (p === "listening" ? "Listening" : "Hold to talk");
+            (p === "listening" ? "Listening" : p === "starting" ? "Starting mic…" : "Hold to talk");
         btn.disabled = disabled;
         btn.setAttribute("aria-label", label);
-        btn.setAttribute("aria-pressed", p === "listening" ? "true" : "false");
+        btn.setAttribute("aria-pressed", p === "listening" || p === "starting" ? "true" : "false");
         btn.classList.toggle("is-listening", p === "listening");
         btn.classList.toggle("is-busy", p === "processing" || p === "thinking" || p === "talking");
     }
@@ -2518,6 +2521,9 @@ class AgentInterface {
             stt,
             voice: this._telnyxVoiceChoices(),
             speak: !!this._voiceOn,
+            onListening: () => {
+                if (this._telnyxTurn === turn && this._pttRecording && !this._pttFinishing) this._setPttState("listening");
+            },
             onPartial: (text) => {
                 if (this._telnyxTurn !== turn || !text || !this._statusEl) return;
                 this._statusEl.textContent = `Heard: ${text}`;
@@ -2540,7 +2546,7 @@ class AgentInterface {
         this._telnyxTurn = turn;
         this._pttRecording = true;
         this._pttRecordStartedAt = Date.now();
-        this._setPttState("listening");
+        this._setPttState("starting");
         this._pttMaxTimer = setTimeout(() => {
             void this._onPttPointerUp({ type: "maxduration" });
         }, AgentInterface.PTT_MAX_RECORD_MS);
@@ -2569,6 +2575,12 @@ class AgentInterface {
             turn.cancel();
             this._telnyxTurn = null;
             this._setPttState("idle", { hint: "Didn't catch that — hold a little longer" });
+            return;
+        }
+        if (!turn.seconds) {
+            turn.cancel();
+            this._telnyxTurn = null;
+            this._setPttState("idle", { hint: "Wait for “Listening” before you talk" });
             return;
         }
         await this._runTelnyxStreamTurn(turn);

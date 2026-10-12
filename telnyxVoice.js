@@ -609,6 +609,8 @@ class TelnyxVoice {
 class TelnyxStreamTurn {
     static INPUT_RATE = 16000;
     static FRAME_BYTES = 3200;
+    /** Some phones deliver exact zeros while the microphone wakes up; give up waiting for sound after this. */
+    static LISTENING_FALLBACK_SECONDS = 0.5;
     static _context = null;
     static _workletReady = null;
 
@@ -616,11 +618,13 @@ class TelnyxStreamTurn {
      * `key` is the player's Telnyx key, or "" with `session` (a play session id) to use the Worker's
      * key on AI credit.
      * @param {{ key: string, session?: string, input?: "audio"|"text", stt?: { provider: string, model: string }[], voice: string[],
-     *   speak: boolean, onPartial?: (text: string) => void, onError?: (err: Error) => void }} options
+     *   speak: boolean, onListening?: () => void, onPartial?: (text: string) => void, onError?: (err: Error) => void }} options
+     *   `onListening` is called once, when the microphone first delivers sound.
      */
     constructor(options) {
         this._options = options;
-        this._handlers = { onPartial: options.onPartial };
+        this._handlers = { onListening: options.onListening, onPartial: options.onPartial };
+        this._listening = false;
         this._ws = null;
         this._outbox = [];
         this._buffered = [];
@@ -737,6 +741,12 @@ class TelnyxStreamTurn {
     _onCaptured(data) {
         const flushed = data instanceof Float32Array ? null : data?.flushed;
         if (this._resampler && (this._capturing || flushed)) {
+            if (!this._listening && !flushed && data?.length) {
+                if (data.some((s) => s !== 0) || this.seconds >= TelnyxStreamTurn.LISTENING_FALLBACK_SECONDS) {
+                    this._listening = true;
+                    this._call("onListening");
+                }
+            }
             const pcm = this._resampler.push(flushed || data);
             if (pcm.length) {
                 this._buffered.push(pcm);
