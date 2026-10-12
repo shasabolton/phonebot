@@ -10,8 +10,8 @@ class AgentInterface {
     static STORAGE_CHAT_MODEL = "phonebot.agent.chatModel";
     /** Telnyx picks (`stt`, `chat`, `voice`) are saved under this prefix; empty = the agent's default (chat: Auto). */
     static STORAGE_TELNYX_PREFIX = "phonebot.telnyx.";
-    /** Telnyx chat models tried per turn before giving up. */
-    static TELNYX_CHAT_ATTEMPTS = 3;
+    /** Telnyx chat models tried per turn before giving up (the Worker's stream route takes at most 4). */
+    static TELNYX_CHAT_ATTEMPTS = 4;
     /** Telnyx streaming speech-to-text models tried per turn before giving up. */
     static TELNYX_STT_ATTEMPTS = 3;
     /** Telnyx voices tried per turn before giving up. */
@@ -91,6 +91,8 @@ class AgentInterface {
         this._telnyxHintEl = null;
         /** Live lists from the player's Telnyx account (key in `_telnyxListsKey`). */
         this._telnyxLists = { stt: [], chat: [], voices: [], skippedUltra: 0 };
+        /** The Worker's tested chat models, best first; empty until loaded (robots.js is used meanwhile). */
+        this._telnyxShortlist = [];
         this._telnyxListsKey = "";
         this._telnyxListsToken = 0;
         this._telnyxListsLoading = false;
@@ -823,8 +825,12 @@ class AgentInterface {
         }
     }
 
-    /** Tested models or voices from the agent config in robots.js, best first. */
+    /**
+     * Tested models or voices, best first: for chat the Worker's shortlist once loaded, otherwise
+     * (and for speech-to-text and voices) the agent config in robots.js.
+     */
     _telnyxPreferred(kind, agent = this.getSelectedAgent()) {
+        if (kind === "chat" && this._telnyxShortlist.length) return [...this._telnyxShortlist];
         const list = { stt: agent?.preferredStreamingTranscription, chat: agent?.preferredChatModels, voice: agent?.preferredVoices }[kind];
         return (Array.isArray(list) ? list : [list]).map((v) => String(v || "").trim()).filter(Boolean);
     }
@@ -915,8 +921,9 @@ class AgentInterface {
     }
 
     /**
-     * Telnyx chat models to try, in order: the player's pick, the tested models from robots.js, then
-     * the automatic ranking. Models Telnyx no longer offers are skipped (until the lists load, the
+     * Telnyx chat models to try, in order: the player's pick, then the tested shortlist (see
+     * `_telnyxPreferred`). Only if the account offers none of the tested models is the automatic
+     * ranking used instead. Models Telnyx no longer offers are skipped (until the lists load, the
      * pick and tested models are tried unchecked), and so are models that failed this session.
      * @param {{ ignorePick?: boolean }} [options] ignorePick: what Auto would use
      * @returns {{ id: string, thinkingOff: boolean }[]}
@@ -932,10 +939,10 @@ class AgentInterface {
             if (m && !list.some((x) => x.id === m.id)) list.push(m);
         };
         add(pick && offered(pick));
-        const tested = this._telnyxPreferred("chat", agent).map(offered).filter(Boolean);
-        const auto = ranked.filter((m) => m.auto);
-        for (const m of [...tested, ...auto].filter(usable)) add(m);
-        if (!list.length) for (const m of [...tested, ...auto]) add(m);
+        let tested = this._telnyxPreferred("chat", agent).map(offered).filter(Boolean);
+        if (!tested.length) tested = ranked.filter((m) => m.auto);
+        for (const m of tested.filter(usable)) add(m);
+        if (!list.length) for (const m of tested) add(m);
         return list.slice(0, AgentInterface.TELNYX_CHAT_ATTEMPTS).map((m) => ({ id: m.id, thinkingOff: !!m.thinkingOff }));
     }
 
@@ -1145,13 +1152,16 @@ class AgentInterface {
         this._telnyxListsLoading = true;
         this._telnyxListError = "";
         this._syncTelnyxUi();
-        const [stt, chat, voices] = await Promise.allSettled([
+        const [stt, chat, voices, shortlist] = await Promise.allSettled([
             api.listStreamingSttModels(key),
             api.listChatModels(key),
-            api.listVoices(key)
+            api.listVoices(key),
+            api.loadChatShortlist()
         ]);
         if (token !== this._telnyxListsToken) return;
         this._telnyxListsLoading = false;
+        if (shortlist.status === "fulfilled") this._telnyxShortlist = shortlist.value;
+        else console.warn("Tested chat models could not be loaded from the Worker; using robots.js:", shortlist.reason);
         const errors = [];
         for (const [name, result] of [
             ["speech-to-text models", stt],
@@ -1249,9 +1259,12 @@ class AgentInterface {
             this._telnyxChatSelect,
             [
                 { options: [{ value: "", label: autoChat ? `Auto (now ${autoChat.id})` : "Auto" }] },
-                { label: "Tested (robots.js), tried first", options: tested.map(chatOption) },
-                { label: "Picked automatically, best first", options: untested.filter((m) => m.auto).map(chatOption) },
-                { label: "Not picked automatically", options: untested.filter((m) => !m.auto).map(chatOption) }
+                {
+                    label: this._telnyxShortlist.length ? "Tested, Auto tries these in order" : "Tested (robots.js), Auto tries these in order",
+                    options: tested.map(chatOption)
+                },
+                { label: "Untested, may suit by hand", options: untested.filter((m) => m.auto).map(chatOption) },
+                { label: "Unlikely to work", options: untested.filter((m) => !m.auto).map(chatOption) }
             ],
             this._telnyxChoice("chat", agent),
             (v) => (chat.length ? `${v}, Auto is used instead` : v)
@@ -1316,7 +1329,7 @@ class AgentInterface {
                   ? `Some Telnyx lists didn't load: ${this._telnyxListError}`
                   : stt.length || chat.length || voices.length
                     ? `${hosted ? "Hosted (AI credit)" : "From your account"}: ${stt.length} streaming speech-to-text models, ` +
-                      `${chat.length} chat models billed by Telnyx (${chat.filter((m) => m.auto).length} picked automatically), ${voices.length} voices` +
+                      `${chat.length} chat models billed by Telnyx (${this._telnyxPreferred("chat").length} tested), ${voices.length} voices` +
                       (skippedUltra ? ` (${skippedUltra} Ultra voices left out because they can't stream).` : ".")
                     : "Lists not loaded yet. Click Refresh Telnyx lists.";
     }

@@ -14,6 +14,7 @@ import {
 } from "../../groqChatRecover.js";
 import { handleTelnyxStream } from "./telnyxStream.js";
 import { proxyTelnyx, TelnyxPricing } from "./telnyxHosted.js";
+import { afterTelnyxTurn, chatModelsResponse } from "./telnyxChatModels.js";
 
 /** Shared arcade pricing: player credit equals payment; provider cost × markup is debited. */
 const ARCADE_DEFAULT_PRICE_CENTS = 200;
@@ -68,7 +69,14 @@ export default {
             // Worker's key is used and the turn is charged to the ?session= play session.
             if (path === "/api/telnyx/stream" && request.method === "GET") {
                 assertAllowedOrigin(request, env);
-                return handleTelnyxStream(request, hostedTelnyxBilling(request, env, ctx));
+                return handleTelnyxStream(request, hostedTelnyxBilling(request, env, ctx), (outcome) =>
+                    ctx.waitUntil(afterTelnyxTurn(env, outcome))
+                );
+            }
+            // The tested chat model shortlist, best first (see telnyxChatModels.js); ?report=1 for details.
+            if (path === "/api/telnyx/chat-models" && request.method === "GET") {
+                assertAllowedOrigin(request, env);
+                return corsResponse(request, env, json(await chatModelsResponse(env, url)));
             }
             const telnyxPath = path.match(/^\/api\/telnyx\/v2(\/[\w./-]+)$/);
             if (telnyxPath && (request.method === "GET" || request.method === "POST")) {

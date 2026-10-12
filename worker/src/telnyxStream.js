@@ -27,6 +27,7 @@
  */
 
 import { estimateTokens } from "./telnyxHosted.js";
+import { REJECTS_TEMPLATE_KWARGS, THINKING_OFF_KWARGS, stripReasoning } from "./telnyxChatCheck.js";
 
 const TELNYX_BASE = "https://api.telnyx.com/v2";
 const INPUT_RATE = 16000;
@@ -53,10 +54,6 @@ const STT_QUIET_MS = 600;
 const HEARD_ALL_SLACK_S = 0.25;
 /** Voice retries per turn: before any audio, or mid-reply from the first sentence not yet spoken. */
 const MAX_SPEECH_RETRIES = 2;
-/** Mistral tokenizers fail the whole request when given chat_template_kwargs. */
-const REJECTS_TEMPLATE_KWARGS = /mistral/i;
-/** Qwen, Gemma and GLM templates read `enable_thinking`; Kimi reads `thinking`. Templates ignore the other. */
-const THINKING_OFF_KWARGS = Object.freeze({ enable_thinking: false, thinking: false });
 
 /** `transcription_engine` names for the lowercase providers in GET /speech-to-text/providers. */
 const STT_ENGINES = {
@@ -77,14 +74,18 @@ const CLOSE_STREAM_ENGINES = new Set(["Deepgram", "Speechmatics", "Soniox"]);
 /** The providers list prefixes every model; the WebSocket wants these engines' models bare. */
 const BARE_MODEL_ENGINES = new Set(["Deepgram", "Google"]);
 
-/** @param billing hosted Telnyx billing from index.js, used only when the start message has no key */
-export function handleTelnyxStream(request, billing) {
+/**
+ * @param billing hosted Telnyx billing from index.js, used only when the start message has no key
+ * @param {(outcome: { ok: string, failed: { id: string, message: string }[] }) => void} [afterTurn]
+ *   told which chat model answered and which failed, once the turn is over
+ */
+export function handleTelnyxStream(request, billing, afterTurn) {
     if (request.headers.get("Upgrade") !== "websocket") throw httpError(426, "Expected a WebSocket upgrade.");
     const { 0: client, 1: server } = new WebSocketPair();
     // Without this, binary frames arrive as Blob and Telnyx receives nothing.
     server.binaryType = "arraybuffer";
     server.accept();
-    new TelnyxStreamSession(server, billing);
+    new TelnyxStreamSession(server, billing, afterTurn);
     return new Response(null, { status: 101, webSocket: client });
 }
 
@@ -108,22 +109,11 @@ function streamingStt(stt) {
     };
 }
 
-/** Reply text safe to speak so far: drops <think> blocks and holds back a tag that may still be opening one. */
-function visibleReply(raw, final) {
-    let text = String(raw || "").replace(/<think\b[^>]*>[\s\S]*?<\/think>/gi, "");
-    const open = text.search(/<think\b/i);
-    if (open >= 0) text = text.slice(0, open);
-    if (!final) {
-        const partial = text.match(/<[a-z]{0,5}$/i);
-        if (partial && "<think".startsWith(partial[0].toLowerCase())) text = text.slice(0, partial.index);
-    }
-    return text;
-}
-
 class TelnyxStreamSession {
-    constructor(page, billing) {
+    constructor(page, billing, afterTurn) {
         this.page = page;
         this.billing = billing;
+        this.afterTurn = afterTurn;
         this.hosted = false;
         /** Hosted turns: Telnyx's price of everything used so far, in US dollars. */
         this.costUsd = 0;
@@ -179,6 +169,7 @@ class TelnyxStreamSession {
             chargeCents: this.settle()
         });
         this.closeUpstream();
+        this.reportChat();
         try {
             this.page.close(1011, "error");
         } catch (_) {}
@@ -189,6 +180,15 @@ class TelnyxStreamSession {
         if (!this.hosted || this.settled) return 0;
         this.settled = true;
         return this.billing.charge(this.costUsd);
+    }
+
+    /** Once per turn that got as far as chat: which model answered and which failed. */
+    reportChat() {
+        if (this.chatReported || !this.chatFailures) return;
+        this.chatReported = true;
+        try {
+            this.afterTurn?.({ ok: this.chatModel || "", failed: this.chatFailures });
+        } catch (_) {}
     }
 
     meterStt(bytes) {
@@ -630,6 +630,7 @@ class TelnyxStreamSession {
     async runChat() {
         const t = Date.now();
         this.failedModels = [];
+        this.chatFailures = [];
         const failures = [];
         if (this.hosted) {
             this.chatRates = await this.ratesReady;
@@ -646,6 +647,7 @@ class TelnyxStreamSession {
             } catch (error) {
                 if (this.finished || this.spoken) throw error;
                 this.failedModels.push(model.id);
+                this.chatFailures.push({ id: model.id, message: String(error?.message || error) });
                 failures.push(`${model.id}: ${error?.message || error}`);
                 this.rawReply = "";
                 this.reached(`chat model ${model.id} failed (${error?.message || error})`);
@@ -711,13 +713,14 @@ class TelnyxStreamSession {
             if (answered) this.meterChat(model, body, this.rawReply + stats.reasoning, stats.usage);
         }
         if (this.finished) return;
-        this.reply = visibleReply(this.rawReply, true).trim();
+        this.reply = stripReasoning(this.rawReply, true).trim();
         if (!this.reply) {
             const detail = [
                 `${stats.reasoning.length} characters of reasoning`,
                 this.rawReply ? `${this.rawReply.length} characters inside thinking tags` : "",
                 `finish_reason ${stats.finishReason || "not sent"}`,
-                stats.usage?.completion_tokens != null ? `${stats.usage.completion_tokens} of ${body.max_tokens} tokens used` : ""
+                stats.usage?.completion_tokens != null ? `${stats.usage.completion_tokens} of ${body.max_tokens} tokens used` : "",
+                `thinking switch ${body.chat_template_kwargs ? "sent" : "not sent"}`
             ].filter(Boolean);
             throw httpError(502, `Telnyx chat (${model.id}) returned no text (${detail.join(", ")}).`);
         }
@@ -726,7 +729,7 @@ class TelnyxStreamSession {
     /** Sends the voice whatever reply text it has not had yet, starting a sentence as soon as it ends. */
     speakNew(final) {
         if (!this.speak) return;
-        const visible = visibleReply(this.rawReply, final);
+        const visible = stripReasoning(this.rawReply, final);
         if (!visible.startsWith(this.spoken)) return;
         const piece = visible.slice(this.spoken.length);
         if (!piece) return;
@@ -871,6 +874,7 @@ class TelnyxStreamSession {
             chargeCents: this.settle()
         });
         this.closeUpstream();
+        this.reportChat();
         try {
             this.page.close(1000, "done");
         } catch (_) {}

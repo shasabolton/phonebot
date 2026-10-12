@@ -573,13 +573,29 @@ class TelnyxVoice {
             document.querySelector('meta[name="phonebot-telnyx-stream"]')?.content ||
             "";
         if (configured) return String(configured);
+        const url = new URL(TelnyxVoice._workerUrl("/telnyx/stream"));
+        url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+        return url.href;
+    }
+
+    /** A route on the Worker, next to the billing API. */
+    static _workerUrl(route) {
         const api =
             window.playBilling?.apiBaseUrl ||
             document.querySelector('meta[name="phonebot-billing-api"]')?.content ||
             "/api";
-        const url = new URL(`${String(api).replace(/\/+$/, "")}/telnyx/stream`, window.location.href);
-        url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-        return url.href;
+        return new URL(`${String(api).replace(/\/+$/, "")}${route}`, window.location.href).href;
+    }
+
+    /**
+     * The Worker's tested chat models, best first (kept current by worker/src/telnyxChatModels.js).
+     * @returns {Promise<string[]>}
+     */
+    static async loadChatShortlist() {
+        const response = await fetch(TelnyxVoice._workerUrl("/telnyx/chat-models"));
+        if (!response.ok) throw await TelnyxVoice._errorFrom("Tested chat model list", response);
+        const payload = await response.json();
+        return (Array.isArray(payload?.models) ? payload.models : []).map((id) => String(id || "").trim()).filter(Boolean);
     }
 }
 
