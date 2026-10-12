@@ -595,14 +595,16 @@ class TelnyxVoice {
     }
 
     /**
-     * The Worker's tested chat models, best first (kept current by worker/src/telnyxChatModels.js).
-     * @returns {Promise<string[]>}
+     * The Worker's tested chat models, best first (kept current by worker/src/telnyxChatModels.js):
+     * `text` for ordinary turns, `photo` for turns that send a camera image.
+     * @returns {Promise<{ text: string[], photo: string[] }>}
      */
     static async loadChatShortlist() {
         const response = await fetch(TelnyxVoice._workerUrl("/telnyx/chat-models"));
         if (!response.ok) throw await TelnyxVoice._errorFrom("Tested chat model list", response);
         const payload = await response.json();
-        return (Array.isArray(payload?.models) ? payload.models : []).map((id) => String(id || "").trim()).filter(Boolean);
+        const ids = (list) => (Array.isArray(list) ? list : []).map((id) => String(id || "").trim()).filter(Boolean);
+        return { text: ids(payload?.models), photo: ids(payload?.photoModels) };
     }
 }
 

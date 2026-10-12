@@ -339,9 +339,28 @@ function extractAssistantContentText(payload) {
         payload?.choices?.[0]?.text ||
         (typeof payload?.message?.content === "string" && payload.message.content) ||
         "";
-    return String(raw || "")
-        .replace(/<think\b[^>]*>[\s\S]*?<\/think>/gi, "")
-        .trim();
+    return stripReasoningText(raw).trim();
+}
+
+const REASONING_TAG = String.raw`(?:[a-z][\w.-]*:)?(?:think|thinking|thought|thoughts|reason|reasoning|reflection|analysis|scratchpad)`;
+const REASONING_BLOCK_RE = new RegExp(String.raw`<${REASONING_TAG}\b[^>]*>[\s\S]*?</${REASONING_TAG}\s*>`, "gi");
+const REASONING_OPEN_RE = new RegExp(String.raw`<${REASONING_TAG}\b[^>]*>`, "i");
+const REASONING_CLOSE_RE = new RegExp(String.raw`</${REASONING_TAG}\s*>`, "i");
+
+/**
+ * Reply text with model reasoning removed: <think>, <mm:think>, <reasoning> and similar blocks, a
+ * closing tag whose opening was in the prompt, and an unclosed block cut off by the token limit.
+ * Same rule as stripReasoning in worker/src/telnyxChatCheck.js.
+ * @param {string} raw
+ * @returns {string}
+ */
+function stripReasoningText(raw) {
+    let text = String(raw || "").replace(REASONING_BLOCK_RE, "");
+    const close = text.match(REASONING_CLOSE_RE);
+    if (close) text = text.slice(close.index + close[0].length);
+    const open = text.search(REASONING_OPEN_RE);
+    if (open >= 0) text = text.slice(0, open);
+    return text;
 }
 
 /**
@@ -430,6 +449,7 @@ const api = {
     messagesIncludeVisionImage,
     ensureVisionMaxTokens,
     extractAssistantContentText,
+    stripReasoningText,
     readChatCompletionStream,
     MIN_VISION_MAX_TOKENS
 };
@@ -446,6 +466,7 @@ export {
     messagesIncludeVisionImage,
     ensureVisionMaxTokens,
     extractAssistantContentText,
+    stripReasoningText,
     readChatCompletionStream,
     MIN_VISION_MAX_TOKENS
 };

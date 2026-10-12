@@ -12,6 +12,8 @@
  * The REST proxy mirrors https://api.telnyx.com/v2 at /api/telnyx/v2/<path>?session=<play session>.
  */
 
+import { hasReasoningTags, stripReasoning } from "./telnyxChatCheck.js";
+
 const TELNYX_BASE = "https://api.telnyx.com/v2";
 /** Prices are fetched again only for a model they don't list (models changed), at most this often. */
 const CHAT_RATES_REFETCH_MS = 60 * 1000;
@@ -135,9 +137,9 @@ export function estimateTokens(messages, completionText) {
 
 /**
  * /api/telnyx/v2/<path> on the Worker's key. `billing` comes from index.js and holds the play
- * session's gate and debit.
+ * session's gate and debit; `afterChat` gets each chat request's outcome for the model shortlists.
  */
-export async function proxyTelnyx(request, path, billing) {
+export async function proxyTelnyx(request, path, billing, afterChat = () => {}) {
     try {
         await billing.open();
     } catch (error) {
@@ -153,15 +155,16 @@ export async function proxyTelnyx(request, path, billing) {
         if (!FREE_GETS.has(path)) throw httpError(404, "That Telnyx request is not available on hosted credit.");
         return passThrough(await fetch(`${TELNYX_BASE}${path}${search ? `?${search}` : ""}`, { headers: auth }));
     }
-    if (path === "/ai/openai/chat/completions") return proxyChat(request, billing, auth);
+    if (path === "/ai/openai/chat/completions") return proxyChat(request, billing, auth, afterChat);
     if (path === "/text-to-speech/speech") return proxySpeech(request, billing, auth);
     if (path === "/ai/audio/transcriptions") return proxyTranscription(request, billing, auth);
     throw httpError(404, "That Telnyx request is not available on hosted credit.");
 }
 
-async function proxyChat(request, billing, auth) {
+async function proxyChat(request, billing, auth, afterChat) {
     const body = await readJson(request);
     const model = String(body.model || "").trim();
+    const kind = hasImage(body.messages) ? "photo" : "text";
     const rate = (await billing.pricing.chatRates([model])).get(model);
     if (!rate) {
         return Response.json(
@@ -177,7 +180,18 @@ async function proxyChat(request, billing, auth) {
         headers: { ...auth, "Content-Type": "application/json" },
         body: JSON.stringify(body)
     });
-    if (!upstream.ok) return passThrough(upstream);
+    if (!upstream.ok) {
+        const raw = await upstream.text();
+        // 401/402/403 are the Worker's key or balance, not the model.
+        if (![401, 402, 403].includes(upstream.status)) {
+            // The page retries on the next model straight away; that request runs any test.
+            afterChat({ kind, failed: [{ id: model, message: `HTTP ${upstream.status}: ${raw.slice(0, 200)}` }], test: false });
+        }
+        return new Response(raw, {
+            status: upstream.status,
+            headers: { "Content-Type": upstream.headers.get("Content-Type") || "application/json" }
+        });
+    }
     const payload = await upstream.json();
     const message = payload?.choices?.[0]?.message || {};
     const usage =
@@ -185,7 +199,20 @@ async function proxyChat(request, billing, auth) {
             ? payload.usage
             : estimateTokens(body.messages, `${message.content || ""}${message.reasoning_content || message.reasoning || ""}`);
     const charge = billing.charge(billing.pricing.chatUsd(rate, usage));
+    const content = String(message.content || "");
+    if (hasReasoningTags(content) || !stripReasoning(content).trim()) {
+        const problem = hasReasoningTags(content) ? "put its reasoning inside the reply text" : "returned no reply";
+        afterChat({ kind, failed: [{ id: model, message: problem }], test: false });
+    } else {
+        afterChat({ kind, ok: model });
+    }
     return Response.json(payload, { headers: { "X-Phonebot-AI-Charge-Cents": String(charge) } });
+}
+
+function hasImage(messages) {
+    return (Array.isArray(messages) ? messages : []).some(
+        (m) => Array.isArray(m?.content) && m.content.some((part) => part?.type === "image_url" || part?.image_url)
+    );
 }
 
 async function proxySpeech(request, billing, auth) {

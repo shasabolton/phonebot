@@ -76,7 +76,7 @@ const BARE_MODEL_ENGINES = new Set(["Deepgram", "Google"]);
 
 /**
  * @param billing hosted Telnyx billing from index.js, used only when the start message has no key
- * @param {(outcome: { ok: string, failed: { id: string, message: string }[] }) => void} [afterTurn]
+ * @param {(outcome: { kind: "text", ok: string, failed: { id: string, message: string }[] }) => void} [afterTurn]
  *   told which chat model answered and which failed, once the turn is over
  */
 export function handleTelnyxStream(request, billing, afterTurn) {
@@ -187,7 +187,7 @@ class TelnyxStreamSession {
         if (this.chatReported || !this.chatFailures) return;
         this.chatReported = true;
         try {
-            this.afterTurn?.({ ok: this.chatModel || "", failed: this.chatFailures });
+            this.afterTurn?.({ kind: "text", ok: this.chatModel || "", failed: this.chatFailures });
         } catch (_) {}
     }
 

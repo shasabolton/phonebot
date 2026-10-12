@@ -12,6 +12,11 @@ class AgentInterface {
     static STORAGE_TELNYX_PREFIX = "phonebot.telnyx.";
     /** Telnyx chat models tried per turn before giving up (the Worker's stream route takes at most 4). */
     static TELNYX_CHAT_ATTEMPTS = 4;
+    /**
+     * max_tokens for a Telnyx turn with a camera image: the photo list's backups reason first, and
+     * reasoning counts against it (the Worker's hosted relay allows at most 1024).
+     */
+    static TELNYX_PHOTO_MAX_TOKENS = 1024;
     /** Telnyx streaming speech-to-text models tried per turn before giving up. */
     static TELNYX_STT_ATTEMPTS = 3;
     /** Telnyx voices tried per turn before giving up. */
@@ -93,6 +98,8 @@ class AgentInterface {
         this._telnyxLists = { stt: [], chat: [], voices: [], skippedUltra: 0 };
         /** The Worker's tested chat models, best first; empty until loaded (robots.js is used meanwhile). */
         this._telnyxShortlist = [];
+        /** The same for turns with a camera image. */
+        this._telnyxPhotoShortlist = [];
         this._telnyxListsKey = "";
         this._telnyxListsToken = 0;
         this._telnyxListsLoading = false;
@@ -939,7 +946,9 @@ class AgentInterface {
      * `_telnyxPreferred`). Only if the account offers none of the tested models is the automatic
      * ranking used instead. Models Telnyx no longer offers are skipped (until the lists load, the
      * pick and tested models are tried unchecked), and so are models that failed this session.
-     * With `photo`, Auto only tries models that take images (Telnyx says so, or one answered a
+     * With `photo`, Auto tries the Worker's photo shortlist, then models that answered a photo this
+     * session, then others Telnyx says take images (untested: often slow reasoners, a last resort).
+     * Without that list, only models that take images (Telnyx says so, or one answered a
      * photo this session): tested ones first, then the other automatic picks, then tested models
      * Telnyx says nothing about. Models that failed a photo are skipped for photos only.
      * @param {{ ignorePick?: boolean, photo?: boolean }} [options] ignorePick: what Auto would use
@@ -959,7 +968,13 @@ class AgentInterface {
         const picked = list.length;
         let tested = this._telnyxPreferred("chat", agent).map(offered).filter(Boolean);
         if (!tested.length) tested = ranked.filter((m) => m.auto);
-        if (options.photo) {
+        const photoTested = options.photo ? this._telnyxPhotoShortlist.map(offered).filter(Boolean) : [];
+        if (photoTested.length) {
+            for (const m of photoTested.filter(usable)) add(m);
+            for (const m of [...tested, ...ranked]) if (usable(m) && this._telnyxPhotoOk.has(m.id)) add(m);
+            for (const m of ranked) if (usable(m) && m.vision === true) add(m);
+            if (!list.length) for (const m of photoTested) add(m);
+        } else if (options.photo) {
             const takesPhotos = (m) => this._telnyxPhotoOk.has(m.id) || m.vision === true;
             for (const m of [...tested, ...ranked.filter((r) => r.auto)]) if (usable(m) && takesPhotos(m)) add(m);
             for (const m of tested) if (usable(m) && m.vision == null) add(m);
@@ -1205,8 +1220,10 @@ class AgentInterface {
         ]);
         if (token !== this._telnyxListsToken) return;
         this._telnyxListsLoading = false;
-        if (shortlist.status === "fulfilled") this._telnyxShortlist = shortlist.value;
-        else console.warn("Tested chat models could not be loaded from the Worker; using robots.js:", shortlist.reason);
+        if (shortlist.status === "fulfilled") {
+            this._telnyxShortlist = shortlist.value.text;
+            this._telnyxPhotoShortlist = shortlist.value.photo;
+        } else console.warn("Tested chat models could not be loaded from the Worker; using robots.js:", shortlist.reason);
         const errors = [];
         for (const [name, result] of [
             ["speech-to-text models", stt],
@@ -4250,6 +4267,7 @@ class AgentInterface {
      */
     async _sendTelnyxChatWithFallback(agent, body, send) {
         const photo = this._messagesIncludeVisionImage(body.messages);
+        if (photo) body.max_tokens = Math.max(Number(body.max_tokens) || 0, AgentInterface.TELNYX_PHOTO_MAX_TOKENS);
         const models = this._telnyxChatModels(agent, { photo });
         const failed = [];
         try {
@@ -4347,11 +4365,11 @@ class AgentInterface {
         };
     }
 
-    /** Drop Qwen/Groq raw thinking (`<think>…</think>`) so history/TTS stay short. */
+    /** Drop raw model reasoning (`<think>…</think>`, `<mm:think>…`, …) so history/TTS stay short. */
     _stripThinkingBlocks(text) {
-        return String(text || "")
-            .replace(/<think\b[^>]*>[\s\S]*?<\/think>/gi, "")
-            .replace(/^\s+|\s+$/g, "");
+        const strip = window.GroqChatRecover?.stripReasoningText;
+        const visible = typeof strip === "function" ? strip(text) : String(text || "").replace(/<think\b[^>]*>[\s\S]*?<\/think>/gi, "");
+        return visible.replace(/^\s+|\s+$/g, "");
     }
 
     /**

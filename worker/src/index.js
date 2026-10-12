@@ -81,7 +81,13 @@ export default {
             const telnyxPath = path.match(/^\/api\/telnyx\/v2(\/[\w./-]+)$/);
             if (telnyxPath && (request.method === "GET" || request.method === "POST")) {
                 assertAllowedOrigin(request, env);
-                return corsResponse(request, env, await proxyTelnyx(request, telnyxPath[1], hostedTelnyxBilling(request, env, ctx)));
+                return corsResponse(
+                    request,
+                    env,
+                    await proxyTelnyx(request, telnyxPath[1], hostedTelnyxBilling(request, env, ctx), (outcome) =>
+                        ctx.waitUntil(afterTelnyxTurn(env, outcome))
+                    )
+                );
             }
 
             const match = path.match(/^\/api\/session\/([0-9a-f-]+)(?:\/(start|complete))?$/i);
