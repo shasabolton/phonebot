@@ -1203,10 +1203,87 @@
     }
     .sensor-camera-ptt-stack {
       pointer-events: none;
+      width: 100%;
       display: flex;
       flex-direction: column;
       align-items: center;
       gap: 0.7rem;
+    }
+    /* Sliding mic: the knob rests on the left and slides into the centre dock to talk. */
+    .sensor-camera-ptt-track {
+      --ptt-size: clamp(4.25rem, 18vw, 5.25rem);
+      --ptt-pad: 6px;
+      position: relative;
+      pointer-events: none;
+      width: min(100%, 26rem);
+      height: calc(var(--ptt-size) + 2 * var(--ptt-pad));
+    }
+    .sensor-camera-ptt-groove {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: 0;
+      width: calc(50% + var(--ptt-size) / 2 + var(--ptt-pad));
+      display: flex;
+      align-items: center;
+      justify-content: space-evenly;
+      padding: 0 calc(var(--ptt-size) + var(--ptt-pad)) 0 calc(var(--ptt-size) + 2 * var(--ptt-pad));
+      box-sizing: border-box;
+      border-radius: 999px;
+      background: rgba(0, 0, 0, 0.38);
+      border: 2px solid rgba(255, 255, 255, 0.2);
+    }
+    .sensor-camera-ptt-chevron {
+      width: 0.6rem;
+      height: 0.6rem;
+      border-top: 4px solid #fff;
+      border-right: 4px solid #fff;
+      transform: rotate(45deg);
+      opacity: 0.2;
+      animation: sensor-camera-ptt-chevron 1.6s ease-in-out infinite;
+    }
+    .sensor-camera-ptt-chevron:nth-child(2) { animation-delay: 0.2s; }
+    .sensor-camera-ptt-chevron:nth-child(3) { animation-delay: 0.4s; }
+    .sensor-camera-ptt-overlay:not(.sensor-camera-ptt-overlay--idle) .sensor-camera-ptt-chevron {
+      animation: none;
+      opacity: 0.12;
+    }
+    @keyframes sensor-camera-ptt-chevron {
+      0%, 100% { opacity: 0.2; }
+      30% { opacity: 0.95; }
+    }
+    .sensor-camera-ptt-dock {
+      position: absolute;
+      top: var(--ptt-pad);
+      left: calc(50% - var(--ptt-size) / 2);
+      width: var(--ptt-size);
+      height: var(--ptt-size);
+      box-sizing: border-box;
+      border-radius: 50%;
+      border: 3px dashed rgba(255, 255, 255, 0.75);
+      background: rgba(255, 255, 255, 0.08);
+      transition: border-color 140ms ease;
+    }
+    .sensor-camera-ptt-overlay--docked .sensor-camera-ptt-dock {
+      border-style: solid;
+      border-color: #7ee08a;
+    }
+    .sensor-camera-ptt-wave {
+      position: absolute;
+      inset: -3px;
+      border-radius: 50%;
+      border: 3px solid #7ee08a;
+      opacity: 0;
+    }
+    .sensor-camera-ptt-overlay--docked .sensor-camera-ptt-wave {
+      animation: sensor-camera-ptt-wave 1.4s ease-out infinite;
+    }
+    .sensor-camera-ptt-overlay--docked .sensor-camera-ptt-wave:nth-child(2) {
+      animation-delay: 0.7s;
+    }
+    @keyframes sensor-camera-ptt-wave {
+      0% { transform: scale(1); opacity: 0.85; }
+      100% { transform: scale(1.9); opacity: 0; }
     }
     .sensor-camera-ptt-label {
       pointer-events: none;
@@ -1220,30 +1297,41 @@
     }
     .sensor-camera-ptt-btn {
       pointer-events: auto;
+      position: absolute;
+      z-index: 1;
+      top: var(--ptt-pad);
+      left: var(--ptt-pad);
       display: flex;
       align-items: center;
       justify-content: center;
-      width: clamp(4.75rem, 20vw, 5.75rem);
-      height: clamp(4.75rem, 20vw, 5.75rem);
+      width: var(--ptt-size);
+      height: var(--ptt-size);
+      margin: 0;
       padding: 0;
+      box-sizing: border-box;
       border: 6px solid #f3dcc8;
       border-radius: 50%;
       background: #f28c28;
       color: #fff;
       font: inherit;
-      cursor: pointer;
+      cursor: grab;
       touch-action: none;
       user-select: none;
+      transform: translateX(var(--ptt-x, 0px)) scale(var(--ptt-press, 1));
       box-shadow: 0 4px 16px rgba(0, 0, 0, 0.28);
-      transition: transform 90ms ease, box-shadow 140ms ease, opacity 140ms ease;
+      transition: box-shadow 140ms ease, opacity 140ms ease, border-color 140ms ease;
     }
     .sensor-camera-ptt-btn:disabled {
       opacity: 0.65;
       cursor: default;
-      transform: none;
     }
-    .sensor-camera-ptt-btn:not(:disabled):active {
-      transform: scale(0.96);
+    .sensor-camera-ptt-btn.is-pressed {
+      --ptt-press: 0.95;
+      cursor: grabbing;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+    }
+    .sensor-camera-ptt-overlay--docked .sensor-camera-ptt-btn {
+      border-color: #7ee08a;
     }
     .sensor-camera-ptt-icon {
       width: 42%;
@@ -1292,7 +1380,6 @@
     .sensor-camera-ptt-dots span:nth-child(2) { animation-delay: 0.15s; }
     .sensor-camera-ptt-dots span:nth-child(3) { animation-delay: 0.3s; }
     .sensor-camera-ptt-overlay--thinking .sensor-camera-ptt-btn {
-      position: relative;
       opacity: 1;
     }
     .sensor-camera-ptt-overlay--thinking .sensor-camera-ptt-btn::after {
@@ -1319,7 +1406,9 @@
     @media (prefers-reduced-motion: reduce) {
       .sensor-camera-ptt-overlay--thinking .sensor-camera-ptt-label,
       .sensor-camera-ptt-dots span,
-      .sensor-camera-ptt-overlay--thinking .sensor-camera-ptt-btn::after {
+      .sensor-camera-ptt-overlay--thinking .sensor-camera-ptt-btn::after,
+      .sensor-camera-ptt-chevron,
+      .sensor-camera-ptt-overlay--docked .sensor-camera-ptt-wave {
         animation-duration: 3s;
       }
     }

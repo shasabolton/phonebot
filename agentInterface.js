@@ -198,6 +198,27 @@ class AgentInterface {
         this._pttMaxTimer = null;
         this._pttWaitResolve = null;
         this._pttWaitGeneration = 0;
+        /** What is keeping the mic open ("button", "dashboard", "lean"); it closes when the last one lets go. */
+        this._pttSources = new Set();
+        /** True while the microphone is opening for a press, before `_pttRecording` is set. */
+        this._pttStarting = false;
+        /** Sliding mic on the camera frame: track, dock and the per-frame loop that moves the knob. */
+        this._pttTrackEl = null;
+        this._pttSlideRaf = 0;
+        this._pttSlideLastAt = 0;
+        /** Knob position: 0 at rest on the left, 1 in the centre dock. */
+        this._pttSlide = 0;
+        this._pttSlideX = -1;
+        /** Furthest the finger has dragged the knob this press (0–1). */
+        this._pttDrag = 0;
+        this._pttDragStart = null;
+        this._pttDocked = false;
+        /** Smoothed eye spacing / frame width, or null with no face. */
+        this._leanRatio = null;
+        this._leanSeenAt = 0;
+        this._leanAboveSince = 0;
+        /** Leaning starts a turn only after the player has leaned back since the last one. */
+        this._leanArmed = true;
         /** Cancels in-flight mode auto-start when the mode changes again. */
         this._modeStartGeneration = 0;
         /**
@@ -214,6 +235,20 @@ class AgentInterface {
     /** Keep capturing after finger-up so the last words aren't cut off. */
     static PTT_RELEASE_TAIL_MS = 500;
     static PTT_MAX_RECORD_MS = 20000;
+    /** Eye spacing / frame width that opens the mic, and the lower one that closes it again. */
+    static LEAN_ON = 1 / 3;
+    static LEAN_OFF = 0.27;
+    /** Eye spacing at normal sitting distance: the knob starts moving above this. */
+    static LEAN_MIN = 0.1;
+    static LEAN_ON_MS = 200;
+    /** Faces often drop out this close to the camera; keep a lean-in turn open this long without one. */
+    static LEAN_LOST_MS = 600;
+    /** Knob position where it waits, trembling, until the mic is live, then snaps into the dock. */
+    static PTT_SNAP_AT = 2 / 3;
+    /** Knob speed in track lengths per second while the mic opens, and once it is live. */
+    static PTT_SLIDE_SLOW = 0.9;
+    static PTT_SLIDE_FAST = 5;
+    static PTT_SLIDE_RETURN = 3;
 
     /** True when a hold-to-talk game is active (Custom runs every JSON game). */
     _isConversationMode() {
@@ -2279,12 +2314,14 @@ class AgentInterface {
     _clearPttOverlay() {
         this._abortPttRecording();
         this._cancelPttWait();
+        this._stopPttSlideLoop();
         if (this._pttOverlayEl && this._pttOverlayEl.parentNode) {
             this._pttOverlayEl.parentNode.removeChild(this._pttOverlayEl);
         }
         this._pttOverlayEl = null;
         this._pttBtnEl = null;
         this._pttLabelEl = null;
+        this._pttTrackEl = null;
         this._pttState = "hidden";
         this._syncDashboardMicState("hidden", {
             disabled: true,
@@ -2322,7 +2359,8 @@ class AgentInterface {
     }
 
     /**
-     * Build (or reuse) the hold-to-talk button on the camera frame.
+     * Build (or reuse) the sliding mic on the camera frame: the knob rests on the left of a groove
+     * and slides into the centre dock while held, dragged, or while the player leans in.
      * @returns {HTMLElement|null}
      */
     _ensurePttOverlay() {
@@ -2341,12 +2379,33 @@ class AgentInterface {
 
         const label = document.createElement("p");
         label.className = "sensor-camera-ptt-label";
-        label.textContent = "Hold button while you talk";
+        label.textContent = AgentInterface.PTT_IDLE_LABEL;
+
+        const track = document.createElement("div");
+        track.className = "sensor-camera-ptt-track";
+
+        const groove = document.createElement("div");
+        groove.className = "sensor-camera-ptt-groove";
+        groove.setAttribute("aria-hidden", "true");
+        for (let i = 0; i < 3; i++) {
+            const chevron = document.createElement("span");
+            chevron.className = "sensor-camera-ptt-chevron";
+            groove.appendChild(chevron);
+        }
+
+        const dock = document.createElement("div");
+        dock.className = "sensor-camera-ptt-dock";
+        dock.setAttribute("aria-hidden", "true");
+        for (let i = 0; i < 2; i++) {
+            const wave = document.createElement("span");
+            wave.className = "sensor-camera-ptt-wave";
+            dock.appendChild(wave);
+        }
 
         const btn = document.createElement("button");
         btn.type = "button";
         btn.className = "sensor-camera-ptt-btn";
-        btn.setAttribute("aria-label", "Hold button while you talk");
+        btn.setAttribute("aria-label", AgentInterface.PTT_IDLE_LABEL);
         btn.appendChild(this._createPttMicIcon());
 
         const endHold = (ev) => {
@@ -2355,7 +2414,10 @@ class AgentInterface {
                     btn.releasePointerCapture(ev.pointerId);
                 } catch (_) {}
             }
-            void this._onPttPointerUp(ev);
+            this._pttDragStart = null;
+            this._pttDrag = 0;
+            btn.classList.remove("is-pressed");
+            this._pttSourceOff("button");
         };
 
         btn.addEventListener("pointerdown", (e) => {
@@ -2363,23 +2425,214 @@ class AgentInterface {
             try {
                 btn.setPointerCapture(e.pointerId);
             } catch (_) {}
-            void this._onPttPointerDown(e);
+            this._pttDragStart = { x: e.clientX, slide: this._pttSlide };
+            this._pttDrag = this._pttSlide;
+            btn.classList.add("is-pressed");
+            this._pttSourceOn("button");
+        });
+        btn.addEventListener("pointermove", (e) => {
+            if (!this._pttDragStart) return;
+            const travel = this._pttTravelPx();
+            if (travel <= 0) return;
+            const slide = this._pttDragStart.slide + (e.clientX - this._pttDragStart.x) / travel;
+            this._pttDrag = Math.max(0, Math.min(1, slide));
         });
         btn.addEventListener("pointerup", endHold);
         btn.addEventListener("pointercancel", endHold);
-        btn.addEventListener("lostpointercapture", () => {
-            if (this._pttRecording) void this._onPttPointerUp({ type: "lostpointercapture" });
-        });
+        btn.addEventListener("lostpointercapture", endHold);
 
+        track.appendChild(groove);
+        track.appendChild(dock);
+        track.appendChild(btn);
         stack.appendChild(label);
-        stack.appendChild(btn);
+        stack.appendChild(track);
         overlay.appendChild(stack);
         frameEl.appendChild(overlay);
 
         this._pttOverlayEl = overlay;
         this._pttBtnEl = btn;
         this._pttLabelEl = label;
+        this._pttTrackEl = track;
+        this._pttSlide = 0;
+        this._pttSlideX = -1;
+        this._startPttSlideLoop();
         return overlay;
+    }
+
+    static PTT_IDLE_LABEL = "Lean in or slide the mic to talk";
+    static PTT_LEAN_RESET_LABEL = "Lean back, then in again to talk";
+
+    /** Pixels from the knob's rest spot to the centre dock. */
+    _pttTravelPx() {
+        const track = this._pttTrackEl;
+        const btn = this._pttBtnEl;
+        if (!track || !btn) return 0;
+        return Math.max(0, track.clientWidth / 2 - btn.offsetWidth / 2 - btn.offsetLeft);
+    }
+
+    /**
+     * One input wants the mic open. The first one opens it; later ones just keep it open.
+     * @param {"button"|"dashboard"|"lean"} source
+     */
+    _pttSourceOn(source) {
+        if (this._pttSources.has(source) || this._pttFinishing) return;
+        const busy = this._pttRecording || this._pttStarting;
+        if (!busy && !this._pttCanInteract() && !this._pttWaitResolve) return;
+        this._pttSources.add(source);
+        this._leanArmed = false;
+        if (!busy) void this._onPttPointerDown({ source });
+    }
+
+    /**
+     * One input let go. The mic closes (and the turn is sent) when nothing is keeping it open.
+     * @param {"button"|"dashboard"|"lean"} source
+     */
+    _pttSourceOff(source) {
+        if (!this._pttSources.delete(source)) return;
+        if (!this._pttSources.size) void this._onPttPointerUp({ source });
+    }
+
+    _startPttSlideLoop() {
+        if (this._pttSlideRaf) return;
+        this._pttSlideLastAt = 0;
+        const step = (now) => {
+            this._pttSlideRaf = 0;
+            if (!this._pttOverlayEl?.isConnected) return;
+            this._pttSlideTick(now);
+            this._pttSlideRaf = requestAnimationFrame(step);
+        };
+        this._pttSlideRaf = requestAnimationFrame(step);
+    }
+
+    _stopPttSlideLoop() {
+        if (this._pttSlideRaf) cancelAnimationFrame(this._pttSlideRaf);
+        this._pttSlideRaf = 0;
+        this._leanRatio = null;
+        this._leanAboveSince = 0;
+        this._pttDocked = false;
+    }
+
+    /**
+     * Largest eye spacing in the camera view as a fraction of frame width, or null with no face.
+     * @returns {number|null}
+     */
+    _readEyeSpacing() {
+        const cv = this.robot?.getProcessingByType?.("computervision");
+        const poses = cv?.poses;
+        if (!Array.isArray(poses) || !poses.length) return null;
+        const size = cv.getFrameSize?.() || {};
+        const aspect = size.width > 0 && size.height > 0 ? size.height / size.width : 0.75;
+        let best = null;
+        for (const pose of poses) {
+            const kps = Array.isArray(pose?.keypoints) ? pose.keypoints : [];
+            const left = kps.find((k) => k.name === "left_eye");
+            const right = kps.find((k) => k.name === "right_eye");
+            if (!left || !right) continue;
+            const ratio = Math.hypot(left.x - right.x, (left.y - right.y) * aspect);
+            if (Number.isFinite(ratio) && (best == null || ratio > best)) best = ratio;
+        }
+        return best;
+    }
+
+    /** Lean-in: open the mic past LEAN_ON, close it below LEAN_OFF. Returns knob progress from leaning (0–1). */
+    _updateLean(now, dt) {
+        const raw = this._readEyeSpacing();
+        if (raw != null) {
+            this._leanSeenAt = now;
+            const k = 1 - Math.exp(-dt / 0.12);
+            this._leanRatio = this._leanRatio == null ? raw : this._leanRatio + (raw - this._leanRatio) * k;
+        } else if (now - this._leanSeenAt > AgentInterface.LEAN_LOST_MS) {
+            this._leanRatio = null;
+        }
+        const ratio = this._leanRatio;
+        const leaning = this._pttSources.has("lean");
+
+        if (ratio == null || ratio < AgentInterface.LEAN_OFF) {
+            if (!leaning && !this._pttRecording) this._leanArmed = true;
+            if (leaning) this._pttSourceOff("lean");
+        }
+
+        if (ratio != null && ratio >= AgentInterface.LEAN_ON && this._leanArmed) {
+            if (!this._leanAboveSince) this._leanAboveSince = now;
+            if (now - this._leanAboveSince >= AgentInterface.LEAN_ON_MS && this._pttCanInteract()) {
+                this._pttSourceOn("lean");
+            }
+        } else {
+            this._leanAboveSince = 0;
+        }
+
+        if (ratio == null) return 0;
+        const t = (ratio - AgentInterface.LEAN_MIN) / (AgentInterface.LEAN_ON - AgentInterface.LEAN_MIN);
+        return Math.max(0, Math.min(1, t));
+    }
+
+    /** Moves the knob each frame toward where the inputs and the mic state want it. */
+    _pttSlideTick(now) {
+        const dt = this._pttSlideLastAt ? Math.min(0.1, (now - this._pttSlideLastAt) / 1000) : 0;
+        this._pttSlideLastAt = now;
+        const lean = this._updateLean(now, dt);
+        const btn = this._pttBtnEl;
+        if (!btn) return;
+
+        const snapAt = AgentInterface.PTT_SNAP_AT;
+        const live = this._pttRecording && this._pttState === "listening";
+        const opening = this._pttRecording && !live && !this._pttFinishing;
+        const canLean = this._leanArmed && this._pttCanInteract();
+
+        const held = this._pttSources.size > 0 && !this._pttFinishing;
+        const waitAt = snapAt - 0.02;
+        let target = 0;
+        let speed = AgentInterface.PTT_SLIDE_RETURN;
+        if (live && held) {
+            target = 1;
+            speed = AgentInterface.PTT_SLIDE_FAST;
+        } else if (opening && held) {
+            target = waitAt;
+            speed = AgentInterface.PTT_SLIDE_SLOW;
+        } else if (!this._pttRecording && canLean) {
+            target = lean * snapAt;
+            speed = AgentInterface.PTT_SLIDE_FAST;
+        }
+        const drag = this._pttSources.has("button") && held ? Math.min(this._pttDrag, live ? 1 : waitAt) : 0;
+        if (drag > target) {
+            target = drag;
+            speed = AgentInterface.PTT_SLIDE_FAST * 2;
+        }
+
+        const delta = target - this._pttSlide;
+        const stepMax = speed * dt;
+        this._pttSlide = Math.abs(delta) <= stepMax ? target : this._pttSlide + Math.sign(delta) * stepMax;
+
+        const docked = live && this._pttSlide >= 0.999;
+        if (docked !== this._pttDocked) {
+            this._pttDocked = docked;
+            this._pttOverlayEl?.classList.toggle("sensor-camera-ptt-overlay--docked", docked);
+            if (docked) {
+                try {
+                    navigator.vibrate?.(25);
+                } catch (_) {}
+            }
+        }
+
+        const straining = opening && held && this._pttSlide >= waitAt - 0.01;
+        const jitter = straining ? Math.sin(now / 18) * 1.5 : 0;
+        const x = Math.round((this._pttSlide * this._pttTravelPx() + jitter) * 10) / 10;
+        if (x !== this._pttSlideX) {
+            this._pttSlideX = x;
+            btn.style.setProperty("--ptt-x", `${x}px`);
+        }
+
+        const label = this._pttLabelEl;
+        if (label && this._pttState === "idle") {
+            const near = this._leanRatio != null && this._leanRatio >= AgentInterface.LEAN_ON * 0.9;
+            const wantReset = !this._leanArmed && near && !this._pttRecording;
+            const text = label.textContent;
+            if (wantReset && text === AgentInterface.PTT_IDLE_LABEL) {
+                label.textContent = AgentInterface.PTT_LEAN_RESET_LABEL;
+            } else if (!wantReset && text === AgentInterface.PTT_LEAN_RESET_LABEL) {
+                label.textContent = AgentInterface.PTT_IDLE_LABEL;
+            }
+        }
     }
 
     /**
@@ -2392,10 +2645,11 @@ class AgentInterface {
         this._pttState = phase;
         const overlay = this._ensurePttOverlay();
 
+        const leanOnly = this._pttSources.has("lean") && this._pttSources.size === 1;
         const labels = {
-            idle: "Hold button while you talk",
+            idle: AgentInterface.PTT_IDLE_LABEL,
             starting: "Starting mic…",
-            listening: "Listening",
+            listening: leanOnly ? "Listening — lean back to send" : "Listening — let go to send",
             processing: "Processing…",
             thinking: "Thinking",
             talking: "Talking"
@@ -2500,7 +2754,9 @@ class AgentInterface {
         }
     }
 
-    _abortPttRecording() {
+    /** @param {{ keepSources?: boolean }} [options] keepSources: a new turn is starting for the inputs held now. */
+    _abortPttRecording(options = {}) {
+        if (!options.keepSources) this._pttSources.clear();
         if (this._pttMaxTimer) {
             clearTimeout(this._pttMaxTimer);
             this._pttMaxTimer = null;
@@ -2531,8 +2787,9 @@ class AgentInterface {
     }
 
     async _onPttPointerDown(_ev) {
-        if (this._pttRecording) return;
+        if (this._pttRecording || this._pttStarting) return;
         if (!this._pttCanInteract() && !this._pttWaitResolve) return;
+        this._pttStarting = true;
         try {
             if (this._usesTelnyxStreamTurn()) await this._startTelnyxStreamTurn();
             else await this._startPttRecording();
@@ -2544,10 +2801,17 @@ class AgentInterface {
                 this._statusEl.className = "error";
             }
             this._armConversationPtt();
+        } finally {
+            this._pttStarting = false;
+        }
+        // Everything let go while the microphone was still opening.
+        if (this._pttRecording && !this._pttFinishing && !this._pttSources.size) {
+            void this._onPttPointerUp({ type: "released-while-starting" });
         }
     }
 
     async _onPttPointerUp(_ev) {
+        this._pttSources.clear();
         if (!this._pttRecording || this._pttFinishing) return;
         if (this._telnyxTurn) {
             await this._finishTelnyxStreamTurn();
@@ -2596,7 +2860,7 @@ class AgentInterface {
                 `No Telnyx streaming speech-to-text model is available${this._telnyxListError ? `: ${this._telnyxListError}` : "."} Click Refresh Telnyx lists.`
             );
         }
-        this._abortPttRecording();
+        this._abortPttRecording({ keepSources: true });
         const turn = new window.TelnyxStreamTurn({
             key,
             session: hosted ? window.playBilling.getActiveSessionId() : "",
@@ -2959,7 +3223,7 @@ class AgentInterface {
         if (!navigator.mediaDevices?.getUserMedia) {
             throw new Error("Microphone capture is not available.");
         }
-        this._abortPttRecording();
+        this._abortPttRecording({ keepSources: true });
         const stream = await navigator.mediaDevices.getUserMedia({
             audio: {
                 echoCancellation: true,
@@ -5608,20 +5872,18 @@ class AgentInterface {
                     btn.releasePointerCapture(ev.pointerId);
                 } catch (_) {}
             }
-            void this._onPttPointerUp(ev);
+            this._pttSourceOff("dashboard");
         };
         btn.addEventListener("pointerdown", (e) => {
             if (e.button !== 0 && e.pointerType === "mouse") return;
             try {
                 btn.setPointerCapture(e.pointerId);
             } catch (_) {}
-            void this._onPttPointerDown(e);
+            this._pttSourceOn("dashboard");
         });
         btn.addEventListener("pointerup", endHold);
         btn.addEventListener("pointercancel", endHold);
-        btn.addEventListener("lostpointercapture", () => {
-            if (this._pttRecording) void this._onPttPointerUp({ type: "lostpointercapture" });
-        });
+        btn.addEventListener("lostpointercapture", endHold);
     }
 
     /**
@@ -6043,6 +6305,7 @@ class AgentInterface {
 
     destroy() {
         this._stopSpeaking();
+        this._clearPttOverlay();
         window.removeEventListener("phonebot:ai-budget", this._aiBudgetListener);
         if (window.playBilling?._passwordHandler === this._passwordHandler) {
             window.playBilling.setPasswordHandler(null);
