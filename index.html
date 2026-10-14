@@ -1209,10 +1209,10 @@
       align-items: center;
       gap: 0.7rem;
     }
-    /* Sliding mic: the knob rests on the left and slides into the centre dock to talk. */
+    /* Sliding mic: the knob rests on the left and slides into the dock at the right end to talk. */
     .sensor-camera-ptt-track {
-      --ptt-size: clamp(4.25rem, 18vw, 5.25rem);
-      --ptt-pad: 6px;
+      --ptt-size: clamp(3.2rem, 13.5vw, 3.95rem);
+      --ptt-pad: 4px;
       position: relative;
       pointer-events: none;
       width: min(100%, 26rem);
@@ -1220,30 +1220,29 @@
     }
     .sensor-camera-ptt-groove {
       position: absolute;
-      top: 0;
-      bottom: 0;
-      left: 0;
-      width: calc(50% + var(--ptt-size) / 2 + var(--ptt-pad));
+      inset: 0;
       display: flex;
       align-items: center;
       justify-content: space-evenly;
-      padding: 0 calc(var(--ptt-size) + var(--ptt-pad)) 0 calc(var(--ptt-size) + 2 * var(--ptt-pad));
+      padding: 0 calc(var(--ptt-size) + 2 * var(--ptt-pad));
       box-sizing: border-box;
       border-radius: 999px;
       background: rgba(0, 0, 0, 0.38);
       border: 2px solid rgba(255, 255, 255, 0.2);
     }
     .sensor-camera-ptt-chevron {
-      width: 0.6rem;
-      height: 0.6rem;
-      border-top: 4px solid #fff;
-      border-right: 4px solid #fff;
+      flex: none;
+      width: 0.5rem;
+      height: 0.5rem;
+      border-top: 3px solid #fff;
+      border-right: 3px solid #fff;
       transform: rotate(45deg);
       opacity: 0.2;
       animation: sensor-camera-ptt-chevron 1.6s ease-in-out infinite;
     }
     .sensor-camera-ptt-chevron:nth-child(2) { animation-delay: 0.2s; }
     .sensor-camera-ptt-chevron:nth-child(3) { animation-delay: 0.4s; }
+    .sensor-camera-ptt-chevron:nth-child(4) { animation-delay: 0.6s; }
     .sensor-camera-ptt-overlay:not(.sensor-camera-ptt-overlay--idle) .sensor-camera-ptt-chevron {
       animation: none;
       opacity: 0.12;
@@ -1255,7 +1254,7 @@
     .sensor-camera-ptt-dock {
       position: absolute;
       top: var(--ptt-pad);
-      left: calc(50% - var(--ptt-size) / 2);
+      right: var(--ptt-pad);
       width: var(--ptt-size);
       height: var(--ptt-size);
       box-sizing: border-box;
@@ -1309,7 +1308,7 @@
       margin: 0;
       padding: 0;
       box-sizing: border-box;
-      border: 6px solid #f3dcc8;
+      border: 4px solid #f3dcc8;
       border-radius: 50%;
       background: #f28c28;
       color: #fff;
@@ -1338,6 +1337,11 @@
       height: 42%;
       display: block;
       fill: currentColor;
+    }
+    .sensor-camera-ptt-btn .sensor-camera-ptt-icon {
+      flex: none;
+      width: clamp(1.45rem, 6.2vw, 1.9rem);
+      height: clamp(1.45rem, 6.2vw, 1.9rem);
     }
     .sensor-camera-ptt-overlay--listening .sensor-camera-ptt-btn {
       animation: sensor-camera-ptt-pulse 1.1s ease-in-out infinite;

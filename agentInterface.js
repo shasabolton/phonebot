@@ -204,6 +204,7 @@ class AgentInterface {
         this._pttStarting = false;
         /** Sliding mic on the camera frame: track, dock and the per-frame loop that moves the knob. */
         this._pttTrackEl = null;
+        this._pttDockEl = null;
         this._pttSlideRaf = 0;
         this._pttSlideLastAt = 0;
         /** Knob position: 0 at rest on the left, 1 in the centre dock. */
@@ -235,7 +236,7 @@ class AgentInterface {
     /** Keep capturing after finger-up so the last words aren't cut off. */
     static PTT_RELEASE_TAIL_MS = 500;
     static PTT_MAX_RECORD_MS = 20000;
-    /** Eye spacing / frame width that opens the mic, and the lower one that closes it again. */
+    /** Eye spacing / frame short side that opens the mic, and the lower one that closes it again. */
     static LEAN_ON = 1 / 3;
     static LEAN_OFF = 0.27;
     /** Eye spacing at normal sitting distance: the knob starts moving above this. */
@@ -2322,6 +2323,7 @@ class AgentInterface {
         this._pttBtnEl = null;
         this._pttLabelEl = null;
         this._pttTrackEl = null;
+        this._pttDockEl = null;
         this._pttState = "hidden";
         this._syncDashboardMicState("hidden", {
             disabled: true,
@@ -2387,7 +2389,7 @@ class AgentInterface {
         const groove = document.createElement("div");
         groove.className = "sensor-camera-ptt-groove";
         groove.setAttribute("aria-hidden", "true");
-        for (let i = 0; i < 3; i++) {
+        for (let i = 0; i < 4; i++) {
             const chevron = document.createElement("span");
             chevron.className = "sensor-camera-ptt-chevron";
             groove.appendChild(chevron);
@@ -2453,6 +2455,7 @@ class AgentInterface {
         this._pttBtnEl = btn;
         this._pttLabelEl = label;
         this._pttTrackEl = track;
+        this._pttDockEl = dock;
         this._pttSlide = 0;
         this._pttSlideX = -1;
         this._startPttSlideLoop();
@@ -2462,12 +2465,14 @@ class AgentInterface {
     static PTT_IDLE_LABEL = "Lean in or slide the mic to talk";
     static PTT_LEAN_RESET_LABEL = "Lean back, then in again to talk";
 
-    /** Pixels from the knob's rest spot to the centre dock. */
+    /** Pixels from the knob's rest spot to the dock, measured from where both are laid out. */
     _pttTravelPx() {
-        const track = this._pttTrackEl;
+        const dock = this._pttDockEl;
         const btn = this._pttBtnEl;
-        if (!track || !btn) return 0;
-        return Math.max(0, track.clientWidth / 2 - btn.offsetWidth / 2 - btn.offsetLeft);
+        if (!dock || !btn) return 0;
+        const dockCentre = dock.offsetLeft + dock.offsetWidth / 2;
+        const btnCentre = btn.offsetLeft + btn.offsetWidth / 2;
+        return Math.max(0, dockCentre - btnCentre);
     }
 
     /**
@@ -2513,7 +2518,8 @@ class AgentInterface {
     }
 
     /**
-     * Largest eye spacing in the camera view as a fraction of frame width, or null with no face.
+     * Largest eye spacing in the camera view as a fraction of the frame's short side, so it reads
+     * the same whether the phone is upright or sideways. Null with no face.
      * @returns {number|null}
      */
     _readEyeSpacing() {
@@ -2521,14 +2527,17 @@ class AgentInterface {
         const poses = cv?.poses;
         if (!Array.isArray(poses) || !poses.length) return null;
         const size = cv.getFrameSize?.() || {};
-        const aspect = size.width > 0 && size.height > 0 ? size.height / size.width : 0.75;
+        const w = size.width > 0 ? size.width : 0;
+        const h = size.height > 0 ? size.height : 0;
+        if (!w || !h) return null;
+        const shortSide = Math.min(w, h);
         let best = null;
         for (const pose of poses) {
             const kps = Array.isArray(pose?.keypoints) ? pose.keypoints : [];
             const left = kps.find((k) => k.name === "left_eye");
             const right = kps.find((k) => k.name === "right_eye");
             if (!left || !right) continue;
-            const ratio = Math.hypot(left.x - right.x, (left.y - right.y) * aspect);
+            const ratio = Math.hypot((left.x - right.x) * w, (left.y - right.y) * h) / shortSide;
             if (Number.isFinite(ratio) && (best == null || ratio > best)) best = ratio;
         }
         return best;
