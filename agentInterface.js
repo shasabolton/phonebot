@@ -202,17 +202,18 @@ class AgentInterface {
         this._pttSources = new Set();
         /** True while the microphone is opening for a press, before `_pttRecording` is set. */
         this._pttStarting = false;
-        /** Sliding mic on the camera frame: track, dock and the per-frame loop that moves the knob. */
+        /** Camera-frame talk bar: a side-on head slides from the left toward the mic button on the right. */
         this._pttTrackEl = null;
         this._pttDockEl = null;
+        this._pttHeadEl = null;
         this._pttSlideRaf = 0;
         this._pttSlideLastAt = 0;
-        /** Knob position: 0 at rest on the left, 1 in the centre dock. */
+        /** Head position: 0 at rest on the left, 1 beside the mic. */
         this._pttSlide = 0;
         this._pttSlideX = -1;
-        /** Furthest the finger has dragged the knob this press (0–1). */
-        this._pttDrag = 0;
-        this._pttDragStart = null;
+        /** When the head reached the mic while it was still opening (0 = not waiting there). */
+        this._pttArrivedAt = 0;
+        this._pttPreparing = false;
         this._pttDocked = false;
         /** Smoothed eye spacing / frame width, or null with no face. */
         this._leanRatio = null;
@@ -244,12 +245,14 @@ class AgentInterface {
     static LEAN_ON_MS = 200;
     /** Faces often drop out this close to the camera; keep a lean-in turn open this long without one. */
     static LEAN_LOST_MS = 600;
-    /** Knob position where it waits, trembling, until the mic is live, then snaps into the dock. */
-    static PTT_SNAP_AT = 2 / 3;
-    /** Knob speed in track lengths per second while the mic opens, and once it is live. */
+    /** Head speed in track lengths per second while the mic opens, and once it is live. */
     static PTT_SLIDE_SLOW = 0.9;
     static PTT_SLIDE_FAST = 5;
     static PTT_SLIDE_RETURN = 3;
+    /** Show the loading ring only if the head waits at the mic longer than this, so it doesn't flash. */
+    static PTT_PREPARING_DELAY_MS = 150;
+    /** Pixels left between the head and the mic button, so a thumb on the button doesn't cover the head. */
+    static PTT_HEAD_GAP_PX = 8;
 
     /** True when a hold-to-talk game is active (Custom runs every JSON game). */
     _isConversationMode() {
@@ -2324,6 +2327,7 @@ class AgentInterface {
         this._pttLabelEl = null;
         this._pttTrackEl = null;
         this._pttDockEl = null;
+        this._pttHeadEl = null;
         this._pttState = "hidden";
         this._syncDashboardMicState("hidden", {
             disabled: true,
@@ -2361,8 +2365,27 @@ class AgentInterface {
     }
 
     /**
-     * Build (or reuse) the sliding mic on the camera frame: the knob rests on the left of a groove
-     * and slides into the centre dock while held, dragged, or while the player leans in.
+     * Side-on head facing right, toward the mic.
+     * @returns {SVGElement}
+     */
+    _createPttHeadIcon() {
+        const ns = "http://www.w3.org/2000/svg";
+        const svg = document.createElementNS(ns, "svg");
+        svg.setAttribute("class", "sensor-camera-ptt-head-icon");
+        svg.setAttribute("viewBox", "0 0 24 24");
+        svg.setAttribute("aria-hidden", "true");
+        const head = document.createElementNS(ns, "path");
+        head.setAttribute(
+            "d",
+            "M7 22V18C4.2 16.2 3.4 12.4 4.4 9 5.4 5.2 8.8 3 12.4 3 16.4 3 19 5.6 19 9.2L19.2 10.6 21 13.3 19.4 13.9 19.6 15 19.2 15.6 19.4 16.4C19.4 17.6 18.4 18.2 17 18.2H15.6V22Z"
+        );
+        svg.appendChild(head);
+        return svg;
+    }
+
+    /**
+     * Build (or reuse) the talk bar on the camera frame: a side-on head rests on the left of a groove
+     * and slides toward the mic button on the right while the button is held or the player leans in.
      * @returns {HTMLElement|null}
      */
     _ensurePttOverlay() {
@@ -2395,12 +2418,17 @@ class AgentInterface {
             groove.appendChild(chevron);
         }
 
+        const head = document.createElement("div");
+        head.className = "sensor-camera-ptt-head";
+        head.setAttribute("aria-hidden", "true");
+        head.appendChild(this._createPttHeadIcon());
+
         const dock = document.createElement("div");
         dock.className = "sensor-camera-ptt-dock";
-        dock.setAttribute("aria-hidden", "true");
         for (let i = 0; i < 2; i++) {
             const wave = document.createElement("span");
             wave.className = "sensor-camera-ptt-wave";
+            wave.setAttribute("aria-hidden", "true");
             dock.appendChild(wave);
         }
 
@@ -2409,6 +2437,7 @@ class AgentInterface {
         btn.className = "sensor-camera-ptt-btn";
         btn.setAttribute("aria-label", AgentInterface.PTT_IDLE_LABEL);
         btn.appendChild(this._createPttMicIcon());
+        dock.appendChild(btn);
 
         const endHold = (ev) => {
             if (ev?.pointerId != null && btn.hasPointerCapture(ev.pointerId)) {
@@ -2416,8 +2445,6 @@ class AgentInterface {
                     btn.releasePointerCapture(ev.pointerId);
                 } catch (_) {}
             }
-            this._pttDragStart = null;
-            this._pttDrag = 0;
             btn.classList.remove("is-pressed");
             this._pttSourceOff("button");
         };
@@ -2427,25 +2454,16 @@ class AgentInterface {
             try {
                 btn.setPointerCapture(e.pointerId);
             } catch (_) {}
-            this._pttDragStart = { x: e.clientX, slide: this._pttSlide };
-            this._pttDrag = this._pttSlide;
             btn.classList.add("is-pressed");
             this._pttSourceOn("button");
-        });
-        btn.addEventListener("pointermove", (e) => {
-            if (!this._pttDragStart) return;
-            const travel = this._pttTravelPx();
-            if (travel <= 0) return;
-            const slide = this._pttDragStart.slide + (e.clientX - this._pttDragStart.x) / travel;
-            this._pttDrag = Math.max(0, Math.min(1, slide));
         });
         btn.addEventListener("pointerup", endHold);
         btn.addEventListener("pointercancel", endHold);
         btn.addEventListener("lostpointercapture", endHold);
 
         track.appendChild(groove);
+        track.appendChild(head);
         track.appendChild(dock);
-        track.appendChild(btn);
         stack.appendChild(label);
         stack.appendChild(track);
         overlay.appendChild(stack);
@@ -2456,23 +2474,24 @@ class AgentInterface {
         this._pttLabelEl = label;
         this._pttTrackEl = track;
         this._pttDockEl = dock;
+        this._pttHeadEl = head;
         this._pttSlide = 0;
         this._pttSlideX = -1;
+        this._pttArrivedAt = 0;
         this._startPttSlideLoop();
         return overlay;
     }
 
-    static PTT_IDLE_LABEL = "Lean in or slide the mic to talk";
+    static PTT_IDLE_LABEL = "Lean in or hold the mic to talk";
     static PTT_LEAN_RESET_LABEL = "Lean back, then in again to talk";
 
-    /** Pixels from the knob's rest spot to the dock, measured from where both are laid out. */
+    /** Pixels from the head's rest spot to just left of the mic button, measured from the layout. */
     _pttTravelPx() {
         const dock = this._pttDockEl;
-        const btn = this._pttBtnEl;
-        if (!dock || !btn) return 0;
-        const dockCentre = dock.offsetLeft + dock.offsetWidth / 2;
-        const btnCentre = btn.offsetLeft + btn.offsetWidth / 2;
-        return Math.max(0, dockCentre - btnCentre);
+        const head = this._pttHeadEl;
+        if (!dock || !head) return 0;
+        const end = dock.offsetLeft - AgentInterface.PTT_HEAD_GAP_PX - head.offsetWidth;
+        return Math.max(0, end - head.offsetLeft);
     }
 
     /**
@@ -2514,6 +2533,8 @@ class AgentInterface {
         this._pttSlideRaf = 0;
         this._leanRatio = null;
         this._leanAboveSince = 0;
+        this._pttArrivedAt = 0;
+        this._pttPreparing = false;
         this._pttDocked = false;
     }
 
@@ -2575,44 +2596,49 @@ class AgentInterface {
         return Math.max(0, Math.min(1, t));
     }
 
-    /** Moves the knob each frame toward where the inputs and the mic state want it. */
+    /** Moves the head each frame toward where the inputs and the mic state want it. */
     _pttSlideTick(now) {
         const dt = this._pttSlideLastAt ? Math.min(0.1, (now - this._pttSlideLastAt) / 1000) : 0;
         this._pttSlideLastAt = now;
         const lean = this._updateLean(now, dt);
-        const btn = this._pttBtnEl;
-        if (!btn) return;
+        const head = this._pttHeadEl;
+        if (!head) return;
 
-        const snapAt = AgentInterface.PTT_SNAP_AT;
         const live = this._pttRecording && this._pttState === "listening";
-        const opening = this._pttRecording && !live && !this._pttFinishing;
+        const held = this._pttSources.size > 0 && !this._pttFinishing;
+        const opening = held && !live && (this._pttRecording || this._pttStarting);
         const canLean = this._leanArmed && this._pttCanInteract();
 
-        const held = this._pttSources.size > 0 && !this._pttFinishing;
-        const waitAt = snapAt - 0.02;
         let target = 0;
         let speed = AgentInterface.PTT_SLIDE_RETURN;
         if (live && held) {
             target = 1;
             speed = AgentInterface.PTT_SLIDE_FAST;
-        } else if (opening && held) {
-            target = waitAt;
+        } else if (opening) {
+            target = 1;
             speed = AgentInterface.PTT_SLIDE_SLOW;
         } else if (!this._pttRecording && canLean) {
-            target = lean * snapAt;
+            target = lean;
             speed = AgentInterface.PTT_SLIDE_FAST;
-        }
-        const drag = this._pttSources.has("button") && held ? Math.min(this._pttDrag, live ? 1 : waitAt) : 0;
-        if (drag > target) {
-            target = drag;
-            speed = AgentInterface.PTT_SLIDE_FAST * 2;
         }
 
         const delta = target - this._pttSlide;
         const stepMax = speed * dt;
         this._pttSlide = Math.abs(delta) <= stepMax ? target : this._pttSlide + Math.sign(delta) * stepMax;
 
-        const docked = live && this._pttSlide >= 0.999;
+        const arrived = this._pttSlide >= 0.999;
+        if (arrived && opening) {
+            if (!this._pttArrivedAt) this._pttArrivedAt = now;
+        } else {
+            this._pttArrivedAt = 0;
+        }
+        const preparing = !!this._pttArrivedAt && now - this._pttArrivedAt >= AgentInterface.PTT_PREPARING_DELAY_MS;
+        if (preparing !== this._pttPreparing) {
+            this._pttPreparing = preparing;
+            this._pttOverlayEl?.classList.toggle("sensor-camera-ptt-overlay--preparing", preparing);
+        }
+
+        const docked = live && arrived;
         if (docked !== this._pttDocked) {
             this._pttDocked = docked;
             this._pttOverlayEl?.classList.toggle("sensor-camera-ptt-overlay--docked", docked);
@@ -2623,12 +2649,11 @@ class AgentInterface {
             }
         }
 
-        const straining = opening && held && this._pttSlide >= waitAt - 0.01;
-        const jitter = straining ? Math.sin(now / 18) * 1.5 : 0;
-        const x = Math.round((this._pttSlide * this._pttTravelPx() + jitter) * 10) / 10;
+        const x = Math.round(this._pttSlide * this._pttTravelPx() * 10) / 10;
         if (x !== this._pttSlideX) {
             this._pttSlideX = x;
-            btn.style.setProperty("--ptt-x", `${x}px`);
+            head.style.setProperty("--ptt-x", `${x}px`);
+            head.style.setProperty("--ptt-tilt", `${Math.round(this._pttSlide * 12)}deg`);
         }
 
         const label = this._pttLabelEl;
@@ -2657,7 +2682,7 @@ class AgentInterface {
         const leanOnly = this._pttSources.has("lean") && this._pttSources.size === 1;
         const labels = {
             idle: AgentInterface.PTT_IDLE_LABEL,
-            starting: "Starting mic…",
+            starting: "Getting ready…",
             listening: leanOnly ? "Listening — lean back to send" : "Listening — let go to send",
             processing: "Processing…",
             thinking: "Thinking",
