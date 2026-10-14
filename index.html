@@ -227,6 +227,66 @@
       display: flex;
       flex-direction: column;
     }
+    /* Talking head dark theme: black background, white text. Settings sheet and overlays keep the light theme. */
+    body:has(.robot-dashboard--talking-head),
+    .app-shell:has(.robot-dashboard--talking-head) {
+      background: #000;
+    }
+    .app-shell:has(.robot-dashboard--talking-head) .app-header {
+      background: #000;
+      border-bottom-color: #222;
+      color: #fff;
+    }
+    .app-shell:has(.robot-dashboard--talking-head) .app-menu-btn {
+      color: #fff;
+    }
+    .app-shell:has(.robot-dashboard--talking-head) .app-menu-btn:active {
+      background: #222;
+    }
+    .app-shell:has(.robot-dashboard--talking-head) .app-run-toggle:not(.is-on) {
+      background: #444;
+    }
+    .app-dashboard:has(.robot-dashboard--talking-head) {
+      background: #000;
+      color: #fff;
+    }
+    .robot-dashboard--talking-head .muted {
+      color: #aaa;
+    }
+    .robot-dashboard--talking-head .robot-modes label {
+      color: #bbb;
+    }
+    .robot-dashboard--talking-head .robot-modes-select,
+    .robot-dashboard--talking-head .sensor-camera-start-btn {
+      background: #111;
+      color: #fff;
+      border: 1px solid #333;
+      border-radius: 6px;
+    }
+    .robot-dashboard--talking-head .robot-dashboard-chat {
+      background: #000;
+    }
+    .robot-dashboard--talking-head .robot-dashboard-chat-log .agent-history-user {
+      background: #2a2a2a;
+      color: #fff;
+    }
+    .robot-dashboard--talking-head .robot-dashboard-chat-log .agent-history-agent {
+      color: #fff;
+    }
+    .robot-dashboard--talking-head .robot-dashboard-chat-log .agent-history-system {
+      color: #999;
+    }
+    .robot-dashboard--talking-head .robot-dashboard-chat-composer {
+      background: #111;
+      border-color: #333;
+      box-shadow: none;
+    }
+    .robot-dashboard--talking-head .robot-dashboard-chat-input {
+      color: #fff;
+    }
+    .robot-dashboard--talking-head .robot-dashboard-chat-mic {
+      color: #ccc;
+    }
     .custom-messages-tiles {
       display: flex;
       flex-direction: column;
