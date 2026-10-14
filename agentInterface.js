@@ -202,20 +202,18 @@ class AgentInterface {
         this._pttSources = new Set();
         /** True while the microphone is opening for a press, before `_pttRecording` is set. */
         this._pttStarting = false;
-        /** Camera-frame talk bar: a side-on head slides from the left toward the mic button on the right. */
-        this._pttTrackEl = null;
-        this._pttDockEl = null;
-        this._pttHeadEl = null;
+        /** Camera-frame talk control: the mic disc grows to fill its circle as the player holds or leans in. */
+        this._pttDiscEl = null;
         this._pttSlideRaf = 0;
         this._pttSlideLastAt = 0;
-        /** Head position: 0 at rest on the left, 1 beside the mic. */
+        /** Lips growth: 0 small (off), 1 filling the circle. */
         this._pttSlide = 0;
-        this._pttSlideX = -1;
-        /** When the head reached the mic while it was still opening (0 = not waiting there). */
-        this._pttArrivedAt = 0;
-        this._pttPreparing = false;
+        this._pttScale = -1;
+        /** Lips-to-ear sweep: 0 lips, 1 ear (the mic is live). */
+        this._pttSweep = 0;
+        this._pttSweepSet = -1;
         this._pttDocked = false;
-        /** Smoothed eye spacing / frame width, or null with no face. */
+        /** Smoothed eye spacing / frame short side, or null with no face. */
         this._leanRatio = null;
         this._leanSeenAt = 0;
         this._leanAboveSince = 0;
@@ -240,19 +238,21 @@ class AgentInterface {
     /** Eye spacing / frame short side that opens the mic, and the lower one that closes it again. */
     static LEAN_ON = 1 / 3;
     static LEAN_OFF = 0.27;
-    /** Eye spacing at normal sitting distance: the knob starts moving above this. */
+    /** Eye spacing at normal sitting distance: the mic starts growing above this. */
     static LEAN_MIN = 0.1;
     static LEAN_ON_MS = 200;
     /** Faces often drop out this close to the camera; keep a lean-in turn open this long without one. */
     static LEAN_LOST_MS = 600;
-    /** Head speed in track lengths per second while the mic opens, and once it is live. */
+    /** Mic growth per second (full growth = 1) while it opens, and once it is live. */
     static PTT_SLIDE_SLOW = 0.9;
     static PTT_SLIDE_FAST = 5;
     static PTT_SLIDE_RETURN = 3;
-    /** Show the loading ring only if the head waits at the mic longer than this, so it doesn't flash. */
-    static PTT_PREPARING_DELAY_MS = 150;
-    /** Pixels left between the head and the mic button, so a thumb on the button doesn't cover the head. */
-    static PTT_HEAD_GAP_PX = 8;
+    /** Lips-to-ear sweep: how far it creeps while connecting, how fast it gets there, and how fast it finishes or undoes. */
+    static PTT_SWEEP_WAIT_MAX = 0.85;
+    static PTT_SWEEP_WAIT_S = 0.6;
+    static PTT_SWEEP_FAST = 4;
+    /** Size of the idle mic as a fraction of its full size (filling the dashed circle). */
+    static PTT_DISC_MIN_SCALE = 0.4;
 
     /** True when a hold-to-talk game is active (Custom runs every JSON game). */
     _isConversationMode() {
@@ -2325,9 +2325,7 @@ class AgentInterface {
         this._pttOverlayEl = null;
         this._pttBtnEl = null;
         this._pttLabelEl = null;
-        this._pttTrackEl = null;
-        this._pttDockEl = null;
-        this._pttHeadEl = null;
+        this._pttDiscEl = null;
         this._pttState = "hidden";
         this._syncDashboardMicState("hidden", {
             disabled: true,
@@ -2365,27 +2363,58 @@ class AgentInterface {
     }
 
     /**
-     * Side-on head facing right, toward the mic.
+     * Lips, for the talk control on the camera frame.
      * @returns {SVGElement}
      */
-    _createPttHeadIcon() {
+    _createPttLipsIcon() {
         const ns = "http://www.w3.org/2000/svg";
         const svg = document.createElementNS(ns, "svg");
-        svg.setAttribute("class", "sensor-camera-ptt-head-icon");
+        svg.setAttribute("class", "sensor-camera-ptt-icon");
         svg.setAttribute("viewBox", "0 0 24 24");
         svg.setAttribute("aria-hidden", "true");
-        const head = document.createElementNS(ns, "path");
-        head.setAttribute(
+        const upper = document.createElementNS(ns, "path");
+        upper.setAttribute(
             "d",
-            "M7 22V18C4.2 16.2 3.4 12.4 4.4 9 5.4 5.2 8.8 3 12.4 3 16.4 3 19 5.6 19 9.2L19.2 10.6 21 13.3 19.4 13.9 19.6 15 19.2 15.6 19.4 16.4C19.4 17.6 18.4 18.2 17 18.2H15.6V22Z"
+            "M2 12C4.5 9 7 7 9.5 7.5 10.7 7.7 11.4 8.4 12 8.9 12.6 8.4 13.3 7.7 14.5 7.5 17 7 19.5 9 22 12 18.5 12.2 15.5 11.6 12 11.9 8.5 11.6 5.5 12.2 2 12Z"
         );
-        svg.appendChild(head);
+        const lower = document.createElementNS(ns, "path");
+        lower.setAttribute(
+            "d",
+            "M2 12C5.5 12.8 8.5 12.6 12 12.9 15.5 12.6 18.5 12.8 22 12 19.5 15.5 16 17.5 12 17.5 8 17.5 4.5 15.5 2 12Z"
+        );
+        svg.appendChild(upper);
+        svg.appendChild(lower);
+        svg.classList.add("sensor-camera-ptt-lips");
         return svg;
     }
 
     /**
-     * Build (or reuse) the talk bar on the camera frame: a side-on head rests on the left of a groove
-     * and slides toward the mic button on the right while the button is held or the player leans in.
+     * Ear, shown once the mic is listening.
+     * @returns {SVGElement}
+     */
+    _createPttEarIcon() {
+        const ns = "http://www.w3.org/2000/svg";
+        const svg = document.createElementNS(ns, "svg");
+        svg.setAttribute("class", "sensor-camera-ptt-icon sensor-camera-ptt-ear");
+        svg.setAttribute("viewBox", "0 0 24 24");
+        svg.setAttribute("aria-hidden", "true");
+        for (const d of ["M6 8.5a6.5 6.5 0 1 1 13 0c0 6-6 6-6 10a3.5 3.5 0 1 1-7 0", "M15 8.5a2.5 2.5 0 0 0-5 0v1a2 2 0 1 1 0 4"]) {
+            const path = document.createElementNS(ns, "path");
+            path.setAttribute("d", d);
+            path.setAttribute("fill", "none");
+            path.setAttribute("stroke", "currentColor");
+            path.setAttribute("stroke-width", "2.2");
+            path.setAttribute("stroke-linecap", "round");
+            path.setAttribute("stroke-linejoin", "round");
+            svg.appendChild(path);
+        }
+        return svg;
+    }
+
+    /**
+     * Build (or reuse) the talk control on the camera frame: small red lips in the middle of a larger
+     * dashed circle. Holding them or leaning in grows them to fill the circle; then a radial sweep turns
+     * the lips into a green ear as the mic connects.
      * @returns {HTMLElement|null}
      */
     _ensurePttOverlay() {
@@ -2406,38 +2435,39 @@ class AgentInterface {
         label.className = "sensor-camera-ptt-label";
         label.textContent = AgentInterface.PTT_IDLE_LABEL;
 
-        const track = document.createElement("div");
-        track.className = "sensor-camera-ptt-track";
+        const pad = document.createElement("div");
+        pad.className = "sensor-camera-ptt-pad";
 
-        const groove = document.createElement("div");
-        groove.className = "sensor-camera-ptt-groove";
-        groove.setAttribute("aria-hidden", "true");
-        for (let i = 0; i < 4; i++) {
-            const chevron = document.createElement("span");
-            chevron.className = "sensor-camera-ptt-chevron";
-            groove.appendChild(chevron);
+        const cavity = document.createElement("div");
+        cavity.className = "sensor-camera-ptt-cavity";
+        cavity.setAttribute("aria-hidden", "true");
+
+        const rays = document.createElement("div");
+        rays.className = "sensor-camera-ptt-rays";
+        rays.setAttribute("aria-hidden", "true");
+        for (let i = 0; i < 8; i++) {
+            const ray = document.createElement("span");
+            ray.className = "sensor-camera-ptt-ray";
+            ray.style.setProperty("--a", `${i * 45}deg`);
+            rays.appendChild(ray);
         }
 
-        const head = document.createElement("div");
-        head.className = "sensor-camera-ptt-head";
-        head.setAttribute("aria-hidden", "true");
-        head.appendChild(this._createPttHeadIcon());
-
-        const dock = document.createElement("div");
-        dock.className = "sensor-camera-ptt-dock";
-        for (let i = 0; i < 2; i++) {
+        const waves = [0, 1].map(() => {
             const wave = document.createElement("span");
             wave.className = "sensor-camera-ptt-wave";
             wave.setAttribute("aria-hidden", "true");
-            dock.appendChild(wave);
-        }
+            return wave;
+        });
 
         const btn = document.createElement("button");
         btn.type = "button";
         btn.className = "sensor-camera-ptt-btn";
         btn.setAttribute("aria-label", AgentInterface.PTT_IDLE_LABEL);
-        btn.appendChild(this._createPttMicIcon());
-        dock.appendChild(btn);
+        const disc = document.createElement("span");
+        disc.className = "sensor-camera-ptt-disc";
+        disc.appendChild(this._createPttLipsIcon());
+        disc.appendChild(this._createPttEarIcon());
+        btn.appendChild(disc);
 
         const endHold = (ev) => {
             if (ev?.pointerId != null && btn.hasPointerCapture(ev.pointerId)) {
@@ -2461,38 +2491,29 @@ class AgentInterface {
         btn.addEventListener("pointercancel", endHold);
         btn.addEventListener("lostpointercapture", endHold);
 
-        track.appendChild(groove);
-        track.appendChild(head);
-        track.appendChild(dock);
+        pad.appendChild(cavity);
+        for (const wave of waves) pad.appendChild(wave);
+        pad.appendChild(rays);
+        pad.appendChild(btn);
         stack.appendChild(label);
-        stack.appendChild(track);
+        stack.appendChild(pad);
         overlay.appendChild(stack);
         frameEl.appendChild(overlay);
 
         this._pttOverlayEl = overlay;
         this._pttBtnEl = btn;
         this._pttLabelEl = label;
-        this._pttTrackEl = track;
-        this._pttDockEl = dock;
-        this._pttHeadEl = head;
+        this._pttDiscEl = disc;
         this._pttSlide = 0;
-        this._pttSlideX = -1;
-        this._pttArrivedAt = 0;
+        this._pttScale = -1;
+        this._pttSweep = 0;
+        this._pttSweepSet = -1;
         this._startPttSlideLoop();
         return overlay;
     }
 
-    static PTT_IDLE_LABEL = "Lean in or hold the mic to talk";
+    static PTT_IDLE_LABEL = "Lean in or hold to talk";
     static PTT_LEAN_RESET_LABEL = "Lean back, then in again to talk";
-
-    /** Pixels from the head's rest spot to just left of the mic button, measured from the layout. */
-    _pttTravelPx() {
-        const dock = this._pttDockEl;
-        const head = this._pttHeadEl;
-        if (!dock || !head) return 0;
-        const end = dock.offsetLeft - AgentInterface.PTT_HEAD_GAP_PX - head.offsetWidth;
-        return Math.max(0, end - head.offsetLeft);
-    }
 
     /**
      * One input wants the mic open. The first one opens it; later ones just keep it open.
@@ -2533,8 +2554,6 @@ class AgentInterface {
         this._pttSlideRaf = 0;
         this._leanRatio = null;
         this._leanAboveSince = 0;
-        this._pttArrivedAt = 0;
-        this._pttPreparing = false;
         this._pttDocked = false;
     }
 
@@ -2564,7 +2583,7 @@ class AgentInterface {
         return best;
     }
 
-    /** Lean-in: open the mic past LEAN_ON, close it below LEAN_OFF. Returns knob progress from leaning (0–1). */
+    /** Lean-in: open the mic past LEAN_ON, close it below LEAN_OFF. Returns mic growth from leaning (0–1). */
     _updateLean(now, dt) {
         const raw = this._readEyeSpacing();
         if (raw != null) {
@@ -2596,13 +2615,13 @@ class AgentInterface {
         return Math.max(0, Math.min(1, t));
     }
 
-    /** Moves the head each frame toward where the inputs and the mic state want it. */
+    /** Grows or shrinks the mic each frame toward where the inputs and the mic state want it. */
     _pttSlideTick(now) {
         const dt = this._pttSlideLastAt ? Math.min(0.1, (now - this._pttSlideLastAt) / 1000) : 0;
         this._pttSlideLastAt = now;
         const lean = this._updateLean(now, dt);
-        const head = this._pttHeadEl;
-        if (!head) return;
+        const disc = this._pttDiscEl;
+        if (!disc) return;
 
         const live = this._pttRecording && this._pttState === "listening";
         const held = this._pttSources.size > 0 && !this._pttFinishing;
@@ -2626,19 +2645,24 @@ class AgentInterface {
         const stepMax = speed * dt;
         this._pttSlide = Math.abs(delta) <= stepMax ? target : this._pttSlide + Math.sign(delta) * stepMax;
 
+        // Radial sweep from lips to ear once the lips fill the circle: it creeps toward most of the way
+        // while the connection is made (the time isn't known), then finishes quickly once it is live.
         const arrived = this._pttSlide >= 0.999;
-        if (arrived && opening) {
-            if (!this._pttArrivedAt) this._pttArrivedAt = now;
+        if (arrived && held && live) {
+            this._pttSweep = Math.min(1, this._pttSweep + AgentInterface.PTT_SWEEP_FAST * dt);
+        } else if (arrived && opening) {
+            const rest = AgentInterface.PTT_SWEEP_WAIT_MAX - this._pttSweep;
+            if (rest > 0) this._pttSweep += rest * (1 - Math.exp(-dt / AgentInterface.PTT_SWEEP_WAIT_S));
         } else {
-            this._pttArrivedAt = 0;
+            this._pttSweep = Math.max(0, this._pttSweep - AgentInterface.PTT_SWEEP_FAST * dt);
         }
-        const preparing = !!this._pttArrivedAt && now - this._pttArrivedAt >= AgentInterface.PTT_PREPARING_DELAY_MS;
-        if (preparing !== this._pttPreparing) {
-            this._pttPreparing = preparing;
-            this._pttOverlayEl?.classList.toggle("sensor-camera-ptt-overlay--preparing", preparing);
+        const sweep = Math.round(this._pttSweep * 1000) / 1000;
+        if (sweep !== this._pttSweepSet) {
+            this._pttSweepSet = sweep;
+            disc.style.setProperty("--ptt-sweep", String(sweep));
         }
 
-        const docked = live && arrived;
+        const docked = live && arrived && this._pttSweep >= 1;
         if (docked !== this._pttDocked) {
             this._pttDocked = docked;
             this._pttOverlayEl?.classList.toggle("sensor-camera-ptt-overlay--docked", docked);
@@ -2649,11 +2673,11 @@ class AgentInterface {
             }
         }
 
-        const x = Math.round(this._pttSlide * this._pttTravelPx() * 10) / 10;
-        if (x !== this._pttSlideX) {
-            this._pttSlideX = x;
-            head.style.setProperty("--ptt-x", `${x}px`);
-            head.style.setProperty("--ptt-tilt", `${Math.round(this._pttSlide * 12)}deg`);
+        const min = AgentInterface.PTT_DISC_MIN_SCALE;
+        const scale = Math.round((min + (1 - min) * this._pttSlide) * 1000) / 1000;
+        if (scale !== this._pttScale) {
+            this._pttScale = scale;
+            disc.style.setProperty("--ptt-scale", String(scale));
         }
 
         const label = this._pttLabelEl;

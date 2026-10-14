@@ -1209,99 +1209,56 @@
       align-items: center;
       gap: 0.7rem;
     }
-    /* Talk bar: a side-on head rests on the left and slides toward the mic button on the right. */
-    .sensor-camera-ptt-track {
-      --ptt-size: clamp(3.2rem, 13.5vw, 3.95rem);
-      --ptt-pad: 4px;
+    /* Talk control: small red lips grow to fill the dashed circle around them. */
+    .sensor-camera-ptt-pad {
+      --ptt-cavity: clamp(6.6rem, 28.5vw, 7.8rem);
       position: relative;
       pointer-events: none;
-      width: min(100%, 26rem);
-      height: calc(var(--ptt-size) + 2 * var(--ptt-pad));
+      width: var(--ptt-cavity);
+      height: var(--ptt-cavity);
     }
-    .sensor-camera-ptt-groove {
+    .sensor-camera-ptt-cavity {
       position: absolute;
       inset: 0;
-      display: flex;
-      align-items: center;
-      justify-content: space-evenly;
-      padding: 0 calc(var(--ptt-size) + 2 * var(--ptt-pad));
       box-sizing: border-box;
-      border-radius: 999px;
-      background: rgba(0, 0, 0, 0.38);
-      border: 2px solid rgba(255, 255, 255, 0.2);
+      border-radius: 50%;
+      border: 3px dashed rgba(255, 255, 255, 0.75);
+      background: rgba(0, 0, 0, 0.35);
+      transition: border-color 140ms ease;
     }
-    .sensor-camera-ptt-chevron {
-      flex: none;
+    .sensor-camera-ptt-overlay--docked .sensor-camera-ptt-cavity {
+      border-style: solid;
+      border-color: #7ee08a;
+    }
+    /* Chevrons around the mic pointing outward: "grow to fill this". */
+    .sensor-camera-ptt-rays {
+      position: absolute;
+      inset: 0;
+    }
+    .sensor-camera-ptt-ray {
+      --r0: calc(var(--ptt-cavity) * 0.29);
+      --r1: calc(var(--ptt-cavity) * 0.38);
+      position: absolute;
+      top: 50%;
+      left: 50%;
       width: 0.5rem;
       height: 0.5rem;
+      margin: -0.25rem 0 0 -0.25rem;
+      box-sizing: border-box;
       border-top: 3px solid #fff;
       border-right: 3px solid #fff;
-      transform: rotate(45deg);
-      opacity: 0.2;
-      animation: sensor-camera-ptt-chevron 1.6s ease-in-out infinite;
+      transform: rotate(var(--a)) translateX(var(--r0)) rotate(45deg);
+      opacity: 0.25;
+      animation: sensor-camera-ptt-ray 1.4s ease-in-out infinite;
     }
-    .sensor-camera-ptt-chevron:nth-child(2) { animation-delay: 0.2s; }
-    .sensor-camera-ptt-chevron:nth-child(3) { animation-delay: 0.4s; }
-    .sensor-camera-ptt-chevron:nth-child(4) { animation-delay: 0.6s; }
-    .sensor-camera-ptt-overlay:not(.sensor-camera-ptt-overlay--idle) .sensor-camera-ptt-chevron {
+    .sensor-camera-ptt-overlay:not(.sensor-camera-ptt-overlay--idle) .sensor-camera-ptt-ray {
       animation: none;
       opacity: 0.12;
     }
-    @keyframes sensor-camera-ptt-chevron {
-      0%, 100% { opacity: 0.2; }
-      30% { opacity: 0.95; }
-    }
-    .sensor-camera-ptt-head {
-      position: absolute;
-      top: var(--ptt-pad);
-      left: var(--ptt-pad);
-      width: var(--ptt-size);
-      height: var(--ptt-size);
-      box-sizing: border-box;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      border-radius: 50%;
-      background: rgba(255, 255, 255, 0.92);
-      color: #3a3a3a;
-      transform: translateX(var(--ptt-x, 0px));
-      transition: opacity 140ms ease;
-    }
-    .sensor-camera-ptt-head-icon {
-      width: 72%;
-      height: 72%;
-      display: block;
-      fill: currentColor;
-      transform: rotate(var(--ptt-tilt, 0deg));
-      transform-origin: 45% 90%;
-    }
-    /* Ring on the head: spins while the mic gets ready, turns solid green once it is listening. */
-    .sensor-camera-ptt-head::after {
-      content: "";
-      position: absolute;
-      inset: -6px;
-      border-radius: 50%;
-      border: 3px solid transparent;
-    }
-    .sensor-camera-ptt-overlay--preparing .sensor-camera-ptt-head::after {
-      border-top-color: #ffe566;
-      border-right-color: rgba(255, 229, 102, 0.45);
-      animation: sensor-camera-thinking-spin 0.9s linear infinite;
-    }
-    .sensor-camera-ptt-overlay--docked .sensor-camera-ptt-head::after {
-      border-color: #7ee08a;
-    }
-    .sensor-camera-ptt-overlay--processing .sensor-camera-ptt-head,
-    .sensor-camera-ptt-overlay--thinking .sensor-camera-ptt-head,
-    .sensor-camera-ptt-overlay--talking .sensor-camera-ptt-head {
-      opacity: 0.55;
-    }
-    .sensor-camera-ptt-dock {
-      position: absolute;
-      top: var(--ptt-pad);
-      right: var(--ptt-pad);
-      width: var(--ptt-size);
-      height: var(--ptt-size);
+    @keyframes sensor-camera-ptt-ray {
+      0% { opacity: 0.15; transform: rotate(var(--a)) translateX(var(--r0)) rotate(45deg); }
+      45% { opacity: 0.95; }
+      100% { opacity: 0.15; transform: rotate(var(--a)) translateX(var(--r1)) rotate(45deg); }
     }
     .sensor-camera-ptt-wave {
       position: absolute;
@@ -1318,7 +1275,7 @@
     }
     @keyframes sensor-camera-ptt-wave {
       0% { transform: scale(1); opacity: 0.85; }
-      100% { transform: scale(1.9); opacity: 0; }
+      100% { transform: scale(1.5); opacity: 0; }
     }
     .sensor-camera-ptt-label {
       pointer-events: none;
@@ -1330,6 +1287,7 @@
       letter-spacing: 0.02em;
       line-height: 1.2;
     }
+    /* The whole circle is the press target; the disc inside it is what grows. */
     .sensor-camera-ptt-btn {
       pointer-events: auto;
       position: absolute;
@@ -1342,10 +1300,9 @@
       height: 100%;
       margin: 0;
       padding: 0;
-      box-sizing: border-box;
-      border: 4px solid #f3dcc8;
+      border: none;
       border-radius: 50%;
-      background: #f28c28;
+      background: transparent;
       color: #fff;
       font: inherit;
       cursor: pointer;
@@ -1353,20 +1310,30 @@
       user-select: none;
       -webkit-user-select: none;
       -webkit-touch-callout: none;
-      transform: scale(var(--ptt-press, 1));
-      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.28);
-      transition: box-shadow 140ms ease, opacity 140ms ease, border-color 140ms ease;
+      -webkit-tap-highlight-color: transparent;
     }
     .sensor-camera-ptt-btn:disabled {
-      opacity: 0.65;
       cursor: default;
     }
-    .sensor-camera-ptt-btn.is-pressed {
-      --ptt-press: 0.93;
-      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+    .sensor-camera-ptt-disc {
+      position: absolute;
+      inset: 5px;
+      display: grid;
+      place-items: center;
+      box-sizing: border-box;
+      border-radius: 50%;
+      border: 4px solid #f4b4b4;
+      background: conic-gradient(#2fa84f calc(var(--ptt-sweep, 0) * 1turn), #d83a3a 0);
+      color: #fff;
+      transform: scale(calc(var(--ptt-scale, 0.4) * var(--ptt-press, 1)));
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3);
+      transition: background-color 160ms ease, border-color 160ms ease, opacity 140ms ease;
     }
-    .sensor-camera-ptt-overlay--docked .sensor-camera-ptt-btn {
-      border-color: #7ee08a;
+    .sensor-camera-ptt-btn.is-pressed .sensor-camera-ptt-disc {
+      --ptt-press: 0.94;
+    }
+    .sensor-camera-ptt-btn:disabled .sensor-camera-ptt-disc {
+      opacity: 0.65;
     }
     .sensor-camera-ptt-icon {
       width: 42%;
@@ -1374,20 +1341,37 @@
       display: block;
       fill: currentColor;
     }
-    .sensor-camera-ptt-btn .sensor-camera-ptt-icon {
-      flex: none;
-      width: clamp(1.45rem, 6.2vw, 1.9rem);
-      height: clamp(1.45rem, 6.2vw, 1.9rem);
+    .sensor-camera-ptt-disc .sensor-camera-ptt-icon {
+      grid-area: 1 / 1;
+      width: 62%;
+      height: 62%;
     }
-    .sensor-camera-ptt-overlay--listening .sensor-camera-ptt-btn {
-      animation: sensor-camera-ptt-pulse 1.1s ease-in-out infinite;
+    /* Radial sweep: the ear (and green) is revealed clockwise as the lips are wiped away. */
+    .sensor-camera-ptt-lips {
+      -webkit-mask-image: conic-gradient(transparent calc(var(--ptt-sweep, 0) * 1turn), #000 0);
+      mask-image: conic-gradient(transparent calc(var(--ptt-sweep, 0) * 1turn), #000 0);
     }
-    .sensor-camera-ptt-overlay--processing .sensor-camera-ptt-btn,
-    .sensor-camera-ptt-overlay--thinking .sensor-camera-ptt-btn {
+    .sensor-camera-ptt-ear {
+      -webkit-mask-image: conic-gradient(#000 calc(var(--ptt-sweep, 0) * 1turn), transparent 0);
+      mask-image: conic-gradient(#000 calc(var(--ptt-sweep, 0) * 1turn), transparent 0);
+    }
+    .sensor-camera-ptt-disc::after {
+      content: "";
+      position: absolute;
+      inset: -4px;
+      border-radius: 50%;
+      border: 4px solid transparent;
+    }
+    .sensor-camera-ptt-overlay--docked .sensor-camera-ptt-disc {
+      background: #2fa84f;
+      border-color: #b8f5c4;
+    }
+    .sensor-camera-ptt-overlay--processing .sensor-camera-ptt-disc,
+    .sensor-camera-ptt-overlay--thinking .sensor-camera-ptt-disc {
       background: #e67e22;
       border-color: #ffe566;
     }
-    .sensor-camera-ptt-overlay--talking .sensor-camera-ptt-btn {
+    .sensor-camera-ptt-overlay--talking .sensor-camera-ptt-disc {
       background: #d97706;
       border-color: #c9a7ff;
     }
@@ -1419,15 +1403,11 @@
     }
     .sensor-camera-ptt-dots span:nth-child(2) { animation-delay: 0.15s; }
     .sensor-camera-ptt-dots span:nth-child(3) { animation-delay: 0.3s; }
-    .sensor-camera-ptt-overlay--thinking .sensor-camera-ptt-btn {
+    .sensor-camera-ptt-overlay--thinking .sensor-camera-ptt-disc {
       opacity: 1;
     }
-    .sensor-camera-ptt-overlay--thinking .sensor-camera-ptt-btn::after {
-      content: "";
-      position: absolute;
-      inset: -12px;
-      border-radius: 50%;
-      border: 4px solid transparent;
+    .sensor-camera-ptt-overlay--thinking .sensor-camera-ptt-disc::after {
+      inset: -10px;
       border-top-color: #ffe566;
       border-right-color: rgba(255, 229, 102, 0.45);
       animation: sensor-camera-thinking-spin 0.9s linear infinite;
@@ -1446,10 +1426,9 @@
     @media (prefers-reduced-motion: reduce) {
       .sensor-camera-ptt-overlay--thinking .sensor-camera-ptt-label,
       .sensor-camera-ptt-dots span,
-      .sensor-camera-ptt-overlay--thinking .sensor-camera-ptt-btn::after,
-      .sensor-camera-ptt-chevron,
-      .sensor-camera-ptt-overlay--docked .sensor-camera-ptt-wave,
-      .sensor-camera-ptt-overlay--preparing .sensor-camera-ptt-head::after {
+      .sensor-camera-ptt-overlay--thinking .sensor-camera-ptt-disc::after,
+      .sensor-camera-ptt-ray,
+      .sensor-camera-ptt-overlay--docked .sensor-camera-ptt-wave {
         animation-duration: 3s;
       }
     }
