@@ -121,7 +121,8 @@ window.ROBOTS_DATA = {
                     },
                     {
                         text: "Turn up your phone volume",
-                        button: "Done"
+                        button: "Done",
+                        action: "unlockAudio"
                     },
                     {
                         text: "Put your phone behind the robots forehead if possible",

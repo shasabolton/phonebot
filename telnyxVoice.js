@@ -655,17 +655,32 @@ class TelnyxStreamTurn {
         return this._samples / TelnyxStreamTurn.INPUT_RATE;
     }
 
-    /** Created on the first turn, inside the press gesture, and reused after. */
-    static async _captureContext() {
+    /** Created inside a tap and reused after; null when the browser has no Web Audio. */
+    static _ensureContext() {
         const Ctx = window.AudioContext || window.webkitAudioContext;
-        if (!Ctx) throw new Error("This browser has no Web Audio for microphone streaming.");
+        if (!Ctx) return null;
         if (!TelnyxStreamTurn._context) {
             TelnyxStreamTurn._context = new Ctx();
             TelnyxStreamTurn._workletReady = TelnyxStreamTurn._context.audioWorklet.addModule(
                 new URL("pcmCapture.js", document.baseURI).href
             );
+            TelnyxStreamTurn._workletReady.catch(() => {});
         }
-        const ctx = TelnyxStreamTurn._context;
+        return TelnyxStreamTurn._context;
+    }
+
+    /**
+     * Starts the capture audio without opening the microphone, so a later turn that starts without
+     * a tap (lean-in) still runs on iOS. Must be called synchronously inside a tap.
+     */
+    static unlock() {
+        const ctx = TelnyxStreamTurn._ensureContext();
+        if (ctx && ctx.state !== "running") void ctx.resume().catch(() => {});
+    }
+
+    static async _captureContext() {
+        const ctx = TelnyxStreamTurn._ensureContext();
+        if (!ctx) throw new Error("This browser has no Web Audio for microphone streaming.");
         if (ctx.state !== "running") await ctx.resume();
         await TelnyxStreamTurn._workletReady;
         return ctx;

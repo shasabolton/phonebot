@@ -237,8 +237,8 @@ class AgentInterface {
     static PTT_RELEASE_TAIL_MS = 500;
     static PTT_MAX_RECORD_MS = 20000;
     /** Eye spacing / frame short side that opens the mic, and the lower one that closes it again. */
-    static LEAN_ON = 1 / 3;
-    static LEAN_OFF = 0.27;
+    static LEAN_ON = 0.3;
+    static LEAN_OFF = 0.245;
     /** Eye spacing at normal sitting distance: the mic starts growing above this. */
     static LEAN_MIN = 0.1;
     static LEAN_ON_MS = 200;

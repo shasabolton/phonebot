@@ -6,6 +6,8 @@ class AudioPlayerAiModel {
     static AUDIO_DIR = "audio";
     static MANIFEST_URL = "audio/files.json";
     static AUDIO_EXTENSIONS = /\.(mp3|wav|ogg|webm|m4a|aac|flac|opus)$/i;
+    static SILENT_WAV =
+        "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA";
 
     constructor(robot, config = {}) {
         this.robot = robot;
@@ -522,6 +524,24 @@ class AudioPlayerAiModel {
         this._audio = audio;
         this._applyPlaybackRate();
         return audio;
+    }
+
+    /**
+     * Plays a silent sample so iOS lets replies play later without a tap (e.g. after lean-in).
+     * Must be called synchronously inside a tap; skipped while something is playing.
+     */
+    unlock() {
+        const audio = this._ensureAudio();
+        this.ensurePlaybackTap();
+        if (this._audioContext && this._audioContext.state === "suspended") {
+            void this._audioContext.resume().catch(() => {});
+        }
+        if (audio.src && !audio.paused && !audio.ended) return;
+        this._loadedId = null;
+        this._clipPitch = 1;
+        audio.src = AudioPlayerAiModel.SILENT_WAV;
+        this._applyPlaybackRate();
+        audio.play().catch(() => {});
     }
 
     _resolvePlayEndedWaiters() {

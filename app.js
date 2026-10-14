@@ -357,7 +357,25 @@ class App {
         if (action === "wifiApConnect") {
             return this.connectWifiApFromStartFlow();
         }
+        if (action === "unlockAudio") {
+            this.unlockAudioFromStartFlow();
+            return true;
+        }
         return true;
+    }
+
+    /** Runs inside the start-flow tap so lean-in turns and replies can use audio without another tap. */
+    unlockAudioFromStartFlow() {
+        try {
+            window.TelnyxStreamTurn?.unlock?.();
+        } catch (err) {
+            console.warn("Microphone audio unlock failed:", err);
+        }
+        try {
+            this.robot?.getProcessingByType?.("audioPlayer")?.unlock?.();
+        } catch (err) {
+            console.warn("Playback audio unlock failed:", err);
+        }
     }
 
     _showStartFlowBrowserSwitch(message) {
