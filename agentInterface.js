@@ -204,6 +204,7 @@ class AgentInterface {
         this._pttStarting = false;
         /** Camera-frame talk control: the mic disc grows to fill its circle as the player holds or leans in. */
         this._pttDiscEl = null;
+        this._pttPadEl = null;
         this._pttSlideRaf = 0;
         this._pttSlideLastAt = 0;
         /** Lips growth: 0 small (off), 1 filling the circle. */
@@ -252,7 +253,7 @@ class AgentInterface {
     static PTT_SWEEP_WAIT_S = 0.6;
     static PTT_SWEEP_FAST = 4;
     /** Size of the idle mic as a fraction of its full size (filling the dashed circle). */
-    static PTT_DISC_MIN_SCALE = 0.4;
+    static PTT_DISC_MIN_SCALE = 0.32;
 
     /** True when a hold-to-talk game is active (Custom runs every JSON game). */
     _isConversationMode() {
@@ -2326,6 +2327,7 @@ class AgentInterface {
         this._pttBtnEl = null;
         this._pttLabelEl = null;
         this._pttDiscEl = null;
+        this._pttPadEl = null;
         this._pttState = "hidden";
         this._syncDashboardMicState("hidden", {
             disabled: true,
@@ -2428,12 +2430,15 @@ class AgentInterface {
         overlay.className = "sensor-camera-ptt-overlay sensor-camera-ptt-overlay--idle";
         overlay.setAttribute("aria-live", "polite");
 
-        const stack = document.createElement("div");
-        stack.className = "sensor-camera-ptt-stack";
+        const top = document.createElement("div");
+        top.className = "sensor-camera-ptt-top";
 
         const label = document.createElement("p");
         label.className = "sensor-camera-ptt-label";
         label.textContent = AgentInterface.PTT_IDLE_LABEL;
+
+        const stack = document.createElement("div");
+        stack.className = "sensor-camera-ptt-stack";
 
         const pad = document.createElement("div");
         pad.className = "sensor-camera-ptt-pad";
@@ -2441,6 +2446,12 @@ class AgentInterface {
         const cavity = document.createElement("div");
         cavity.className = "sensor-camera-ptt-cavity";
         cavity.setAttribute("aria-hidden", "true");
+
+        // Raised green ear for a finger press: the finger covers the button, so the ear pops up above it.
+        const popup = document.createElement("div");
+        popup.className = "sensor-camera-ptt-popup";
+        popup.setAttribute("aria-hidden", "true");
+        popup.appendChild(this._createPttEarIcon());
 
         const rays = document.createElement("div");
         rays.className = "sensor-camera-ptt-rays";
@@ -2476,6 +2487,7 @@ class AgentInterface {
                 } catch (_) {}
             }
             btn.classList.remove("is-pressed");
+            overlay.classList.remove("sensor-camera-ptt-overlay--finger");
             this._pttSourceOff("button");
         };
 
@@ -2485,6 +2497,7 @@ class AgentInterface {
                 btn.setPointerCapture(e.pointerId);
             } catch (_) {}
             btn.classList.add("is-pressed");
+            overlay.classList.toggle("sensor-camera-ptt-overlay--finger", e.pointerType !== "mouse");
             this._pttSourceOn("button");
         });
         btn.addEventListener("pointerup", endHold);
@@ -2495,14 +2508,17 @@ class AgentInterface {
         for (const wave of waves) pad.appendChild(wave);
         pad.appendChild(rays);
         pad.appendChild(btn);
-        stack.appendChild(label);
+        pad.appendChild(popup);
+        top.appendChild(label);
         stack.appendChild(pad);
+        overlay.appendChild(top);
         overlay.appendChild(stack);
         frameEl.appendChild(overlay);
 
         this._pttOverlayEl = overlay;
         this._pttBtnEl = btn;
         this._pttLabelEl = label;
+        this._pttPadEl = pad;
         this._pttDiscEl = disc;
         this._pttSlide = 0;
         this._pttScale = -1;
@@ -2659,7 +2675,7 @@ class AgentInterface {
         const sweep = Math.round(this._pttSweep * 1000) / 1000;
         if (sweep !== this._pttSweepSet) {
             this._pttSweepSet = sweep;
-            disc.style.setProperty("--ptt-sweep", String(sweep));
+            (this._pttPadEl || disc).style.setProperty("--ptt-sweep", String(sweep));
         }
 
         const docked = live && arrived && this._pttSweep >= 1;

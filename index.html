@@ -1209,9 +1209,20 @@
       align-items: center;
       gap: 0.7rem;
     }
+    /* Instructions sit at the top of the camera view, clear of the button and the thumb. */
+    .sensor-camera-ptt-top {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      display: flex;
+      justify-content: center;
+      padding: 0.85rem 1rem 0;
+      pointer-events: none;
+    }
     /* Talk control: small red lips grow to fill the dashed circle around them. */
     .sensor-camera-ptt-pad {
-      --ptt-cavity: clamp(6.6rem, 28.5vw, 7.8rem);
+      --ptt-cavity: clamp(8.25rem, 35vw, 9.75rem);
       position: relative;
       pointer-events: none;
       width: var(--ptt-cavity);
@@ -1226,9 +1237,61 @@
       background: rgba(0, 0, 0, 0.35);
       transition: border-color 140ms ease;
     }
+    /* Connection progress runs clockwise around the ring, wide enough to show around a thumb. */
+    .sensor-camera-ptt-cavity::before {
+      content: "";
+      position: absolute;
+      inset: -3px;
+      border-radius: 50%;
+      background: conic-gradient(#7ee08a calc(var(--ptt-sweep, 0) * 1turn), transparent 0);
+      -webkit-mask-image: radial-gradient(farthest-side, transparent calc(100% - 7px), #000 calc(100% - 6px));
+      mask-image: radial-gradient(farthest-side, transparent calc(100% - 7px), #000 calc(100% - 6px));
+    }
     .sensor-camera-ptt-overlay--docked .sensor-camera-ptt-cavity {
       border-style: solid;
       border-color: #7ee08a;
+    }
+    /* Finger press only: once listening, a green ear rises above the thumb (like a keyboard key preview). */
+    .sensor-camera-ptt-popup {
+      position: absolute;
+      z-index: 2;
+      left: 50%;
+      bottom: calc(100% + 0.9rem);
+      width: calc(var(--ptt-cavity) * 0.62);
+      height: calc(var(--ptt-cavity) * 0.62);
+      margin-left: calc(var(--ptt-cavity) * -0.31);
+      display: grid;
+      place-items: center;
+      box-sizing: border-box;
+      border-radius: 50%;
+      border: 4px solid #b8f5c4;
+      background: #2fa84f;
+      color: #fff;
+      box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+      pointer-events: none;
+      opacity: 0;
+      transform: translateY(calc(var(--ptt-cavity) * 0.75)) scale(0.3);
+      transition: transform 260ms cubic-bezier(0.2, 1.4, 0.4, 1), opacity 160ms ease;
+    }
+    .sensor-camera-ptt-popup::after {
+      content: "";
+      position: absolute;
+      left: 50%;
+      bottom: -13px;
+      transform: translateX(-50%);
+      border-left: 10px solid transparent;
+      border-right: 10px solid transparent;
+      border-top: 12px solid #b8f5c4;
+    }
+    .sensor-camera-ptt-popup .sensor-camera-ptt-icon {
+      width: 60%;
+      height: 60%;
+      -webkit-mask-image: none;
+      mask-image: none;
+    }
+    .sensor-camera-ptt-overlay--finger.sensor-camera-ptt-overlay--docked .sensor-camera-ptt-popup {
+      opacity: 1;
+      transform: none;
     }
     /* Chevrons around the mic pointing outward: "grow to fill this". */
     .sensor-camera-ptt-rays {
@@ -1236,8 +1299,8 @@
       inset: 0;
     }
     .sensor-camera-ptt-ray {
-      --r0: calc(var(--ptt-cavity) * 0.29);
-      --r1: calc(var(--ptt-cavity) * 0.38);
+      --r0: calc(var(--ptt-cavity) * 0.25);
+      --r1: calc(var(--ptt-cavity) * 0.35);
       position: absolute;
       top: 50%;
       left: 50%;
@@ -1275,12 +1338,15 @@
     }
     @keyframes sensor-camera-ptt-wave {
       0% { transform: scale(1); opacity: 0.85; }
-      100% { transform: scale(1.5); opacity: 0; }
+      100% { transform: scale(1.35); opacity: 0; }
     }
     .sensor-camera-ptt-label {
       pointer-events: none;
       margin: 0;
-      max-width: min(92vw, 18rem);
+      max-width: min(92vw, 20rem);
+      padding: 0.35em 0.9em;
+      border-radius: 999px;
+      background: rgba(0, 0, 0, 0.5);
       text-align: center;
       font-size: clamp(1rem, 4.2vw, 1.3rem);
       font-weight: 700;
@@ -1325,7 +1391,7 @@
       border: 4px solid #f4b4b4;
       background: conic-gradient(#2fa84f calc(var(--ptt-sweep, 0) * 1turn), #d83a3a 0);
       color: #fff;
-      transform: scale(calc(var(--ptt-scale, 0.4) * var(--ptt-press, 1)));
+      transform: scale(calc(var(--ptt-scale, 0.32) * var(--ptt-press, 1)));
       box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3);
       transition: background-color 160ms ease, border-color 160ms ease, opacity 140ms ease;
     }
