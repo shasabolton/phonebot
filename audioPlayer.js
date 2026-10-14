@@ -375,6 +375,13 @@ class AudioPlayerAiModel {
         return this._analyserNode || this.ensurePlaybackTap();
     }
 
+    /** Latest playback samples (0–255, 128 = silence); null until something has played through the tap. */
+    getWaveform() {
+        if (!this._analyserNode || !this._levelData) return null;
+        this._analyserNode.getByteTimeDomainData(this._levelData);
+        return this._levelData;
+    }
+
     /** RMS amplitude 0…1 (1 ≈ full-scale square wave). */
     getAudioLevel() {
         const analyser = this.getAnalyserNode();

@@ -254,6 +254,12 @@ class AgentInterface {
     static PTT_SWEEP_FAST = 4;
     /** Size of the idle mic as a fraction of its full size (filling the dashed circle). */
     static PTT_DISC_MIN_SCALE = 0.32;
+    /** Idle ring bouncing between the mic and the dashed circle: circle sizes per second, so a smaller gap bounces faster. */
+    static PTT_RING_SPEED = 0.6;
+    /** Talking waveform ring: canvas overhang past the circle (per side), furthest swing, and sample boost. */
+    static PTT_WAVE_OVERHANG = 0.12;
+    static PTT_WAVE_REACH = 0.18;
+    static PTT_WAVE_GAIN = 2.5;
 
     /** True when a hold-to-talk game is active (Custom runs every JSON game). */
     _isConversationMode() {
@@ -2328,6 +2334,7 @@ class AgentInterface {
         this._pttLabelEl = null;
         this._pttDiscEl = null;
         this._pttPadEl = null;
+        this._pttWaveformEl = null;
         this._pttState = "hidden";
         this._syncDashboardMicState("hidden", {
             disabled: true,
@@ -2447,6 +2454,10 @@ class AgentInterface {
         cavity.className = "sensor-camera-ptt-cavity";
         cavity.setAttribute("aria-hidden", "true");
 
+        const waveform = document.createElement("canvas");
+        waveform.className = "sensor-camera-ptt-waveform";
+        waveform.setAttribute("aria-hidden", "true");
+
         // Raised green ear for a finger press: the finger covers the button, so the ear pops up above it.
         const popup = document.createElement("div");
         popup.className = "sensor-camera-ptt-popup";
@@ -2505,6 +2516,7 @@ class AgentInterface {
         btn.addEventListener("lostpointercapture", endHold);
 
         pad.appendChild(cavity);
+        pad.appendChild(waveform);
         for (const wave of waves) pad.appendChild(wave);
         pad.appendChild(rays);
         pad.appendChild(btn);
@@ -2519,11 +2531,14 @@ class AgentInterface {
         this._pttBtnEl = btn;
         this._pttLabelEl = label;
         this._pttPadEl = pad;
+        this._pttWaveformEl = waveform;
         this._pttDiscEl = disc;
         this._pttSlide = 0;
         this._pttScale = -1;
         this._pttSweep = 0;
         this._pttSweepSet = -1;
+        this._pttRing = null;
+        this._pttRingSet = "";
         this._startPttSlideLoop();
         return overlay;
     }
@@ -2693,8 +2708,11 @@ class AgentInterface {
         const scale = Math.round((min + (1 - min) * this._pttSlide) * 1000) / 1000;
         if (scale !== this._pttScale) {
             this._pttScale = scale;
-            disc.style.setProperty("--ptt-scale", String(scale));
+            (this._pttPadEl || disc).style.setProperty("--ptt-scale", String(scale));
+            this._pttPadEl?.classList.toggle("sensor-camera-ptt-pad--full", scale >= 1);
         }
+        this._updatePttRing(scale, dt);
+        this._drawPttWaveform();
 
         const label = this._pttLabelEl;
         if (label && this._pttState === "idle") {
@@ -2707,6 +2725,77 @@ class AgentInterface {
                 label.textContent = AgentInterface.PTT_IDLE_LABEL;
             }
         }
+    }
+
+    /** While idle, move the ring at a constant speed, reflecting off the mic's edge and the dashed circle. */
+    _updatePttRing(inner, dt) {
+        let ring = this._pttRing ?? inner;
+        if (this._pttState !== "idle" || inner >= 1) {
+            ring = inner;
+            this._pttRingDir = 1;
+        } else {
+            ring += (this._pttRingDir || 1) * AgentInterface.PTT_RING_SPEED * dt;
+            if (ring >= 1) {
+                ring = Math.max(inner, 2 - ring);
+                this._pttRingDir = -1;
+            }
+            if (ring <= inner) {
+                ring = Math.min(1, 2 * inner - ring);
+                this._pttRingDir = 1;
+            }
+        }
+        this._pttRing = ring;
+        const value = String(Math.round(ring * 1000) / 1000);
+        if (value !== this._pttRingSet) {
+            this._pttRingSet = value;
+            this._pttPadEl?.style.setProperty("--ptt-ring", value);
+        }
+    }
+
+    /**
+     * While talking, redraw the circle as the reply's waveform. The canvas is only shown by the
+     * minimalist dashboard; it overhangs the circle by PTT_WAVE_OVERHANG on each side.
+     */
+    _drawPttWaveform() {
+        const canvas = this._pttWaveformEl;
+        const width = canvas?.clientWidth || 0;
+        if (!width || this._pttState !== "talking") return;
+        const dpr = window.devicePixelRatio || 1;
+        const size = Math.round(width * dpr);
+        if (canvas.width !== size) {
+            canvas.width = size;
+            canvas.height = size;
+        }
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return;
+        ctx.clearRect(0, 0, size, size);
+
+        const center = size / 2;
+        const radius = center / (1 + 2 * AgentInterface.PTT_WAVE_OVERHANG);
+        const reach = radius * AgentInterface.PTT_WAVE_REACH;
+        const data = this._getAudioPlayer()?.getWaveform?.();
+        const points = 128;
+        const half = points / 2;
+        ctx.beginPath();
+        for (let i = 0; i <= points; i++) {
+            // Mirrored left/right so the two ends of the sample window meet without a seam.
+            const k = i <= half ? i : points - i;
+            let offset = 0;
+            if (data?.length) {
+                const v = (data[Math.round((k / half) * (data.length - 1))] - 128) / 128;
+                offset = Math.max(-1, Math.min(1, v * AgentInterface.PTT_WAVE_GAIN)) * reach;
+            }
+            const angle = (i / points) * Math.PI * 2 - Math.PI / 2;
+            const x = center + Math.cos(angle) * (radius + offset);
+            const y = center + Math.sin(angle) * (radius + offset);
+            if (i === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+        }
+        ctx.closePath();
+        ctx.lineWidth = 2 * dpr;
+        ctx.lineJoin = "round";
+        ctx.strokeStyle = "#3ddc84";
+        ctx.stroke();
     }
 
     /**

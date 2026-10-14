@@ -317,6 +317,70 @@
       text-shadow: none;
       animation: none;
     }
+    /* Minimalist talk control: a plain green dot grows to fill a larger dashed circle. */
+    .robot-dashboard--minimal .sensor-camera-ptt-pad {
+      --ptt-cavity: clamp(10.3rem, 43.75vw, 12.2rem);
+    }
+    .robot-dashboard--minimal .sensor-camera-ptt-cavity {
+      border: 1px solid rgba(255, 255, 255, 0.75);
+    }
+    .robot-dashboard--minimal .sensor-camera-ptt-cavity::before {
+      inset: -1px;
+    }
+    .robot-dashboard--minimal .sensor-camera-ptt-overlay .sensor-camera-ptt-disc {
+      background: #3ddc84;
+      border: none;
+      box-shadow: none;
+    }
+    .robot-dashboard--minimal .sensor-camera-ptt-pad--full .sensor-camera-ptt-btn .sensor-camera-ptt-disc {
+      opacity: 0;
+    }
+    .robot-dashboard--minimal .sensor-camera-ptt-overlay--thinking .sensor-camera-ptt-disc::after {
+      display: none;
+    }
+    .robot-dashboard--minimal .sensor-camera-ptt-overlay--thinking .sensor-camera-ptt-pad::after {
+      content: "";
+      position: absolute;
+      inset: -1px;
+      border-radius: 50%;
+      border: 3px solid transparent;
+      border-top-color: #3ddc84;
+      border-right-color: rgba(61, 220, 132, 0.4);
+      animation: sensor-camera-thinking-spin 0.9s linear infinite;
+      pointer-events: none;
+    }
+    /* Drawn by AgentInterface._drawPttWaveform; its size must match PTT_WAVE_OVERHANG (12% per side). */
+    .sensor-camera-ptt-waveform {
+      display: none;
+      position: absolute;
+      top: -12%;
+      left: -12%;
+      width: 124%;
+      height: 124%;
+      pointer-events: none;
+    }
+    .robot-dashboard--minimal .sensor-camera-ptt-overlay--talking .sensor-camera-ptt-waveform {
+      display: block;
+    }
+    .robot-dashboard--minimal .sensor-camera-ptt-overlay--talking .sensor-camera-ptt-cavity {
+      border-color: transparent;
+    }
+    .robot-dashboard--minimal .sensor-camera-ptt-disc .sensor-camera-ptt-icon,
+    .robot-dashboard--minimal .sensor-camera-ptt-popup {
+      display: none;
+    }
+    .robot-dashboard--minimal .sensor-camera-ptt-ray {
+      display: none;
+    }
+    .robot-dashboard--minimal .sensor-camera-ptt-rays::before {
+      content: "";
+      position: absolute;
+      inset: 6px;
+      border-radius: 50%;
+      border: 3px solid #3ddc84;
+      opacity: 0.9;
+      transform: scale(var(--ptt-ring, var(--ptt-scale, 0.32)));
+    }
     .robot-minimal-dashboard-label {
       display: flex;
       align-items: center;
