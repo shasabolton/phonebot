@@ -3,6 +3,7 @@ class Robot {
     static CUSTOM_MODE = "custom";
     static GAMES_GROUP = "Games";
     static CHARACTER_GROUP = "Character";
+    static STORAGE_MINIMAL_DASHBOARD = "phonebot.dashboard.minimal";
 
     constructor(container, config, options = {}) {
         this.config = typeof config === 'string' ? JSON.parse(config) : config;
@@ -1324,9 +1325,39 @@ class Robot {
         this._buildDefaultDashboard(container);
     }
 
+    /** Talking head minimalist dashboard: on unless the player turned it off. */
+    _minimalDashboard() {
+        try {
+            return localStorage.getItem(Robot.STORAGE_MINIMAL_DASHBOARD) !== "false";
+        } catch (_) {
+            return true;
+        }
+    }
+
+    _setMinimalDashboard(on) {
+        try {
+            localStorage.setItem(Robot.STORAGE_MINIMAL_DASHBOARD, on ? "true" : "false");
+        } catch (_) {}
+        const root = this.dashboardContainer?.querySelector(".robot-dashboard--talking-head");
+        root?.classList.toggle("robot-dashboard--minimal", this._minimalDashboard());
+    }
+
+    _buildMinimalDashboardToggle() {
+        const label = document.createElement("label");
+        label.className = "robot-minimal-dashboard-label";
+        const input = document.createElement("input");
+        input.type = "checkbox";
+        input.checked = this._minimalDashboard();
+        input.addEventListener("change", () => this._setMinimalDashboard(input.checked));
+        label.appendChild(input);
+        label.appendChild(document.createTextNode("Minimalist dashboard"));
+        return label;
+    }
+
     _buildTalkingHeadDashboard(container) {
         const root = document.createElement("div");
         root.className = "robot-dashboard robot-dashboard--talking-head";
+        root.classList.toggle("robot-dashboard--minimal", this._minimalDashboard());
 
         this.buildModesGUI(root);
 
@@ -1734,6 +1765,10 @@ class Robot {
             this.container.appendChild(charactersBtn);
             this._charactersBtn = charactersBtn;
             this._syncCharactersButton();
+        }
+
+        if (this.getDashboardKind() === "talkingHead") {
+            this.container.appendChild(this._buildMinimalDashboardToggle());
         }
 
         // Modes live on the dashboard when the robot has a custom/default dashboard host.

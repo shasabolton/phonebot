@@ -287,6 +287,50 @@
     .robot-dashboard--talking-head .robot-dashboard-chat-mic {
       color: #ccc;
     }
+    /* Minimalist talking head: the camera keeps running unseen so lean-in still works.
+       The camera area keeps its normal size so the mouth and status sit where they usually do. */
+    .robot-dashboard--minimal .robot-dashboard-chat-host {
+      display: none;
+    }
+    .robot-dashboard--minimal .sensor-camera--dashboard > p.muted {
+      visibility: hidden;
+    }
+    .robot-dashboard--minimal .sensor-camera-countdown-sweep {
+      background: conic-gradient(
+        transparent 0deg var(--sweep-deg),
+        rgba(255, 255, 255, 0.18) var(--sweep-deg) 360deg
+      );
+    }
+    .robot-dashboard--minimal .sensor-camera-video,
+    .robot-dashboard--minimal .sensor-camera-overlay,
+    .robot-dashboard--minimal .strategy-pid-arrow-overlay {
+      opacity: 0;
+    }
+    .robot-dashboard--minimal .sensor-camera-ptt-overlay {
+      background: none;
+    }
+    .robot-dashboard--minimal .sensor-camera-ptt-label,
+    .robot-dashboard--minimal .sensor-camera-ptt-overlay--thinking .sensor-camera-ptt-label {
+      background: none;
+      border-color: transparent;
+      color: #3ddc84;
+      text-shadow: none;
+      animation: none;
+    }
+    .robot-minimal-dashboard-label {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin: 8px 0;
+      font-weight: 600;
+      cursor: pointer;
+      user-select: none;
+    }
+    .robot-minimal-dashboard-label input {
+      width: 1.05rem;
+      height: 1.05rem;
+      margin: 0;
+    }
     .custom-messages-tiles {
       display: flex;
       flex-direction: column;
