@@ -982,56 +982,71 @@
       flex-direction: column;
       overflow: hidden;
     }
+    /* Full-screen dark start-flow popup (Bluetooth pairing etc.). Sits above the credit dock but
+       below the payment and custom-message overlays. */
     .robot-start-flow {
-      position: absolute;
+      position: fixed;
       inset: 0;
-      z-index: 20;
+      z-index: 9500;
       display: flex;
       align-items: center;
       justify-content: center;
-      padding: 16px;
+      padding: max(24px, env(safe-area-inset-top)) max(24px, env(safe-area-inset-right))
+        max(24px, env(safe-area-inset-bottom)) max(24px, env(safe-area-inset-left));
       box-sizing: border-box;
-      background: rgba(0, 0, 0, 0.55);
+      background: #000;
+      color: #3ddc84;
+      overflow-y: auto;
     }
     .robot-start-flow[hidden] {
       display: none !important;
     }
     .robot-start-flow-card {
-      width: min(100%, 22rem);
-      background: #fff;
-      border-radius: 12px;
-      padding: 18px 16px;
-      box-shadow: 0 8px 28px rgba(0, 0, 0, 0.28);
+      width: min(100%, 24rem);
       text-align: center;
     }
     .robot-start-flow-text {
-      margin: 0 0 14px 0;
-      font-size: 1.05rem;
-      line-height: 1.35;
-      color: #222;
+      margin: 0 0 24px 0;
+      font-size: 1.3rem;
+      line-height: 1.45;
+      color: #3ddc84;
     }
     .robot-start-flow-text--browser-switch {
       text-align: left;
     }
-    .robot-start-flow-text--browser-switch button {
-      width: 100%;
-      margin-top: 0;
+    .robot-start-flow-text .error {
+      color: #ff6b6b;
     }
+    .robot-start-flow-text--browser-switch button,
     .robot-start-flow-btn {
-      margin-top: 0;
       width: 100%;
-      font-size: 1rem;
+      margin-top: 0;
+      padding: 14px;
+      font-size: 1.05rem;
       font-weight: 600;
+      background: #111;
+      color: #3ddc84;
+      border: 1px solid #3ddc84;
+      border-radius: 10px;
+      cursor: pointer;
+    }
+    .robot-start-flow-text--browser-switch button:active,
+    .robot-start-flow-btn:active {
+      background: rgba(61, 220, 132, 0.15);
+    }
+    .robot-start-flow-btn:disabled {
+      opacity: 0.5;
+      cursor: default;
     }
     .robot-start-flow-btn--cancel {
-      margin-top: 8px;
+      margin-top: 12px;
       font-weight: 500;
       background: transparent;
-      color: #666;
-      border: 1px solid #ccc;
+      color: rgba(61, 220, 132, 0.75);
+      border-color: #2a2a2a;
     }
     .robot-start-flow-btn--cancel:hover {
-      background: #f5f5f5;
+      background: #111;
     }
     .sensor-camera--dashboard {
       flex: 1 1 auto;
