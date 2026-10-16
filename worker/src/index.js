@@ -298,6 +298,8 @@ async function handleStripeWebhook(request, env) {
     }
     const checkout = event.data?.object;
     if (checkout?.payment_status !== "paid") return json({ received: true });
+    // The Stripe account is shared with other sites (e.g. Contraption Cart); their events arrive here too.
+    if (!checkout.metadata?.playSessionId) return json({ received: true, ignored: true });
     const id = cleanMetadata(checkout.metadata?.playSessionId, 64);
     const session = await selectSession(env, id);
     if (!session) throw httpError(404, "Play session not found.");
