@@ -2559,6 +2559,9 @@ class AgentInterface {
     }
 
     static PTT_IDLE_LABEL = "Lean in or hold to talk";
+    static PTT_CLOSER_LABEL = "closer";
+    /** Face circle growth (0–1) at which the idle prompt changes to PTT_CLOSER_LABEL. */
+    static PTT_CLOSER_SLIDE = 0.5;
     static PTT_LEAN_RESET_LABEL = "Lean back, then in again to talk";
 
     /**
@@ -2748,12 +2751,16 @@ class AgentInterface {
         if (label && this._pttState === "idle") {
             const near = this._leanRatio != null && this._leanRatio >= AgentInterface.LEAN_ON * 0.9;
             const wantReset = !this._leanArmed && near && !this._pttRecording;
+            const wantCloser = this._pttSlide >= AgentInterface.PTT_CLOSER_SLIDE;
             const text = label.textContent;
-            if (wantReset && text === AgentInterface.PTT_IDLE_LABEL) {
-                label.textContent = AgentInterface.PTT_LEAN_RESET_LABEL;
-            } else if (!wantReset && text === AgentInterface.PTT_LEAN_RESET_LABEL) {
-                label.textContent = AgentInterface.PTT_IDLE_LABEL;
-            }
+            const idle = AgentInterface.PTT_IDLE_LABEL;
+            const closer = AgentInterface.PTT_CLOSER_LABEL;
+            const reset = AgentInterface.PTT_LEAN_RESET_LABEL;
+            let next = null;
+            if (wantReset && (text === idle || text === closer)) next = reset;
+            else if (!wantReset && wantCloser && (text === idle || text === reset)) next = closer;
+            else if (!wantReset && !wantCloser && (text === closer || text === reset)) next = idle;
+            if (next && next !== text) label.textContent = next;
         }
     }
 
@@ -2842,7 +2849,7 @@ class AgentInterface {
         const labels = {
             idle: AgentInterface.PTT_IDLE_LABEL,
             starting: "Getting ready…",
-            listening: leanOnly ? "Listening — lean back to send" : "Listening — let go to send",
+            listening: leanOnly ? "Listening" : "Listening — let go to send",
             processing: "Processing…",
             thinking: "Thinking",
             talking: "Talking"
@@ -2873,7 +2880,13 @@ class AgentInterface {
                 label?.querySelector(".sensor-camera-ptt-dots") &&
                 label.firstChild?.textContent === labelText;
             if (label && !alreadyThinking) {
-                label.textContent = labelText;
+                label.textContent = "";
+                if (phase === "listening") {
+                    const ear = this._createPttEarIcon();
+                    ear.classList.add("sensor-camera-ptt-label-ear");
+                    label.appendChild(ear);
+                }
+                label.appendChild(document.createTextNode(labelText));
                 if (phase === "thinking") {
                     const dots = document.createElement("span");
                     dots.className = "sensor-camera-ptt-dots";

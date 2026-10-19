@@ -309,18 +309,60 @@
     }
     .robot-dashboard--minimal .sensor-camera-ptt-overlay {
       background: none;
+      --ptt-cue: #3ddc84;
+      justify-content: flex-start;
+      align-items: stretch;
+      padding: 0.45rem 0.35rem 0.75rem;
+    }
+    .robot-dashboard--minimal .sensor-camera-ptt-overlay--idle {
+      --ptt-cue: #ff3b30;
+    }
+    .robot-dashboard--minimal .sensor-camera-ptt-overlay--starting {
+      --ptt-cue: #ff9f0a;
+    }
+    .robot-dashboard--minimal .sensor-camera-ptt-overlay--listening {
+      --ptt-cue: #3ddc84;
+    }
+    /* The instruction uses the phone width, not the narrower camera frame, so it stays on two lines. */
+    .robot-dashboard--minimal .robot-dashboard-camera {
+      container-type: inline-size;
+    }
+    .robot-dashboard--minimal .sensor-camera-frame {
+      overflow: visible;
+    }
+    .robot-dashboard--minimal .sensor-camera-ptt-top {
+      position: static;
+      flex: 0 0 auto;
+      box-sizing: border-box;
+      width: 100cqi;
+      max-width: 100cqi;
+      margin-left: calc(50% - 50cqi);
+      padding: 0 0.15rem 0.4rem;
+    }
+    .robot-dashboard--minimal .sensor-camera-ptt-stack {
+      flex: 1 1 auto;
+      min-height: 0;
+      justify-content: flex-end;
+      container-type: size;
     }
     .robot-dashboard--minimal .sensor-camera-ptt-label,
     .robot-dashboard--minimal .sensor-camera-ptt-overlay--thinking .sensor-camera-ptt-label {
       background: none;
       border-color: transparent;
-      color: #3ddc84;
+      color: var(--ptt-cue);
       text-shadow: none;
       animation: none;
+      max-width: 100%;
+      padding: 0.05em 0.1em;
+      font-size: clamp(2rem, 8.4vw, 2.6rem);
+      line-height: 1.15;
     }
-    /* Minimalist talk control: a green dot with the camera inside grows to fill a larger circle. */
+    /* Minimalist talk control: the camera sits in the center circle and grows to fill the larger one.
+       Not listening is red, getting ready is orange, listening is green. */
     .robot-dashboard--minimal .sensor-camera-ptt-pad {
       --ptt-cavity: clamp(10.3rem, 43.75vw, 12.2rem);
+      width: min(var(--ptt-cavity), 100cqi, 100cqb);
+      height: min(var(--ptt-cavity), 100cqi, 100cqb);
     }
     .robot-dashboard--minimal .sensor-camera-ptt-cavity {
       border: 1px solid rgba(255, 255, 255, 0.75);
@@ -330,7 +372,7 @@
     }
     .robot-dashboard--minimal .sensor-camera-ptt-overlay .sensor-camera-ptt-disc {
       background: #000;
-      border: 3px solid #3ddc84;
+      border: 3px solid var(--ptt-cue);
       box-shadow: none;
       overflow: hidden;
       clip-path: circle(50%);
@@ -393,7 +435,7 @@
       position: absolute;
       inset: 6px;
       border-radius: 50%;
-      border: 3px solid #3ddc84;
+      border: 3px solid var(--ptt-cue);
       opacity: 0.9;
       transform: scale(var(--ptt-ring, var(--ptt-scale, 0.32)));
     }
@@ -1619,6 +1661,16 @@
     .sensor-camera-ptt-ear {
       -webkit-mask-image: conic-gradient(#000 calc(var(--ptt-sweep, 0) * 1turn), transparent 0);
       mask-image: conic-gradient(#000 calc(var(--ptt-sweep, 0) * 1turn), transparent 0);
+    }
+    .sensor-camera-ptt-label .sensor-camera-ptt-label-ear {
+      display: inline-block;
+      width: 1.05em;
+      height: 1.05em;
+      margin: 0 0.28em 0 0;
+      vertical-align: -0.18em;
+      color: #3ddc84;
+      -webkit-mask-image: none;
+      mask-image: none;
     }
     .sensor-camera-ptt-disc::after {
       content: "";
