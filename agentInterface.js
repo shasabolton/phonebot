@@ -204,6 +204,8 @@ class AgentInterface {
         this._pttStarting = false;
         /** Camera-frame talk control: the mic disc grows to fill its circle as the player holds or leans in. */
         this._pttDiscEl = null;
+        /** Live camera cropped into the minimalist green dot. */
+        this._pttPreviewEl = null;
         this._pttPadEl = null;
         this._pttSlideRaf = 0;
         this._pttSlideLastAt = 0;
@@ -2329,10 +2331,12 @@ class AgentInterface {
         if (this._pttOverlayEl && this._pttOverlayEl.parentNode) {
             this._pttOverlayEl.parentNode.removeChild(this._pttOverlayEl);
         }
+        if (this._pttPreviewEl) this._pttPreviewEl.srcObject = null;
         this._pttOverlayEl = null;
         this._pttBtnEl = null;
         this._pttLabelEl = null;
         this._pttDiscEl = null;
+        this._pttPreviewEl = null;
         this._pttPadEl = null;
         this._pttWaveformEl = null;
         this._pttState = "hidden";
@@ -2487,6 +2491,16 @@ class AgentInterface {
         btn.setAttribute("aria-label", AgentInterface.PTT_IDLE_LABEL);
         const disc = document.createElement("span");
         disc.className = "sensor-camera-ptt-disc";
+        const preview = document.createElement("video");
+        preview.className = "sensor-camera-ptt-preview";
+        preview.setAttribute("playsinline", "");
+        preview.setAttribute("webkit-playsinline", "");
+        preview.muted = true;
+        preview.defaultMuted = true;
+        preview.autoplay = true;
+        preview.playsInline = true;
+        preview.setAttribute("aria-hidden", "true");
+        disc.appendChild(preview);
         disc.appendChild(this._createPttLipsIcon());
         disc.appendChild(this._createPttEarIcon());
         btn.appendChild(disc);
@@ -2533,6 +2547,7 @@ class AgentInterface {
         this._pttPadEl = pad;
         this._pttWaveformEl = waveform;
         this._pttDiscEl = disc;
+        this._pttPreviewEl = preview;
         this._pttSlide = 0;
         this._pttScale = -1;
         this._pttSweep = 0;
@@ -2646,10 +2661,25 @@ class AgentInterface {
         return Math.max(0, Math.min(1, t));
     }
 
+    /**
+     * On the minimalist dashboard, play the camera stream inside the green dot.
+     * The same stream as the hidden full-frame video; nothing extra is opened.
+     */
+    _syncPttCameraPreview() {
+        const preview = this._pttPreviewEl;
+        if (!preview) return;
+        const minimal = !!this._pttOverlayEl?.closest(".robot-dashboard--minimal");
+        const src = minimal ? this._getCameraSensor()?.getVideoElement?.()?.srcObject || null : null;
+        if (preview.srcObject === src) return;
+        preview.srcObject = src;
+        if (src) preview.play().catch(() => {});
+    }
+
     /** Grows or shrinks the mic each frame toward where the inputs and the mic state want it. */
     _pttSlideTick(now) {
         const dt = this._pttSlideLastAt ? Math.min(0.1, (now - this._pttSlideLastAt) / 1000) : 0;
         this._pttSlideLastAt = now;
+        this._syncPttCameraPreview();
         const lean = this._updateLean(now, dt);
         const disc = this._pttDiscEl;
         if (!disc) return;

@@ -33,8 +33,12 @@ class Robot {
         this._goalInputEl = null;
         this._modeSelect = null;
         this._localGame = null;
-        /** Run toggle turned off (see pauseActivity). */
-        this._paused = false;
+        /**
+         * Run toggle off (see pauseActivity). Robots start paused so the toggle matches the
+         * stopped transmit loop. A start flow with autoStart stays unpaused; that flow calls onStart.
+         */
+        const startFlow = this.getStartFlowConfig();
+        this._paused = !(startFlow && startFlow.autoStart);
         this._resumeWaiters = [];
         this._modeReady = false;
         this._modeActivationGeneration = 0;
