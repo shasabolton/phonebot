@@ -113,6 +113,21 @@ class Servo {
         return this.homeMicroseconds;
     }
 
+    /**
+     * True when the pulse on the wire is already the home command.
+     * Home can be stored raw (startup) or as the deadband-stretched pulse.
+     */
+    isAtHome() {
+        const current = this.microseconds;
+        if (current === this.homeMicroseconds) return true;
+        const commanded = Servo._clampInt(
+            this.homeMicroseconds,
+            this.minMicroseconds,
+            this.maxMicroseconds
+        );
+        return current === this._applyDeadbandStretch(commanded);
+    }
+
     getMinMicroseconds() {
         return this.minMicroseconds;
     }

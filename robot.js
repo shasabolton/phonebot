@@ -910,6 +910,7 @@ class Robot {
         } catch (_) {}
         this.getProcessingByType("audioPlayer")?.resumeForRobot?.();
         this._localGame?.resumeAudio?.();
+        if (this.mixEnabled && !this._mixTimer) this.startMixClock();
         const waiters = this._resumeWaiters.splice(0);
         for (const resolve of waiters) resolve();
     }
@@ -1162,6 +1163,27 @@ class Robot {
             }
         }
         return parts.join(",");
+    }
+
+    /**
+     * Set each servo to its home pulse when it is not already there.
+     * @returns {{ message: string, changed: boolean }}
+     */
+    homeServosIfNeeded() {
+        let changed = false;
+        for (const actuator of this.actuators || []) {
+            if (actuator?.type !== "servo") continue;
+            if (typeof actuator.isAtHome === "function" && actuator.isAtHome()) continue;
+            if (
+                typeof actuator.setMicroseconds !== "function" ||
+                typeof actuator.getHomeMicroseconds !== "function"
+            ) {
+                continue;
+            }
+            actuator.setMicroseconds(actuator.getHomeMicroseconds());
+            changed = true;
+        }
+        return { message: this.buildActionsMessage(), changed };
     }
 
     /**

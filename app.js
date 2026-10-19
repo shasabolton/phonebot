@@ -522,12 +522,15 @@ class App {
     transmitActionsMessage() {
         if (!this.transmitterInstance || !this.robot) return;
         const message = this.robot.buildActionsMessage();
-        this.transmitterInstance.transmitAction(message).then((res) => {
+        const pending = this.transmitterInstance.transmitAction(message).then((res) => {
             this.actionTick += 1;
             if (!res.ok) {
                 console.warn('Action failed:', res.body || 'unknown error');
             }
+            return res;
         });
+        this._actionTransmit = pending;
+        return pending;
     }
 
     setControlStatus(_text, _cls = 'muted') {
@@ -570,17 +573,60 @@ class App {
         }
     }
 
-    /** Toggle off: pause audio, game triggers and agent replies, and send servos home. */
+    /**
+     * Talking head off: freeze the face mix, then command servos home when they are not already there.
+     * Runs before pause so the head returns to center before audio and games stop.
+     */
+    async _homeTalkingHeadBeforePause() {
+        const robot = this.robot;
+        if (!robot || typeof robot.homeServosIfNeeded !== "function") return;
+
+        this._runToggleBusy = true;
+        this.syncRunToggle();
+        try {
+            if (typeof robot.stopMixClock === "function") robot.stopMixClock();
+            const inFlight = this._actionTransmit;
+            if (inFlight && typeof inFlight.then === "function") {
+                try {
+                    await inFlight;
+                } catch (err) {
+                    console.error("onStop in-flight action", err);
+                }
+            }
+            const { message, changed } = robot.homeServosIfNeeded();
+            if (
+                changed &&
+                message &&
+                this.transmitterInstance &&
+                typeof this.transmitterInstance.transmitAction === "function"
+            ) {
+                await this.transmitterInstance.transmitAction(message);
+            }
+        } catch (err) {
+            console.error("onStop home transmit", err);
+        } finally {
+            this._runToggleBusy = false;
+        }
+    }
+
+    /** Toggle off: talking head returns servos home first, then pause audio, game triggers, and agent replies. */
     async onStop() {
         const wasTransmitting = this.isRunLoopActive();
         this.stopLoop();
         this._runToggleBusy = false;
+
+        const talkingHead = this.robot?.getDashboardKind?.() === "talkingHead";
+        if (talkingHead) {
+            await this._homeTalkingHeadBeforePause();
+        }
+
         if (this.robot && typeof this.robot.pauseActivity === 'function') {
             this.robot.pauseActivity();
         }
 
         let restorePids = null;
         if (
+            !talkingHead &&
             wasTransmitting &&
             this.robot &&
             typeof this.robot.syncActuatorsToHomeForTransmit === 'function'
