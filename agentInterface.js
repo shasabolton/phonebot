@@ -222,6 +222,8 @@ class AgentInterface {
         this._leanAboveSince = 0;
         /** Leaning starts a turn only after the player has leaned back since the last one. */
         this._leanArmed = true;
+        /** Idle was replaced by Talking because menu, introduction, or other speech is playing. */
+        this._playbackDroveTalking = false;
         /** Cancels in-flight mode auto-start when the mode changes again. */
         this._modeStartGeneration = 0;
         /**
@@ -2683,6 +2685,7 @@ class AgentInterface {
         const dt = this._pttSlideLastAt ? Math.min(0.1, (now - this._pttSlideLastAt) / 1000) : 0;
         this._pttSlideLastAt = now;
         this._syncPttCameraPreview();
+        this._syncPttTalkingPlayback();
         const lean = this._updateLean(now, dt);
         const disc = this._pttDiscEl;
         if (!disc) return;
@@ -2762,6 +2765,33 @@ class AgentInterface {
             else if (!wantReset && !wantCloser && (text === closer || text === reset)) next = idle;
             if (next && next !== text) label.textContent = next;
         }
+    }
+
+    /**
+     * Menu, introduction, and any other speech: show the green waveform and "Talking"
+     * instead of the lean-in prompt for as long as sound is playing.
+     */
+    _isPlaybackActive() {
+        if (window.__phonebotTtsSpeaking) return true;
+        try {
+            if (window.speechSynthesis?.speaking) return true;
+        } catch (_) {}
+        const audio = this._getAudioPlayer()?._audio;
+        return !!(audio && !audio.paused && !audio.ended);
+    }
+
+    _syncPttTalkingPlayback() {
+        const playing = this._isPlaybackActive();
+        if (playing) {
+            if (this._pttState === "idle") {
+                this._playbackDroveTalking = true;
+                this._setPttState("talking");
+            }
+            return;
+        }
+        if (!this._playbackDroveTalking) return;
+        this._playbackDroveTalking = false;
+        if (this._pttState === "talking") this._setPttState("idle");
     }
 
     /** While idle, move the ring at a constant speed, reflecting off the mic's edge and the dashed circle. */
