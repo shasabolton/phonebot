@@ -1,6 +1,7 @@
 {
   "format": "phonebot.game.v1",
   "name": "Story: Escape the Wall",
+  "enableChat": false,
   "messages": [
     {
       "id": "etw-00",

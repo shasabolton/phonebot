@@ -1,6 +1,7 @@
 {
   "format": "phonebot.game.v1",
   "name": "Introduction",
+  "enableChat": false,
   "messages": [
     {
       "id": "cm-mv3ndrcf-xua34y",

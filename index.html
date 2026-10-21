@@ -420,6 +420,25 @@
     .robot-dashboard--minimal .sensor-camera-ptt-overlay--talking .sensor-camera-ptt-waveform {
       display: block;
     }
+    /* Enable chat off: no button and no coaching. The waveform is the only thing while talking. */
+    .sensor-camera-ptt-overlay--no-chat {
+      background: none;
+      pointer-events: none;
+    }
+    .sensor-camera-ptt-overlay--no-chat .sensor-camera-ptt-top,
+    .sensor-camera-ptt-overlay--no-chat .sensor-camera-ptt-btn,
+    .sensor-camera-ptt-overlay--no-chat .sensor-camera-ptt-cavity,
+    .sensor-camera-ptt-overlay--no-chat .sensor-camera-ptt-rays,
+    .sensor-camera-ptt-overlay--no-chat .sensor-camera-ptt-wave,
+    .sensor-camera-ptt-overlay--no-chat .sensor-camera-ptt-popup {
+      display: none;
+    }
+    .sensor-camera-ptt-overlay--no-chat:not(.sensor-camera-ptt-overlay--talking) .sensor-camera-ptt-pad {
+      visibility: hidden;
+    }
+    .sensor-camera-ptt-overlay--no-chat.sensor-camera-ptt-overlay--talking .sensor-camera-ptt-waveform {
+      display: block;
+    }
     .robot-dashboard--minimal .sensor-camera-ptt-overlay--talking .sensor-camera-ptt-cavity {
       border-color: transparent;
     }
@@ -957,6 +976,9 @@
       border-radius: 0;
       padding: 4px 8px;
     }
+    .robot-dashboard-chat-composer[hidden] {
+      display: none;
+    }
     .robot-dashboard-chat-composer {
       flex: 0 0 auto;
       display: flex;
@@ -1004,6 +1026,9 @@
       touch-action: none;
       user-select: none;
       -webkit-user-select: none;
+    }
+    .robot-dashboard-chat-mic[hidden] {
+      display: none;
     }
     .robot-dashboard-chat-mic:disabled {
       opacity: 0.45;

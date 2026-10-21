@@ -217,6 +217,8 @@ class CustomMessagesGame {
         this._activeGameId = null;
         /** @type {string} */
         this._activeGameName = "";
+        /** Player may record, type, and send to the agent. Off for playback-only games. */
+        this._activeGameEnableChat = true;
         /** Editing from the character editor: no triggers run and the game is not selected. */
         this._editOnly = false;
         /** A repo game: the editor only shows it and nothing is saved. */
@@ -308,6 +310,7 @@ class CustomMessagesGame {
             this.messages = [];
             this._activeGameId = null;
             this._activeGameName = "";
+            this._activeGameEnableChat = true;
             this._showChatHistory();
             this._armHoldToTalk();
             return;
@@ -315,6 +318,7 @@ class CustomMessagesGame {
         this.messages = active.messages;
         this._activeGameId = active.gameId;
         this._activeGameName = active.gameName;
+        this._activeGameEnableChat = active.enableChat !== false;
         if (this._editOnly) this._running = false;
         void this._loadAudioAndBegin(this._generation);
     }
@@ -452,7 +456,7 @@ class CustomMessagesGame {
 
     /**
      * Active saved game. `gameId` is null (and `messages` empty) when no game is chosen.
-     * @returns {{ gameId: string|null, gameName: string, messages: CustomMessage[] }}
+     * @returns {{ gameId: string|null, gameName: string, enableChat: boolean, messages: CustomMessage[] }}
      */
     static loadActiveWorkspace() {
         const store = CustomMessagesGame._loadStore();
@@ -463,7 +467,7 @@ class CustomMessagesGame {
      * A saved or loaded repo game by id. `gameId` is null (and `messages` empty) when it does
      * not exist.
      * @param {string|null} gameId
-     * @returns {{ gameId: string|null, gameName: string, messages: CustomMessage[] }}
+     * @returns {{ gameId: string|null, gameName: string, enableChat: boolean, messages: CustomMessage[] }}
      */
     static loadGameWorkspace(gameId) {
         const want = gameId ? String(gameId) : null;
@@ -473,6 +477,7 @@ class CustomMessagesGame {
                 return {
                     gameId: game.id,
                     gameName: String(game.name || "").trim() || "Untitled",
+                    enableChat: CustomMessagesGame._normalizeEnableChat(game.enableChat),
                     messages: CustomMessagesGame._deserializeMessageList(game.messages)
                 };
             }
@@ -480,8 +485,32 @@ class CustomMessagesGame {
         return {
             gameId: null,
             gameName: "",
+            enableChat: true,
             messages: []
         };
+    }
+
+    /**
+     * Missing means on, so games saved before the switch keep chat. Explicit false turns it off.
+     * @param {unknown} value
+     * @returns {boolean}
+     */
+    static _normalizeEnableChat(value) {
+        return value !== false;
+    }
+
+    /**
+     * The active game allows the player to record, type, and send to the agent.
+     * No game selected is plain chat, which stays on. Parrot does not consult this.
+     * @returns {boolean}
+     */
+    static activeGameEnablesChat() {
+        const store = CustomMessagesGame._loadStore();
+        const activeId = store.activeGameId ? String(store.activeGameId) : "";
+        if (!activeId) return true;
+        const game = CustomMessagesGame._allGames().find((c) => c && c.id === activeId);
+        if (!game) return true;
+        return CustomMessagesGame._normalizeEnableChat(game.enableChat);
     }
 
     /** Name of the active saved game, or "" when none is chosen. */
@@ -498,9 +527,9 @@ class CustomMessagesGame {
     }
 
     /**
-     * Update the name of a saved game.
+     * Update the name or Enable chat switch of a saved game.
      * @param {string} gameId
-     * @param {{ name?: string }} patch
+     * @param {{ name?: string, enableChat?: boolean }} patch
      * @returns {boolean}
      */
     static updateGameMeta(gameId, patch = {}) {
@@ -513,6 +542,7 @@ class CustomMessagesGame {
             const label = String(patch.name || "").trim();
             if (label) game.name = label;
         }
+        if (patch.enableChat != null) game.enableChat = !!patch.enableChat;
         CustomMessagesGame._saveStore(store);
         return true;
     }
@@ -589,6 +619,7 @@ class CustomMessagesGame {
         const game = {
             id: CustomMessagesGame._newGameId(),
             name: label,
+            enableChat: true,
             messages: [],
             characterId: String(characterId),
             slug: String(slug)
@@ -622,6 +653,7 @@ class CustomMessagesGame {
         const game = {
             id: CustomMessagesGame._newGameId(),
             name,
+            enableChat: CustomMessagesGame._normalizeEnableChat(payload.enableChat),
             messages: messages.map((m) => CustomMessagesGame._serializeMessage(m)),
             characterId: String(characterId),
             slug: String(slug)
@@ -647,6 +679,7 @@ class CustomMessagesGame {
         const game = {
             id: CustomMessagesGame.repoGameId(characterId, slug),
             name: String(payload.name || "").trim() || "Untitled",
+            enableChat: CustomMessagesGame._normalizeEnableChat(payload.enableChat),
             messages: messages.map((m) => CustomMessagesGame._serializeMessage(m)),
             characterId: String(characterId),
             slug: String(slug)
@@ -746,15 +779,18 @@ class CustomMessagesGame {
      */
     static async exportGameFolder({ savedId = "", payload = null, basePath = "" }) {
         let name = "";
+        let enableChat = true;
         let messages = [];
         if (savedId) {
             const workspace = CustomMessagesGame.loadGameWorkspace(savedId);
             if (!workspace.gameId) return null;
             name = workspace.gameName;
+            enableChat = workspace.enableChat !== false;
             messages = workspace.messages;
             await CustomMessagesGame._loadAudio(messages);
         } else if (payload && typeof payload === "object") {
             name = String(payload.name || "").trim() || "Untitled";
+            enableChat = CustomMessagesGame._normalizeEnableChat(payload.enableChat);
             messages = CustomMessagesGame._deserializeMessageList(payload.messages);
             CustomMessagesGame._rebaseAudio(messages, { basePath });
         } else {
@@ -805,7 +841,12 @@ class CustomMessagesGame {
             out.push(entry);
         }
         return {
-            json: { format: CustomMessagesGame.EXPORT_FORMAT, name, messages: out },
+            json: {
+                format: CustomMessagesGame.EXPORT_FORMAT,
+                name,
+                enableChat,
+                messages: out
+            },
             files
         };
     }
@@ -1579,18 +1620,24 @@ class CustomMessagesGame {
     }
 
     /**
-     * @param {{ name?: string }} patch
+     * @param {{ name?: string, enableChat?: boolean }} patch
      */
     _persistActiveGameMeta(patch = {}) {
         if (!this._activeGameId || this._readOnly) return;
+        /** @type {{ name?: string, enableChat?: boolean }} */
+        const next = {};
         if (patch.name != null) {
             const label = String(patch.name || "").trim();
-            if (label) this._activeGameName = label;
-            else return;
+            if (!label) return;
+            this._activeGameName = label;
+            next.name = this._activeGameName;
         }
-        CustomMessagesGame.updateGameMeta(this._activeGameId, {
-            name: this._activeGameName
-        });
+        if (patch.enableChat != null) {
+            this._activeGameEnableChat = !!patch.enableChat;
+            next.enableChat = this._activeGameEnableChat;
+        }
+        if (next.name == null && next.enableChat == null) return;
+        CustomMessagesGame.updateGameMeta(this._activeGameId, next);
     }
 
     // —— Actions list popup ————————————————————————————————————————
@@ -1645,7 +1692,21 @@ class CustomMessagesGame {
         });
         nameLabel.appendChild(nameInput);
 
+        const chatLabel = document.createElement("label");
+        chatLabel.className = "custom-messages-camera-label custom-messages-enable-chat-label";
+        const chatCheck = document.createElement("input");
+        chatCheck.type = "checkbox";
+        chatCheck.className = "custom-messages-enable-chat";
+        chatCheck.checked = this._activeGameEnableChat !== false;
+        chatCheck.disabled = !this._activeGameId || this._readOnly;
+        chatCheck.addEventListener("change", () => {
+            this._persistActiveGameMeta({ enableChat: chatCheck.checked });
+        });
+        chatLabel.appendChild(chatCheck);
+        chatLabel.appendChild(document.createTextNode(" Enable chat"));
+
         meta.appendChild(nameLabel);
+        meta.appendChild(chatLabel);
         card.appendChild(meta);
 
         const listTitle = document.createElement("h3");

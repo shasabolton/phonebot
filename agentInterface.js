@@ -167,6 +167,14 @@ class AgentInterface {
             void this._resumePendingSend();
         };
         window.addEventListener("phonebot:ai-budget", this._aiBudgetListener);
+        this._onCustomGameChange = () => {
+            if (this._pttOverlayEl?.isConnected && this._pttState !== "hidden") {
+                this._setPttState(this._pttState);
+            } else {
+                this._syncChatEnabledUi();
+            }
+        };
+        window.addEventListener("phonebot:gamechange", this._onCustomGameChange);
         this._passwordHandler = (password) => this._applyPasswordFromPaywall(password);
         window.playBilling?.setPasswordHandler?.(this._passwordHandler);
         this._agentPowerBtn = null;
@@ -290,6 +298,7 @@ class AgentInterface {
         // Fresh transcript per game (Custom included — re-selecting Custom after leaving wipes prior chat).
         this.messageHistory = [];
         this._renderHistory();
+        this._syncChatEnabledUi();
         const generation = this._modeStartGeneration;
         if (this._isSimonSaysPoseMatchMode()) return;
         if (this._modeHasPromptTemplate()) {
@@ -739,7 +748,43 @@ class AgentInterface {
         this._sendBtn.disabled =
             this._sendInProgress ||
             this._conversationListenRunning ||
-            !this._agentEnabled;
+            !this._agentEnabled ||
+            this._chatSuppressed();
+    }
+
+    /**
+     * Parrot records without an agent. Every other mode keeps chat unless a Custom game
+     * turned Enable chat off. No game selected is plain chat.
+     * @returns {boolean}
+     */
+    _playerChatEnabled() {
+        if (this._isParrotMode()) return true;
+        if (!this._isConversationMode()) return true;
+        const Game = window.CustomMessagesGame;
+        if (typeof Game?.activeGameEnablesChat !== "function") return true;
+        return Game.activeGameEnablesChat();
+    }
+
+    /** Custom game is running with Enable chat off: no player path to the agent. */
+    _chatSuppressed() {
+        return this._isConversationMode() && !this._playerChatEnabled();
+    }
+
+    /**
+     * Hide the talk button, the coaching line, and the message box when this game has chat off.
+     * The talking waveform stays; Parrot is unchanged.
+     */
+    _syncChatEnabledUi() {
+        const suppressed = this._chatSuppressed();
+        this._pttOverlayEl?.classList.toggle("sensor-camera-ptt-overlay--no-chat", suppressed);
+        if (this._pttBtnEl) this._pttBtnEl.hidden = suppressed;
+        if (this._pttLabelEl && suppressed) this._pttLabelEl.textContent = "";
+        const composer = this._dashboardChatEl?.querySelector(".robot-dashboard-chat-composer");
+        if (composer) composer.hidden = suppressed;
+        if (this._dashboardPromptInput) this._dashboardPromptInput.disabled = suppressed;
+        if (this._dashboardMicBtn) this._dashboardMicBtn.hidden = suppressed;
+        if (this._promptInput) this._promptInput.disabled = suppressed;
+        if (this._sendBtn) this._syncSendButtonState();
     }
 
     /**
@@ -2346,6 +2391,7 @@ class AgentInterface {
             disabled: true,
             label: "Hold to talk"
         });
+        this._syncChatEnabledUi();
     }
 
     /**
@@ -2751,7 +2797,7 @@ class AgentInterface {
         this._drawPttWaveform();
 
         const label = this._pttLabelEl;
-        if (label && this._pttState === "idle") {
+        if (label && this._pttState === "idle" && !this._chatSuppressed()) {
             const near = this._leanRatio != null && this._leanRatio >= AgentInterface.LEAN_ON * 0.9;
             const wantReset = !this._leanArmed && near && !this._pttRecording;
             const wantCloser = this._pttSlide >= AgentInterface.PTT_CLOSER_SLIDE;
@@ -2885,9 +2931,12 @@ class AgentInterface {
             talking: "Talking"
         };
 
-        const labelText =
-            String(options.label || options.hint || "").trim() || labels[phase] || labels.idle;
+        const suppressChat = this._chatSuppressed();
+        const labelText = suppressChat
+            ? ""
+            : String(options.label || options.hint || "").trim() || labels[phase] || labels.idle;
         const disabled =
+            suppressChat ||
             phase === "processing" ||
             phase === "thinking" ||
             phase === "talking" ||
@@ -2911,13 +2960,13 @@ class AgentInterface {
                 label.firstChild?.textContent === labelText;
             if (label && !alreadyThinking) {
                 label.textContent = "";
-                if (phase === "listening") {
+                if (!suppressChat && phase === "listening") {
                     const ear = this._createPttEarIcon();
                     ear.classList.add("sensor-camera-ptt-label-ear");
                     label.appendChild(ear);
                 }
-                label.appendChild(document.createTextNode(labelText));
-                if (phase === "thinking") {
+                if (!suppressChat) label.appendChild(document.createTextNode(labelText));
+                if (!suppressChat && phase === "thinking") {
                     const dots = document.createElement("span");
                     dots.className = "sensor-camera-ptt-dots";
                     dots.setAttribute("aria-hidden", "true");
@@ -2931,7 +2980,8 @@ class AgentInterface {
                 this._pttBtnEl.setAttribute("aria-pressed", phase === "listening" || phase === "starting" ? "true" : "false");
             }
         }
-        this._syncDashboardMicState(phase, { disabled, label: labelText });
+        this._syncDashboardMicState(phase, { disabled, label: labelText || "Hold to talk" });
+        this._syncChatEnabledUi();
     }
 
     /**
@@ -2971,13 +3021,14 @@ class AgentInterface {
     }
 
     _pttCanInteract() {
+        const conversation = this._isConversationMode() && this._playerChatEnabled();
         return (
             this._agentEnabled &&
             !this._pttRecording &&
             !this._sendInProgress &&
             !this._conversationListenRunning &&
             (this._pttState === "idle" || this._pttState === "hidden") &&
-            (this._isConversationMode() || this._isParrotMode() || !!this._pttWaitResolve)
+            (conversation || this._isParrotMode() || !!this._pttWaitResolve)
         );
     }
 
@@ -3599,7 +3650,7 @@ class AgentInterface {
      */
     async _handleConversationPttBlob(blob) {
         const generation = this._speakGeneration;
-        if (!this._isConversationMode() || !this._agentEnabled) return;
+        if (!this._isConversationMode() || !this._agentEnabled || this._chatSuppressed()) return;
         if (this._conversationListenRunning || this._sendInProgress) return;
 
         if (!blob || blob.size < 32) {
@@ -5322,7 +5373,7 @@ class AgentInterface {
      */
     async _submitSpeechPrompt(transcript, options = {}) {
         const text = String(transcript || "").trim();
-        if (!text) return false;
+        if (!text || this._chatSuppressed()) return false;
         const speechTranscriber = String(options.speechTranscriber || "").trim();
         if (!this._agentEnabled) {
             if (this._statusEl) {
@@ -5626,6 +5677,7 @@ class AgentInterface {
 
     async _onSend(options = {}) {
         if (!this._promptInput && !this._dashboardPromptInput) return;
+        if (this._chatSuppressed()) return;
         if (!this._agentEnabled) {
             if (this._statusEl) {
                 this._statusEl.textContent = "Agent is off. Turn the agent on to send.";
@@ -6175,6 +6227,7 @@ class AgentInterface {
         this._updateDashboardPromptPlaceholder();
         this._renderHistory();
         this._syncDashboardMicState(this._pttState || "idle");
+        this._syncChatEnabledUi();
     }
 
     _syncKeyFromSelection() {
@@ -6543,6 +6596,7 @@ class AgentInterface {
         this._stopSpeaking();
         this._clearPttOverlay();
         window.removeEventListener("phonebot:ai-budget", this._aiBudgetListener);
+        window.removeEventListener("phonebot:gamechange", this._onCustomGameChange);
         if (window.playBilling?._passwordHandler === this._passwordHandler) {
             window.playBilling.setPasswordHandler(null);
         }

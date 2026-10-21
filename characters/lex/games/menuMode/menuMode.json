@@ -1,6 +1,7 @@
 {
   "format": "phonebot.game.v1",
   "name": "Menu",
+  "enableChat": false,
   "messages": [
     {
       "id": "menu-nudge-0",
