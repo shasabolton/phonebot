@@ -984,7 +984,7 @@ class App {
         const intro = document.createElement('p');
         intro.className = 'app-help-intro muted';
         intro.textContent =
-            'Phonebot boards are powered from a normal USB 5 V supply. Aim to stay around 2.5 A continuous on the servo rail; a resettable fuse protects the board if you overload.';
+            'Phonebot boards are powered from a normal USB 5 V supply. Keep the servo rail around 2.5 A continuous. There is no resettable fuse on the board, so an overload is not cut off for you.';
         page.appendChild(intro);
 
         const sections = [
@@ -994,17 +994,17 @@ class App {
                     'Use a USB 5 V charger or power bank rated about 3 A at 5 V (15 W). That is the usual maximum for phone-style USB supplies.',
                     '“65 W” or laptop PD chargers are not 65 W at 5 V — they raise voltage for laptops. At 5 V they are often still only ~3 A. Your board uses 5 V only.',
                     'Prefer a decent cable. Weak cables drop voltage when several servos move.',
-                    'For many loaded standard-size servos, use a dedicated 5 V / 5–8 A supply instead of a phone charger.'
+                    'A bigger supply can feed more loaded servos than a phone charger, but it does not add protection. Keep continuous servo current around 2.5 A either way.'
                 ]
             },
             {
                 title: 'How many servos can I run?',
                 body: [
                     'Aim for about 2.5 A max continuous current on the servo rail (USB 5 V / ~3 A supply, with headroom for the ESP).',
-                    '8 micro servos: fine for moderate motion. High load or stall may trip the fuse — servos pause for a few seconds, then power returns.',
-                    '8 standard servos: light loads only. Moderate load will often trip the fuse the same way. Prefer ≤6 standards if you want fewer shutdowns.',
+                    '8 micro servos: fine for moderate motion. Do not leave them stalled — nothing on the board cuts the rail.',
+                    '8 standard servos: light loads only. A stall can pull several amps. Prefer ≤6 standards, and avoid holding against a jam.',
                     '5 standard servos with light motion (and brief spikes) is a practical USB budget.',
-                    'Both setups are electrically safe when the board has servo-rail fuse protection: the ESP and USB supply stay up; only the servos lose power briefly.'
+                    'Servos and the ESP share the same 5 V rail. A heavy stall can sag or shut down the USB supply, so the link can drop with the servos.'
                 ]
             },
             {
@@ -1013,16 +1013,16 @@ class App {
                     'Micro (e.g. SG90): free motion ~100–200 mA each; stall ~500–800 mA.',
                     'Standard (e.g. MG995 class): free motion ~200–500 mA each; stall ~1.5–2.5 A.',
                     'Idle holding with no external load is much lower (tens of mA per servo).',
-                    'Board target: ~2.5 A hold polyfuse on the servo 5 V rail. Sustained stall of several servos will open it; brief spikes often pass.'
+                    'Stay under about 2.5 A continuous on the servo rail. Brief start spikes are normal; a sustained stall of several servos is not.'
                 ]
             },
             {
                 title: 'What happens if I overload?',
                 body: [
-                    'The servo-rail polyfuse heats and goes high-resistance. All servos lose 5 V together for a few seconds while it cools.',
-                    'The ESP keeps running (it is on the unfused branch), so Bluetooth/Wi‑Fi and the app stay connected.',
-                    'When the fuse cools, servo power returns automatically. If a mechanical jam is still there, it may trip again.',
-                    'This protects the charger and board. It does not mean the robot “keeps working” under overload — expect a short limp.'
+                    'Nothing on the board opens the circuit. The USB supply may sag, current-limit, or shut off, and the ESP can lose power with the servos.',
+                    'Traces, the USB path, and the reverse-protection diode can overheat if a stall is left in place. A charger’s own current limit is not reliable protection.',
+                    'Stop the motion or unplug if servos are jammed or the board gets hot. Power does not come back on its own.',
+                    'Staying inside the 2.5 A budget keeps the charger and the board within what they are laid out for.'
                 ]
             }
         ];
