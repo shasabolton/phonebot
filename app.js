@@ -984,7 +984,7 @@ class App {
         const intro = document.createElement('p');
         intro.className = 'app-help-intro muted';
         intro.textContent =
-            'Phonebot boards are powered from a normal USB 5 V supply. Keep the servo rail around 2.5 A continuous. There is no resettable fuse on the board, so an overload is not cut off for you.';
+            'Phonebot boards are powered from a normal USB 5 V supply. The board is rated for 3 A continuous, the same as most USB phone chargers.';
         page.appendChild(intro);
 
         const sections = [
@@ -994,14 +994,14 @@ class App {
                     'Use a USB 5 V charger or power bank rated about 3 A at 5 V (15 W). That is the usual maximum for phone-style USB supplies.',
                     '“65 W” or laptop PD chargers are not 65 W at 5 V — they raise voltage for laptops. At 5 V they are often still only ~3 A. Your board uses 5 V only.',
                     'Prefer a decent cable. Weak cables drop voltage when several servos move.',
-                    'A bigger supply can feed more loaded servos than a phone charger, but it does not add protection. Keep continuous servo current around 2.5 A either way.'
+                    'A bigger supply can feed more loaded servos than a phone charger. Keep continuous servo current around 3 A either way.'
                 ]
             },
             {
                 title: 'How many servos can I run?',
                 body: [
-                    'Aim for about 2.5 A max continuous current on the servo rail (USB 5 V / ~3 A supply, with headroom for the ESP).',
-                    '8 micro servos: fine for moderate motion. Do not leave them stalled — nothing on the board cuts the rail.',
+                    'Aim for about 3 A max continuous current on the servo rail, the same as a typical USB phone charger.',
+                    '8 micro servos: fine for moderate motion. A stall can make the charger limit or cut power until the load falls.',
                     '8 standard servos: light loads only. A stall can pull several amps. Prefer ≤6 standards, and avoid holding against a jam.',
                     '5 standard servos with light motion (and brief spikes) is a practical USB budget.',
                     'Servos and the ESP share the same 5 V rail. A heavy stall can sag or shut down the USB supply, so the link can drop with the servos.'
@@ -1013,16 +1013,15 @@ class App {
                     'Micro (e.g. SG90): free motion ~100–200 mA each; stall ~500–800 mA.',
                     'Standard (e.g. MG995 class): free motion ~200–500 mA each; stall ~1.5–2.5 A.',
                     'Idle holding with no external load is much lower (tens of mA per servo).',
-                    'Stay under about 2.5 A continuous on the servo rail. Brief start spikes are normal; a sustained stall of several servos is not.'
+                    'Stay under about 3 A continuous on the servo rail. Brief start spikes are normal; a sustained stall of several servos is not.'
                 ]
             },
             {
                 title: 'What happens if I overload?',
                 body: [
-                    'Nothing on the board opens the circuit. The USB supply may sag, current-limit, or shut off, and the ESP can lose power with the servos.',
-                    'Traces, the USB path, and the reverse-protection diode can overheat if a stall is left in place. A charger’s own current limit is not reliable protection.',
-                    'Stop the motion or unplug if servos are jammed or the board gets hot. Power does not come back on its own.',
-                    'Staying inside the 2.5 A budget keeps the charger and the board within what they are laid out for.'
+                    'The board is rated for 3 A continuous, the same as most USB phone chargers. It relies on your charger’s built-in overload protection.',
+                    'If the servos draw more than the charger can supply, the charger’s internal fuse limits the current or cuts power to the controller and servo motors until the load falls and the charger resets.',
+                    'That keeps both the charger and the board within what they are built for.'
                 ]
             }
         ];
