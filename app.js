@@ -991,10 +991,8 @@ class App {
             {
                 title: 'What power supply do I need?',
                 body: [
-                    'Use a USB 5 V charger or power bank rated about 3 A at 5 V (15 W). That is the usual maximum for phone-style USB supplies.',
-                    '“65 W” or laptop PD chargers are not 65 W at 5 V — they raise voltage for laptops. At 5 V they are often still only ~3 A. Your board uses 5 V only.',
-                    'Prefer a decent cable. Weak cables drop voltage when several servos move.',
-                    'A bigger supply can feed more loaded servos than a phone charger. Keep continuous servo current around 3 A either way.'
+                    'The board is intended to run off a typical 5 V USB phone charger, ideally 3 A. A 2 A charger can work if you are only using up to 5 micro servos.',
+                    'Prefer a decent cable. Weak cables drop voltage when several servos move.'
                 ]
             },
             {
