@@ -240,6 +240,7 @@ class App {
             this.robotGuiMount.style.display = 'none';
             this._renderEmptyDashboard();
             this.updateStartButtonState();
+            this.updateTitle();
             this._refreshSettingsMenu();
             if (!options.skipUrlSync) this.syncUrlParams();
             return;
@@ -256,6 +257,7 @@ class App {
             resolveStartFlowStepText: (step) => this.resolveStartFlowStepText(step)
         });
         this.updateStartButtonState();
+        this.updateTitle();
         this._refreshSettingsMenu();
         if (!options.skipUrlSync) this.syncUrlParams();
     }
@@ -744,7 +746,20 @@ class App {
     updateTitle() {
         if (!this.titleEl) return;
         const characterName = window.PhonebotCharacters?.activeCharacter?.()?.name || '';
+        const pickable = this._robotUsesCharacters();
         this.titleEl.textContent = characterName || 'Phone Robot';
+        this.titleEl.disabled = !pickable;
+        this.titleEl.classList.toggle('app-title--pick', pickable);
+        if (pickable) {
+            this.titleEl.setAttribute('aria-haspopup', 'dialog');
+            this.titleEl.setAttribute(
+                'aria-label',
+                characterName ? `${characterName}. Choose character` : 'Choose character'
+            );
+        } else {
+            this.titleEl.removeAttribute('aria-haspopup');
+            this.titleEl.removeAttribute('aria-label');
+        }
     }
 
     buildGUI() {
@@ -759,8 +774,13 @@ class App {
 
         const header = document.createElement('header');
         header.className = 'app-header';
-        const title = document.createElement('h1');
+        const title = document.createElement('button');
+        title.type = 'button';
         title.className = 'app-title';
+        title.addEventListener('click', () => {
+            if (!this._robotUsesCharacters()) return;
+            this.robot.openCharacters();
+        });
         this.titleEl = title;
         this.updateTitle();
         const characterEvent = window.PhonebotCharacters?.CHANGE_EVENT;

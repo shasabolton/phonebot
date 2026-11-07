@@ -355,7 +355,8 @@ class TelnyxVoice {
 
     /**
      * Voices that can stream, from every voice provider the account can reach. Ultra voices are
-     * left out: the streaming voice socket refuses them.
+     * left out: the streaming voice socket refuses them. MiniMax's legacy speech-02-turbo and
+     * speech-2.6-turbo copies of each speaker are left out too; speech-2.8-turbo is the one listed.
      * @returns {Promise<{ voices: { id: string, name: string, provider: string, language: string, gender: string }[], skippedUltra: number }>}
      */
     static async listVoices(key) {
@@ -384,6 +385,10 @@ class TelnyxVoice {
                     skippedUltra += 1;
                     continue;
                 }
+                // MiniMax lists each speaker on speech-02-turbo, speech-2.6-turbo and speech-2.8-turbo.
+                // The first two are legacy copies of the same voice, at the same price, so only 2.8-turbo is shown.
+                // Designed clones are added above and are left as saved.
+                if (provider === "minimax" && !/^Minimax\.speech-2\.8-turbo\./i.test(id)) continue;
                 seen.add(id);
                 voices.push({
                     id,
