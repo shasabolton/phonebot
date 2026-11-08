@@ -762,29 +762,268 @@ class PhonebotCharacters {
  */
 class CharactersPanel {
     static VOICE_TEST_PHRASE = "This is a test of how my voice sounds with these effects.";
+    /** Filter value for voices that leave that field blank. Distinct from Any, which does not filter. */
+    static FILTER_UNSET = "__unset__";
     /** Search words that mean a gender; "male" would otherwise also match "female". */
     static GENDER_WORDS = Object.freeze({
         male: "male", man: "male", men: "male", boy: "male", guy: "male", masculine: "male",
-        female: "female", woman: "female", women: "female", girl: "female", lady: "female", feminine: "female"
+        female: "female", woman: "female", women: "female", girl: "female", lady: "female", feminine: "female",
+        neutral: "neutral", nonbinary: "neutral", "non-binary": "neutral"
+    });
+    /** Whole-field phrases, checked before single words so "young adult" is not filed as young. */
+    static AGE_PHRASES = Object.freeze([
+        ["young adult", "adult"],
+        ["older adult", "senior"],
+        ["middle aged", "adult"]
+    ]);
+    /** Single age words. "old" and "elderly" share a bucket so the filter and the search agree. */
+    static AGE_WORDS = Object.freeze({
+        child: "child", kid: "child", kids: "child", toddler: "child",
+        young: "young", youth: "young", teen: "young", teenage: "young", teenager: "young", adolescent: "young",
+        adult: "adult",
+        senior: "senior", elderly: "senior", elder: "senior", old: "senior", older: "senior", aged: "senior"
+    });
+    static FILTER_LABELS = Object.freeze({
+        gender: { female: "Female", male: "Male", neutral: "Neutral" },
+        age: { child: "Child", young: "Young", adult: "Adult", senior: "Senior" }
+    });
+    static FILTER_ORDER = Object.freeze({
+        gender: ["female", "male", "neutral"],
+        age: ["child", "young", "adult", "senior"]
+    });
+    /** ISO 639 codes Telnyx voices actually use, plus the names MiniMax puts in a voice id. */
+    static LANGUAGE_NAMES = Object.freeze({
+        en: "English", es: "Spanish", fr: "French", de: "German", it: "Italian", pt: "Portuguese",
+        ja: "Japanese", jp: "Japanese", zh: "Chinese", cmn: "Chinese", yue: "Chinese", ko: "Korean",
+        hi: "Hindi", ar: "Arabic", ru: "Russian", nl: "Dutch", pl: "Polish", sv: "Swedish",
+        da: "Danish", no: "Norwegian", nb: "Norwegian", fi: "Finnish", tr: "Turkish", vi: "Vietnamese",
+        th: "Thai", id: "Indonesian", ms: "Malay", he: "Hebrew", el: "Greek", cs: "Czech",
+        ro: "Romanian", hu: "Hungarian", uk: "Ukrainian", ca: "Catalan", ta: "Tamil", te: "Telugu",
+        bn: "Bengali", ur: "Urdu", fa: "Persian", fil: "Filipino", tl: "Filipino"
+    });
+    /** Region on a language tag (`en-AU`) shown as an accent, separate from the language. */
+    static REGION_ACCENTS = Object.freeze({
+        US: "American", GB: "British", UK: "British", AU: "Australian", CA: "Canadian", IN: "Indian",
+        IE: "Irish", NZ: "New Zealand", ZA: "South African", MX: "Mexican", ES: "Spain", BR: "Brazilian",
+        PT: "Portugal", FR: "France", DE: "Germany", IT: "Italy", JP: "Japan", CN: "China", KR: "Korea",
+        AR: "Argentina", CO: "Colombia", CL: "Chile", PH: "Philippines", SG: "Singapore", HK: "Hong Kong",
+        TW: "Taiwan", NL: "Netherlands", BE: "Belgium", AT: "Austria", CH: "Switzerland", SE: "Sweden",
+        NO: "Norway", DK: "Denmark", FI: "Finland", PL: "Poland", RU: "Russia", TR: "Turkey",
+        AE: "Emirati", SA: "Saudi", EG: "Egyptian"
+    });
+    /**
+     * Kokoro hides language, accent and gender in the speaker prefix (`af_heart`: American, female).
+     * The first letter is the pack; only American and British are accents rather than the language itself.
+     */
+    static KOKORO_LETTERS = Object.freeze({
+        a: { language: "English", accent: "American" },
+        b: { language: "English", accent: "British" },
+        e: { language: "Spanish", accent: "" },
+        f: { language: "French", accent: "" },
+        h: { language: "Hindi", accent: "" },
+        i: { language: "Italian", accent: "" },
+        j: { language: "Japanese", accent: "" },
+        p: { language: "Portuguese", accent: "Brazilian" },
+        z: { language: "Chinese", accent: "" }
     });
 
+    static titleLabel(value) {
+        return String(value || "")
+            .trim()
+            .replace(/[A-Za-z]+/g, (word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase());
+    }
+
+    /** "male", "female", "neutral" or "" — neutral stays its own bucket so it is not Not set. */
+    static normalGender(gender) {
+        const g = String(gender || "").trim().toLowerCase();
+        if (!g) return "";
+        if (g === "neutral" || g === "nonbinary" || g === "non-binary") return "neutral";
+        if (g.startsWith("f") || g.startsWith("w")) return "female";
+        if (g.startsWith("m")) return "male";
+        return "";
+    }
+
+    static languageName(codeOrName) {
+        const raw = String(codeOrName || "").trim();
+        if (!raw) return "";
+        const named = CharactersPanel.LANGUAGE_NAMES[raw.toLowerCase()];
+        if (named) return named;
+        if (/^[a-z]{2,3}$/i.test(raw)) return raw.toUpperCase();
+        return CharactersPanel.titleLabel(raw);
+    }
+
+    static regionAccent(region) {
+        const code = String(region || "").toUpperCase();
+        return CharactersPanel.REGION_ACCENTS[code] || code;
+    }
+
     /**
-     * Voice search: every word must match. Gender words match the voice's gender, other words any
-     * part of its searchable text.
+     * A language field is a tag (`en-AU`), a code (`en`) or a name (`Spanish`, `Chinese (Mandarin)`).
+     * The region or the parenthetical is the accent; a bare language leaves accent blank.
+     * @returns {{ language: string, accent: string }}
+     */
+    static splitLanguage(raw) {
+        const s = String(raw || "").trim();
+        if (!s) return { language: "", accent: "" };
+        const tag = s.replace(/_/g, "-");
+        const locale = tag.match(/^([a-z]{2,3})-([a-z]{2})$/i);
+        if (locale) {
+            return {
+                language: CharactersPanel.languageName(locale[1]),
+                accent: CharactersPanel.regionAccent(locale[2])
+            };
+        }
+        if (/^[a-z]{2,3}$/i.test(tag)) return { language: CharactersPanel.languageName(tag), accent: "" };
+        const paren = s.match(/^(.+?)\s*\((.+)\)$/);
+        if (paren) {
+            return { language: CharactersPanel.titleLabel(paren[1]), accent: CharactersPanel.titleLabel(paren[2]) };
+        }
+        return { language: CharactersPanel.titleLabel(s), accent: "" };
+    }
+
+    /** An accent field may be a word ("Australian") or the same region tag the language uses. */
+    static cleanAccent(raw) {
+        const s = String(raw || "").trim();
+        if (!s) return "";
+        const tag = s.replace(/_/g, "-");
+        const locale = tag.match(/^[a-z]{2,3}-([a-z]{2})$/i);
+        if (locale) return CharactersPanel.regionAccent(locale[1]);
+        if (/^[a-z]{2}$/i.test(tag) && CharactersPanel.REGION_ACCENTS[tag.toUpperCase()]) {
+            return CharactersPanel.REGION_ACCENTS[tag.toUpperCase()];
+        }
+        return CharactersPanel.titleLabel(s);
+    }
+
+    static looksLikeLanguage(name) {
+        const base = String(name || "").replace(/\s*\([^)]*\)$/, "").trim().toLowerCase();
+        return Object.values(CharactersPanel.LANGUAGE_NAMES).some((label) => label.toLowerCase() === base);
+    }
+
+    /**
+     * Language, accent and gender written into the voice id when the list fields are blank.
+     * Azure carries `en-AU`. Kokoro carries `af_`. MiniMax starts the speaker with `Spanish_`.
+     * @returns {{ language: string, accent: string, gender: string }}
+     */
+    static traitsFromId(id) {
+        const text = String(id || "");
+        const locale = text.match(/(?:^|[^a-z])([a-z]{2,3})-([a-z]{2})(?=[^a-z]|$)/i);
+        if (locale) {
+            return {
+                language: CharactersPanel.languageName(locale[1]),
+                accent: CharactersPanel.regionAccent(locale[2]),
+                gender: ""
+            };
+        }
+        const kokoro = text.match(/KokoroTTS\.([a-z])([a-z])_/i);
+        if (kokoro) {
+            const pack = CharactersPanel.KOKORO_LETTERS[kokoro[1].toLowerCase()] || { language: "", accent: "" };
+            const letter = kokoro[2].toLowerCase();
+            return {
+                language: pack.language,
+                accent: pack.accent,
+                gender: letter === "f" ? "female" : letter === "m" ? "male" : ""
+            };
+        }
+        const speaker = text.split(".").pop() || "";
+        const named = speaker.match(/^([A-Za-z]+(?:\s*\([^)]+\))?)_/);
+        if (named && CharactersPanel.looksLikeLanguage(named[1])) {
+            return { ...CharactersPanel.splitLanguage(named[1]), gender: "" };
+        }
+        return { language: "", accent: "", gender: "" };
+    }
+
+    /** Canonical age, or "" when the field is blank or not an age word. */
+    static normalAge(age) {
+        const s = String(age || "").trim().toLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ");
+        if (!s) return "";
+        for (const [phrase, bucket] of CharactersPanel.AGE_PHRASES) {
+            if (s === phrase) return bucket;
+        }
+        return CharactersPanel.AGE_WORDS[s] || "";
+    }
+
+    /** Filter value: a known bucket, else the provider's own label, else "". */
+    static ageKey(age) {
+        const known = CharactersPanel.normalAge(age);
+        if (known) return known;
+        const s = String(age || "").trim();
+        return s ? CharactersPanel.titleLabel(s) : "";
+    }
+
+    /**
+     * The four filter values for one voice. API fields win; the id fills whatever they leave blank.
+     * @returns {{ language: string, accent: string, gender: string, age: string }}
+     */
+    static voiceTraits(voice) {
+        const fromId = CharactersPanel.traitsFromId(voice?.id);
+        const fromLanguage = CharactersPanel.splitLanguage(voice?.language);
+        const stated = CharactersPanel.cleanAccent(voice?.accent);
+        let gender = CharactersPanel.normalGender(voice?.gender) || fromId.gender || "";
+        if (!gender && /♂/.test(String(voice?.label || ""))) gender = "male";
+        else if (!gender && /♀/.test(String(voice?.label || ""))) gender = "female";
+        return {
+            language: fromLanguage.language || fromId.language || "",
+            accent: stated || fromLanguage.accent || fromId.accent || "",
+            gender,
+            age: CharactersPanel.ageKey(voice?.age)
+        };
+    }
+
+    static traitLabel(kind, value) {
+        if (!value) return "";
+        return CharactersPanel.FILTER_LABELS[kind]?.[value] || value;
+    }
+
+    static orderedFilterValues(kind, values) {
+        const order = CharactersPanel.FILTER_ORDER[kind] || [];
+        return [...values].sort((a, b) => {
+            const ia = order.indexOf(a);
+            const ib = order.indexOf(b);
+            if (ia !== -1 || ib !== -1) return (ia === -1 ? 999 : ia) - (ib === -1 ? 999 : ib);
+            return a.localeCompare(b);
+        });
+    }
+
+    /**
+     * Search words, with age phrases kept together. Gender and age words compare the voice's
+     * bucket; any other word must appear in its searchable text.
      * @param {string} query
-     * @returns {(voice: { text: string, gender?: string }) => boolean}
+     * @returns {{ gender?: string, age?: string, text?: string }[]}
+     */
+    static voiceQueryTokens(query) {
+        const raw = String(query || "").toLowerCase().split(/\s+/).filter(Boolean);
+        const tokens = [];
+        for (let i = 0; i < raw.length; i++) {
+            const pair = i + 1 < raw.length ? `${raw[i]} ${raw[i + 1]}` : "";
+            const pairAge = pair ? CharactersPanel.normalAge(pair) : "";
+            if (pairAge && CharactersPanel.AGE_PHRASES.some(([phrase]) => phrase === pair.replace(/[_-]+/g, " "))) {
+                tokens.push({ age: pairAge });
+                i += 1;
+                continue;
+            }
+            const gender = CharactersPanel.GENDER_WORDS[raw[i]];
+            const age = CharactersPanel.normalAge(raw[i]);
+            if (gender) tokens.push({ gender });
+            else if (age) tokens.push({ age });
+            else tokens.push({ text: raw[i] });
+        }
+        return tokens;
+    }
+
+    /**
+     * Voice search: every word must match, on top of the language, accent, gender and age filters.
+     * @param {string} query
+     * @returns {(voice: { text?: string, traits?: { language: string, accent: string, gender: string, age: string }, gender?: string, age?: string }) => boolean}
      */
     static voiceMatcher(query) {
-        const words = String(query || "").toLowerCase().split(/\s+/).filter(Boolean);
-        const genderOf = (g) => {
-            const v = String(g || "").trim().toLowerCase();
-            return v.startsWith("f") || v.startsWith("w") ? "female" : v.startsWith("m") ? "male" : v;
-        };
+        const tokens = CharactersPanel.voiceQueryTokens(query);
         return (voice) => {
             const text = String(voice.text || "").toLowerCase();
-            return words.every((word) => {
-                const gender = CharactersPanel.GENDER_WORDS[word];
-                return gender ? genderOf(voice.gender) === gender : text.includes(word);
+            const traits = voice.traits || CharactersPanel.voiceTraits(voice);
+            return tokens.every((token) => {
+                if (token.gender) return traits.gender === token.gender;
+                if (token.age) return traits.age === token.age;
+                return text.includes(token.text);
             });
         };
     }
@@ -1187,7 +1426,9 @@ class CharactersPanel {
             "Who is this character? How do they talk? Sent to the AI before every game.";
         bioLabel.appendChild(bioInput);
 
-        const voiceLabel = label("Voice");
+        const voiceLabel = document.createElement("div");
+        voiceLabel.className = "custom-messages-game-meta-label";
+        voiceLabel.textContent = "Voice";
         const voiceSearch = document.createElement("input");
         voiceSearch.type = "search";
         voiceSearch.className = "custom-messages-game-meta-name-input";
@@ -1196,7 +1437,35 @@ class CharactersPanel {
         voiceSearch.setAttribute("aria-label", "Search voices");
         const voiceSelect = document.createElement("select");
         voiceSelect.className = "custom-messages-game-meta-name-input";
+        /** "" = Any. FILTER_UNSET = only voices that leave that field blank. */
+        const voiceFilters = { language: "", accent: "", gender: "", age: "" };
+        const filterSelects = {};
+        const filtersEl = document.createElement("div");
+        filtersEl.className = "characters-voice-filters";
+        for (const [key, caption] of [
+            ["language", "Language"],
+            ["accent", "Accent"],
+            ["gender", "Gender"],
+            ["age", "Age"]
+        ]) {
+            const wrap = document.createElement("span");
+            wrap.className = "characters-voice-filter";
+            const name = document.createElement("span");
+            name.textContent = caption;
+            const select = document.createElement("select");
+            select.className = "custom-messages-game-meta-name-input";
+            select.setAttribute("aria-label", caption);
+            select.addEventListener("change", () => {
+                voiceFilters[key] = select.value;
+                renderVoices();
+                syncVoiceHint();
+            });
+            wrap.append(name, select);
+            filtersEl.appendChild(wrap);
+            filterSelects[key] = select;
+        }
         voiceLabel.appendChild(voiceSearch);
+        voiceLabel.appendChild(filtersEl);
         voiceLabel.appendChild(voiceSelect);
         const voiceHint = hint("");
         const Telnyx = window.TelnyxVoice;
@@ -1211,32 +1480,66 @@ class CharactersPanel {
         let telnyxVoices = [];
         /** Search results as "shown of total", for the hint. */
         let voiceCounts = null;
-        /** "male", "female" or "" for a voice in the Groq catalog or the Telnyx list. */
+        /** "male", "female" or "" for a voice in the Groq catalog or the Telnyx list. Neutral stays unset. */
         const voiceGenderOf = (id) => {
-            const groq = PhonebotCharacters.voiceOptions().find((v) => v.id === id);
-            const raw = telnyxVoices.find((v) => v.id === id)?.gender || (groq && (/♂/.test(groq.label) ? "male" : /♀/.test(groq.label) ? "female" : ""));
-            const g = String(raw || "").trim().toLowerCase();
-            return g.startsWith("f") || g.startsWith("w") ? "female" : g.startsWith("m") ? "male" : "";
+            if (!id) return "";
+            const known = telnyxVoices.find((v) => v.id === id) || PhonebotCharacters.voiceOptions().find((v) => v.id === id);
+            const gender = CharactersPanel.voiceTraits(known || { id }).gender;
+            return gender === "male" || gender === "female" ? gender : "";
         };
         const renderVoices = (wanted = voiceSelect.value) => {
-            const matches = CharactersPanel.voiceMatcher(voiceSearch.value);
-            const shown = (voice) => voice.id === wanted || matches(voice);
             const names = Telnyx?.PROVIDER_NAMES || {};
             const useTelnyx = telnyxSelected();
-            const [keep, ...allGroqVoices] = PhonebotCharacters.voiceOptions().map((v, i) => ({
-                ...v,
-                text: `${v.label} ${v.id} ${i ? "groq" : ""}`,
-                gender: /♂/.test(v.label) ? "male" : /♀/.test(v.label) ? "female" : ""
-            }));
+            const describe = (v, parts) => {
+                const traits = CharactersPanel.voiceTraits(v);
+                return {
+                    ...v,
+                    traits,
+                    text: [...parts, traits.language, traits.accent].filter((part) => part != null && part !== "").join(" ")
+                };
+            };
+            const [keep, ...allGroqVoices] = PhonebotCharacters.voiceOptions().map((v, i) =>
+                describe(v, [v.label, v.id, i ? "groq" : ""])
+            );
             const groqVoices = useTelnyx ? [] : allGroqVoices;
-            const telnyx = (useTelnyx ? telnyxVoices : []).map((v) => ({
-                ...v,
-                text: [v.name, v.id, v.language, v.accent, v.age, names[v.provider] || v.provider, "telnyx"].join(" ")
-            }));
+            const telnyx = (useTelnyx ? telnyxVoices : []).map((v) =>
+                describe(v, [v.name, v.id, v.language, v.accent, v.age, names[v.provider] || v.provider, "telnyx"])
+            );
+            const catalog = [...groqVoices, ...telnyx];
+            for (const key of Object.keys(voiceFilters)) {
+                const select = filterSelects[key];
+                const current = voiceFilters[key];
+                const values = CharactersPanel.orderedFilterValues(
+                    key,
+                    [...new Set(catalog.map((v) => v.traits[key]).filter(Boolean))]
+                );
+                select.replaceChildren();
+                const addOpt = (value, text) => {
+                    const opt = document.createElement("option");
+                    opt.value = value;
+                    opt.textContent = text;
+                    select.appendChild(opt);
+                };
+                addOpt("", "Any");
+                addOpt(CharactersPanel.FILTER_UNSET, "Not set");
+                for (const value of values) addOpt(value, CharactersPanel.traitLabel(key, value));
+                voiceFilters[key] = [...select.options].some((o) => o.value === current) ? current : "";
+                select.value = voiceFilters[key];
+            }
+            const query = CharactersPanel.voiceMatcher(voiceSearch.value);
+            const matches = (voice) =>
+                query(voice) &&
+                Object.entries(voiceFilters).every(([key, want]) => {
+                    if (!want) return true;
+                    if (want === CharactersPanel.FILTER_UNSET) return !voice.traits[key];
+                    return voice.traits[key] === want;
+                });
+            const shown = (voice) => voice.id === wanted || matches(voice);
             const groqShown = groqVoices.filter(shown);
             const telnyxShown = telnyx.filter(shown);
-            voiceCounts = voiceSearch.value.trim()
-                ? { shown: groqShown.length + telnyxShown.length, total: groqVoices.length + telnyx.length }
+            const narrowing = voiceSearch.value.trim() || Object.values(voiceFilters).some(Boolean);
+            voiceCounts = narrowing
+                ? { shown: catalog.filter(matches).length, total: catalog.length }
                 : null;
             const add = (parent, value, text, title) => {
                 const opt = document.createElement("option");
@@ -1262,7 +1565,10 @@ class CharactersPanel {
                 if (!groups.has(v.provider)) {
                     groups.set(v.provider, group(`Telnyx: ${names[v.provider] || v.provider} voices`));
                 }
-                const details = [v.language, v.accent, v.age, v.gender].filter(Boolean).join(", ");
+                const details = ["language", "accent", "age", "gender"]
+                    .map((key) => CharactersPanel.traitLabel(key, v.traits[key]))
+                    .filter(Boolean)
+                    .join(", ");
                 add(groups.get(v.provider), v.id, details ? `${v.name} (${details})` : v.name, v.id);
             }
             const listed = [...voiceSelect.options].find((o) => o.value.toLowerCase() === String(wanted).toLowerCase());
@@ -1281,8 +1587,8 @@ class CharactersPanel {
         const syncVoiceHint = () => {
             if (voiceCounts) {
                 voiceHint.textContent = voiceCounts.shown
-                    ? `Showing ${voiceCounts.shown} of ${voiceCounts.total} voices. Voices only have a name, language and gender to search, so words like "kind" or "old" won't match; use Design a Telnyx voice for those.`
-                    : `No voices match. Search by name, language (en-GB), gender (male, woman) or provider (minimax, azure).`;
+                    ? `Showing ${voiceCounts.shown} of ${voiceCounts.total} voices. Search narrows the filters. Any leaves a filter off.`
+                    : "No voices match. Any leaves a filter off. Not set finds voices that leave that field blank.";
                 return;
             }
             if (!Telnyx) return;
@@ -1878,6 +2184,7 @@ class CharactersPanel {
             nameInput.readOnly = true;
             bioInput.readOnly = true;
             voiceSearch.remove();
+            filtersEl.remove();
             voiceSelect.disabled = true;
             designSection.hidden = true;
             presetSelect.disabled = true;
