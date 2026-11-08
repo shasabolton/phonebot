@@ -1587,23 +1587,7 @@ class Robot {
         if (!this._startFlowOverlay || this._startFlowBrowserSwitchWired) return;
         this._startFlowBrowserSwitchWired = true;
         this._startFlowOverlay.addEventListener("click", (e) => {
-            const t = e.target;
-            const el = t && (t instanceof Element ? t : t.parentElement);
-            if (!el) return;
-            if (el.closest('[data-action="open-in-chrome"]')) {
-                e.preventDefault();
-                if (typeof openCurrentPageInChrome === "function") openCurrentPageInChrome();
-                return;
-            }
-            if (el.closest('[data-action="open-in-bluefy"]')) {
-                e.preventDefault();
-                if (typeof openCurrentPageInBluefy === "function") openCurrentPageInBluefy();
-                return;
-            }
-            if (el.closest('[data-action="open-browser-install"]')) {
-                e.preventDefault();
-                if (typeof openBrowserInstallStore === "function") openBrowserInstallStore();
-            }
+            if (typeof handleBrowserSwitchClick === "function") handleBrowserSwitchClick(e);
         });
     }
 

@@ -240,16 +240,7 @@ const CHROME_PLAY_STORE_URL =
 const BLUEFY_APP_STORE_URL =
   "https://apps.apple.com/app/bluefy-web-ble-browser/id1492822055";
 
-/** Copy current page URL (best-effort; must run in a user-gesture click). */
-function copyPageUrlToClipboard() {
-  const href = currentPageUrl();
-  if (!href) return false;
-  try {
-    if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
-      void navigator.clipboard.writeText(href);
-      return true;
-    }
-  } catch (_) {}
+function copyPageUrlWithExecCommand(href) {
   try {
     const ta = document.createElement("textarea");
     ta.value = href;
@@ -264,6 +255,21 @@ function copyPageUrlToClipboard() {
   } catch (_) {
     return false;
   }
+}
+
+/** Copy current page URL. Resolves true only after the clipboard write succeeds. */
+function copyPageUrlToClipboard() {
+  const href = currentPageUrl();
+  if (!href) return Promise.resolve(false);
+  try {
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+      return navigator.clipboard.writeText(href).then(
+        () => true,
+        () => copyPageUrlWithExecCommand(href)
+      );
+    }
+  } catch (_) {}
+  return Promise.resolve(copyPageUrlWithExecCommand(href));
 }
 
 /**
@@ -296,21 +302,18 @@ function bluefyOpenCurrentPageHref() {
 }
 
 function openCurrentPageInChrome() {
-  copyPageUrlToClipboard();
   try {
     location.href = chromeIntentHref();
   } catch (_) {}
 }
 
 function openCurrentPageInBluefy() {
-  copyPageUrlToClipboard();
   try {
     location.href = bluefyOpenCurrentPageHref();
   } catch (_) {}
 }
 
 function openBrowserInstallStore() {
-  copyPageUrlToClipboard();
   const platform = clientPlatform();
   const store =
     platform === "ios" ? BLUEFY_APP_STORE_URL : CHROME_PLAY_STORE_URL;
@@ -319,9 +322,61 @@ function openBrowserInstallStore() {
   } catch (_) {}
 }
 
+/** Show install/open only after the page URL is on the clipboard. */
+function revealBrowserSwitchActions(fromEl) {
+  const root = fromEl && fromEl.closest("[data-browser-switch]");
+  if (!root) return;
+  const actions = root.querySelector("[data-browser-switch-actions]");
+  if (actions) actions.hidden = false;
+  const copyBtn = root.querySelector('[data-action="copy-page-url"]');
+  if (copyBtn) copyBtn.textContent = "url copied";
+}
+
 /**
- * Red error + two buttons to copy URL and launch/install Chrome (Android/other)
- * or Bluefy (iOS). No "click when connected" retry.
+ * Copy, install, and open clicks for the browser-switch message.
+ * @returns {boolean} True when this click was one of those buttons.
+ */
+function handleBrowserSwitchClick(e) {
+  const el = eventElement(e);
+  if (!el) return false;
+  const copyBtn = el.closest('[data-action="copy-page-url"]');
+  if (copyBtn) {
+    e.preventDefault();
+    e.stopPropagation();
+    copyBtn.textContent = "copy url";
+    void copyPageUrlToClipboard().then((ok) => {
+      if (!ok) {
+        copyBtn.textContent = "could not copy url";
+        return;
+      }
+      revealBrowserSwitchActions(copyBtn);
+    });
+    return true;
+  }
+  if (el.closest('[data-action="open-in-chrome"]')) {
+    e.preventDefault();
+    e.stopPropagation();
+    openCurrentPageInChrome();
+    return true;
+  }
+  if (el.closest('[data-action="open-in-bluefy"]')) {
+    e.preventDefault();
+    e.stopPropagation();
+    openCurrentPageInBluefy();
+    return true;
+  }
+  if (el.closest('[data-action="open-browser-install"]')) {
+    e.preventDefault();
+    e.stopPropagation();
+    openBrowserInstallStore();
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Error text, then Copy URL. Install and open stay hidden until the copy succeeds.
+ * Bluefy on iOS, Chrome otherwise. No "click when connected" retry.
  * @param {string} errorText Plain error sentence (wrapped in .error).
  */
 function browserRefusedSwitchHtml(errorText) {
@@ -334,21 +389,25 @@ function browserRefusedSwitchHtml(errorText) {
     platform === "ios" ? BLUEFY_APP_STORE_URL : CHROME_PLAY_STORE_URL;
 
   return (
+    "<span data-browser-switch>" +
     "<span class='error'>" +
     escapeHtml(errorText) +
     "</span><br><br>" +
+    '<button type="button" data-action="copy-page-url">copy url</button>' +
+    '<span class="browser-switch-actions" data-browser-switch-actions hidden>' +
+    "<br><br>" +
+    '<button type="button" data-action="open-browser-install" data-href="' +
+    escapeHtml(installHref) +
+    '">install ' +
+    name +
+    "</button><br><br>" +
     '<button type="button" data-action="' +
     launchAction +
     '" data-href="' +
     escapeHtml(launchHref) +
-    '">copy url, launch ' +
+    '">open ' +
     name +
-    "</button><br><br>" +
-    '<button type="button" data-action="open-browser-install" data-href="' +
-    escapeHtml(installHref) +
-    '">copy url, install ' +
-    name +
-    "</button>"
+    "</button></span></span>"
   );
 }
 
@@ -391,24 +450,7 @@ class WifiTransmitter {
     this._onContainerClick = (e) => {
       const el = eventElement(e);
       if (!el) return;
-      if (el.closest('[data-action="open-in-chrome"]')) {
-        e.preventDefault();
-        e.stopPropagation();
-        openCurrentPageInChrome();
-        return;
-      }
-      if (el.closest('[data-action="open-in-bluefy"]')) {
-        e.preventDefault();
-        e.stopPropagation();
-        openCurrentPageInBluefy();
-        return;
-      }
-      if (el.closest('[data-action="open-browser-install"]')) {
-        e.preventDefault();
-        e.stopPropagation();
-        openBrowserInstallStore();
-        return;
-      }
+      if (handleBrowserSwitchClick(e)) return;
       if (!el.closest('[data-action="detect-mode"]')) return;
       e.preventDefault();
       e.stopPropagation();
