@@ -2782,9 +2782,12 @@ class CustomMessagesGame {
         if (this._recording) {
             await this._stopRecording(false);
             if (recordBtn) recordBtn.textContent = "Record";
-            if (statusEl && this._draft?.audioBlob) {
+            if (statusEl && this._draft?.audioBlob?.size) {
                 statusEl.textContent = `Ready: ${this._draft.fileName || "Recording"}`;
                 statusEl.className = "custom-messages-status ok";
+            } else if (statusEl) {
+                statusEl.textContent = "Recording was empty. Try again.";
+                statusEl.className = "custom-messages-status error";
             }
             this._syncPreviewButton();
             this._syncEditorState();
@@ -2819,19 +2822,29 @@ class CustomMessagesGame {
         return "";
     }
 
+    /**
+     * A stream this recorder can stop without ending the microphone sensor's tracks.
+     * Sharing those tracks with an AudioContext analyser makes MediaRecorder drop the audio.
+     * @param {MediaStream|null|undefined} stream
+     * @returns {MediaStream|null}
+     */
+    _cloneLiveAudio(stream) {
+        const tracks = typeof stream?.getAudioTracks === "function" ? stream.getAudioTracks() : [];
+        const live = tracks.filter((track) => track.readyState === "live" && typeof track.clone === "function");
+        if (!live.length) return null;
+        return new MediaStream(live.map((track) => track.clone()));
+    }
+
     async _startRecording() {
         if (typeof MediaRecorder === "undefined") {
             throw new Error("Recording not supported in this browser.");
         }
-        this._stopRecording(true);
+        if (this._mediaRecorder) await this._stopRecording(true);
 
         let stream = null;
         const mic = this._getMicrophone();
-        if (mic && typeof mic.start === "function") {
-            const ok = await mic.start();
-            if (ok && typeof mic.getStream === "function") {
-                stream = mic.getStream();
-            }
+        if (mic && typeof mic.isOn === "function" && mic.isOn() && typeof mic.getStream === "function") {
+            stream = this._cloneLiveAudio(mic.getStream());
         }
         if (!stream) {
             stream = await navigator.mediaDevices.getUserMedia({
@@ -2842,24 +2855,32 @@ class CustomMessagesGame {
                 },
                 video: false
             });
-            this._recordStreamOwned = true;
-            this._ownedRecordStream = stream;
-        } else {
-            this._recordStreamOwned = false;
-            this._ownedRecordStream = null;
         }
+        // Always ours: a clone, or a stream we just opened. Never the sensor's live tracks.
+        this._recordStreamOwned = true;
+        this._ownedRecordStream = stream;
 
         const mimeType = this._pickRecorderMimeType();
         const recorder = mimeType
             ? new MediaRecorder(stream, { mimeType })
             : new MediaRecorder(stream);
         this._mediaRecorder = recorder;
-        this._recordChunks = [];
+        const chunks = [];
+        this._recordChunks = chunks;
         this._recording = true;
+        this._onRecordData = null;
         recorder.addEventListener("dataavailable", (e) => {
-            if (e.data && e.data.size > 0) this._recordChunks.push(e.data);
+            if (e.data && e.data.size > 0) chunks.push(e.data);
+            // Push first, then finish. The final event is the only one when start()
+            // has no timeslice, and it carries the whole clip.
+            if (recorder.state !== "inactive" || this._recordChunks !== chunks) return;
+            const done = this._onRecordData;
+            this._onRecordData = null;
+            if (done) done();
         });
-        recorder.start(250);
+        // No timeslice. With one, Chrome writes that slice's length into the WebM
+        // duration, and Play ends after a flicker even though the rest was recorded.
+        recorder.start();
     }
 
     /**
@@ -2881,31 +2902,22 @@ class CustomMessagesGame {
                 }
                 this._ownedRecordStream = null;
                 this._recordStreamOwned = false;
-                const mic = this._getMicrophone();
-                if (mic && typeof mic.stop === "function" && !mic._holdWanted && !mic._recordWanted) {
-                    try {
-                        mic.stop();
-                    } catch (_) {}
-                }
             };
 
-            if (!mr) {
-                this._recordChunks = [];
-                releaseOwned();
-                resolve(null);
-                return;
-            }
-
+            let settled = false;
             const finish = () => {
+                if (settled) return;
+                settled = true;
+                this._onRecordData = null;
                 const chunks = this._recordChunks;
                 this._recordChunks = [];
-                const type = mr.mimeType || this._pickRecorderMimeType() || "audio/webm";
-                const blob = !discard && chunks.length ? new Blob(chunks, { type }) : null;
+                const type = (mr && mr.mimeType) || this._pickRecorderMimeType() || "audio/webm";
+                const blob = !discard && mr && chunks.length ? new Blob(chunks, { type }) : null;
                 if (blob && this._draft) {
+                    const ext = CustomMessagesGame._audioExtension(blob.type, "");
+                    const fallback = `recording.${ext}`;
                     this._draft.audioBlob = blob;
-                    this._draft.fileName = this._draft.audioUrl
-                        ? "recording.webm"
-                        : this._draft.fileName || "recording.webm";
+                    this._draft.fileName = this._draft.audioUrl ? fallback : this._draft.fileName || fallback;
                     this._draft._audioBase64 = null;
                     this._draft.audioUrl = "";
                     if (this._editorAudioUrlInput) this._editorAudioUrlInput.value = "";
@@ -2914,11 +2926,25 @@ class CustomMessagesGame {
                 resolve(blob);
             };
 
-            if (mr.state === "inactive") {
+            if (!mr || mr.state === "inactive") {
                 finish();
                 return;
             }
-            mr.addEventListener("stop", finish, { once: true });
+
+            // The whole clip arrives in the final dataavailable. Stopping the mic
+            // tracks before that event leaves a header-only file that plays as a flicker.
+            let sawFinalChunk = false;
+            this._onRecordData = () => {
+                sawFinalChunk = true;
+                finish();
+            };
+            mr.addEventListener(
+                "stop",
+                () => {
+                    if (!sawFinalChunk) setTimeout(finish, 0);
+                },
+                { once: true }
+            );
             try {
                 mr.stop();
             } catch (_) {
