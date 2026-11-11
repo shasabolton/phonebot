@@ -1073,6 +1073,29 @@ class CharactersPanel {
     }
 
     /**
+     * Backdrop press closes. Dragging a text selection out of the panel still clicks the overlay,
+     * so the press has to start on the backdrop too.
+     * @param {HTMLElement} overlay
+     * @param {() => void} dismiss
+     */
+    _closeOnBackdropClick(overlay, dismiss) {
+        let pressedOnBackdrop = false;
+        overlay.addEventListener("pointerdown", (e) => {
+            pressedOnBackdrop = e.button === 0 && e.target === overlay;
+        });
+        overlay.addEventListener("pointerup", (e) => {
+            if (e.button !== 0 || e.target !== overlay) pressedOnBackdrop = false;
+        });
+        overlay.addEventListener("pointercancel", () => {
+            pressedOnBackdrop = false;
+        });
+        overlay.addEventListener("click", (e) => {
+            if (pressedOnBackdrop && e.target === overlay) dismiss();
+            pressedOnBackdrop = false;
+        });
+    }
+
+    /**
      * @param {string} accept
      * @returns {Promise<File|null>}
      */
@@ -1185,9 +1208,7 @@ class CharactersPanel {
         card.appendChild(actions);
 
         overlay.appendChild(card);
-        overlay.addEventListener("click", (e) => {
-            if (e.target === overlay) this.close();
-        });
+        this._closeOnBackdropClick(overlay, () => this.close());
         document.body.appendChild(overlay);
         this._overlay = overlay;
         this._listEl = list;
@@ -1327,9 +1348,7 @@ class CharactersPanel {
         actions.appendChild(cancelBtn);
         card.appendChild(actions);
         overlay.appendChild(card);
-        overlay.addEventListener("click", (e) => {
-            if (e.target === overlay) this._closeNamePrompt();
-        });
+        this._closeOnBackdropClick(overlay, () => this._closeNamePrompt());
         document.body.appendChild(overlay);
         this._nameOverlay = overlay;
         setTimeout(() => input.focus(), 0);
@@ -2162,9 +2181,7 @@ class CharactersPanel {
         card.appendChild(actions);
 
         overlay.appendChild(card);
-        overlay.addEventListener("click", (e) => {
-            if (e.target === overlay) this._closeEditor();
-        });
+        this._closeOnBackdropClick(overlay, () => this._closeEditor());
         document.body.appendChild(overlay);
         this._editorOverlay = overlay;
 
