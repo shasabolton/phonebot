@@ -935,7 +935,8 @@ class CustomMessagesGame {
                   maxWords: CustomMessagesGame._normalizeMaxWords(existing.maxWords),
                   reasoningEffort: CustomMessagesGame._messageReasoningEffort(existing),
                   audioBlob: existing.audioBlob || null,
-                  audioUrl: existing.audioUrl || ""
+                  audioUrl: existing.audioUrl || "",
+                  telnyxAudioUrl: existing.telnyxAudioUrl || ""
               }
             : {
                   id: null,
@@ -954,7 +955,8 @@ class CustomMessagesGame {
                   maxWords: null,
                   reasoningEffort: "",
                   audioBlob: null,
-                  audioUrl: ""
+                  audioUrl: "",
+                  telnyxAudioUrl: ""
               };
         this._mountEditor();
     }
@@ -1601,6 +1603,25 @@ class CustomMessagesGame {
         return (owner && typeof Chars?.get === "function" && Chars.get(owner)) || null;
     }
 
+    /**
+     * Voice id for this character on the selected agent. Telnyx uses `telnyxVoice` from the
+     * character bio; `voice` is only the Groq voice.
+     * @param {object|null|undefined} agent
+     * @param {object|null|undefined} [character]
+     * @returns {string}
+     */
+    _speechVoice(agent, character = this._ownerCharacter()) {
+        if (agent?.telnyxSelected?.()) {
+            const id = String(character?.telnyxVoice || "").trim();
+            if (!id) return "";
+            const listed = (agent._telnyxLists?.voices || []).find(
+                (v) => String(v?.id || "").toLowerCase() === id.toLowerCase()
+            );
+            return listed?.id || id;
+        }
+        return String(character?.voice || "").trim();
+    }
+
     static tileLabel(msg) {
         if (!msg) return "Message";
         for (const text of [msg.text, msg.speechText]) {
@@ -2153,10 +2174,11 @@ class CustomMessagesGame {
         return CustomMessagesGame._hasAudio(msg) || !!CustomMessagesGame._speechText(msg);
     }
 
-    /** @param {{ audioBlob?: Blob|null, audioUrl?: string }} msg */
+    /** @param {{ audioBlob?: Blob|null, audioUrl?: string, telnyxAudioUrl?: string }} msg */
     static _hasAudio(msg) {
         return (
             !!CustomMessagesGame._normalizeAudioUrl(msg?.audioUrl) ||
+            !!CustomMessagesGame._normalizeAudioUrl(msg?.telnyxAudioUrl) ||
             !!(msg?.audioBlob && msg.audioBlob.size > 0)
         );
     }
@@ -2356,15 +2378,25 @@ class CustomMessagesGame {
     _renderAudioEditor(body, draft, { emptyHint = "Record a clip, add an MP3 file, or paste a URL." } = {}) {
         const status = document.createElement("p");
         const showStatus = () => {
-            if (CustomMessagesGame._normalizeAudioUrl(draft.audioUrl)) {
-                status.textContent = `Ready: ${draft.fileName || "Audio"} (from URL)`;
-                status.className = "custom-messages-status ok";
-            } else if (String(draft.audioUrl || "").trim()) {
-                status.textContent = "Enter an http(s) URL or a path like audio/clip.wav.";
-                status.className = "custom-messages-status error";
-            } else if (draft.audioBlob && draft.audioBlob.size) {
+            const telnyxUrl = this._getAgent()?.telnyxSelected?.()
+                ? CustomMessagesGame._normalizeAudioUrl(draft.telnyxAudioUrl)
+                : "";
+            if (draft.audioBlob && draft.audioBlob.size) {
                 status.textContent = `Ready: ${draft.fileName || "Recording"}`;
                 status.className = "custom-messages-status ok";
+            } else if (telnyxUrl) {
+                const name = CustomMessagesGame._fileNameFromUrl(telnyxUrl) || draft.fileName || "Audio";
+                status.textContent = `Ready: ${name} (Telnyx voice)`;
+                status.className = "custom-messages-status ok";
+            } else if (CustomMessagesGame._normalizeAudioUrl(draft.audioUrl)) {
+                status.textContent = `Ready: ${draft.fileName || "Audio"} (from URL)`;
+                status.className = "custom-messages-status ok";
+            } else if (
+                String(draft.audioUrl || "").trim() ||
+                String(draft.telnyxAudioUrl || "").trim()
+            ) {
+                status.textContent = "Enter an http(s) URL or a path like audio/clip.wav.";
+                status.className = "custom-messages-status error";
             } else {
                 status.textContent = emptyHint;
                 status.className = "custom-messages-status muted";
@@ -2407,6 +2439,7 @@ class CustomMessagesGame {
             draft.fileName = file.name || "upload.audio";
             draft._audioBase64 = null;
             draft.audioUrl = "";
+            draft.telnyxAudioUrl = "";
             urlInput.value = "";
             showStatus();
             this._syncPreviewButton();
@@ -2417,18 +2450,22 @@ class CustomMessagesGame {
         const urlInput = document.createElement("input");
         urlInput.type = "url";
         urlInput.className = "custom-messages-audio-url";
-        urlInput.placeholder = "…or paste an audio file URL";
         urlInput.autocomplete = "off";
         urlInput.spellcheck = false;
-        urlInput.value = draft.audioUrl || "";
+        const telnyxClip =
+            !!this._getAgent()?.telnyxSelected?.() && String(draft.telnyxAudioUrl || "").trim();
+        urlInput.dataset.audioField = telnyxClip ? "telnyxAudioUrl" : "audioUrl";
+        urlInput.placeholder = telnyxClip ? "Telnyx clip URL" : "…or paste an audio file URL";
+        urlInput.value = draft[urlInput.dataset.audioField] || "";
         urlInput.addEventListener("input", () => {
             this._stopPreview();
+            const field = urlInput.dataset.audioField || "audioUrl";
             const raw = urlInput.value.trim();
-            draft.audioUrl = raw;
+            draft[field] = raw;
             if (raw) {
                 draft.audioBlob = null;
                 draft._audioBase64 = null;
-                draft.fileName = CustomMessagesGame._fileNameFromUrl(raw);
+                if (field === "audioUrl") draft.fileName = CustomMessagesGame._fileNameFromUrl(raw);
             }
             showStatus();
             this._syncPreviewButton();
@@ -2447,11 +2484,24 @@ class CustomMessagesGame {
         return { status, showStatus, recordBtn, uploadBtn, urlInput };
     }
 
+    /**
+     * Clip URL to preview. A new blob (generated, recorded, uploaded) wins; otherwise the
+     * character's Telnyx clip while that agent is selected, else the Groq clip.
+     * @returns {string}
+     */
+    _editorPlayUrl(draft = this._draft) {
+        if (!draft || draft.audioBlob?.size) return "";
+        const telnyx = this._getAgent()?.telnyxSelected?.()
+            ? CustomMessagesGame._normalizeAudioUrl(draft.telnyxAudioUrl)
+            : "";
+        return telnyx || CustomMessagesGame._normalizeAudioUrl(draft.audioUrl);
+    }
+
     _syncPreviewButton() {
         const btn = this._previewBtn;
         if (!btn) return;
         const blob = this._draft?.audioBlob;
-        const url = CustomMessagesGame._normalizeAudioUrl(this._draft?.audioUrl);
+        const url = this._editorPlayUrl();
         btn.disabled = this._recording || !(url || (blob && blob.size > 0));
         btn.textContent = this._previewAudio ? "Stop" : "Play";
         btn.setAttribute("aria-label", this._previewAudio ? "Stop audio" : "Play audio");
@@ -2463,7 +2513,7 @@ class CustomMessagesGame {
             return;
         }
         if (this._recording) return;
-        const remoteUrl = CustomMessagesGame._normalizeAudioUrl(this._draft?.audioUrl);
+        const remoteUrl = this._editorPlayUrl();
         const blob = this._draft?.audioBlob;
         if (!remoteUrl && (!blob || !blob.size)) return;
         const objectUrl = remoteUrl ? null : URL.createObjectURL(blob);
@@ -2687,7 +2737,6 @@ class CustomMessagesGame {
      */
     _renderAudioStage(parent, draft) {
         const body = this._stageSection(parent, "Audio", true);
-        const owner = this._ownerCharacter();
         const row = document.createElement("div");
         row.className = "custom-messages-media-row";
         const generateBtn = document.createElement("button");
@@ -2702,10 +2751,12 @@ class CustomMessagesGame {
                 return;
             }
             void this._runStageJob(draft, "audio", "Making audio…", async (agent) => {
-                const blob = await agent.synthesizeSpeechFile(text, { voice: owner?.voice });
+                const voice = this._speechVoice(agent);
+                const blob = await agent.synthesizeSpeechFile(text, voice ? { voice } : {});
                 if (this._draft === draft) this._stopPreview();
                 draft.audioBlob = blob;
                 draft.audioUrl = "";
+                draft.telnyxAudioUrl = "";
                 draft._audioBase64 = null;
                 draft.fileName = CustomMessagesGame._clipNameFromText(text);
                 draft._generatedAudio = { blob, text };
@@ -2721,6 +2772,7 @@ class CustomMessagesGame {
             this._stopPreview();
             draft.audioBlob = null;
             draft.audioUrl = "";
+            draft.telnyxAudioUrl = "";
             draft._audioBase64 = null;
             draft.fileName = "";
             draft._generatedAudio = null;
@@ -2920,6 +2972,7 @@ class CustomMessagesGame {
                     this._draft.fileName = this._draft.audioUrl ? fallback : this._draft.fileName || fallback;
                     this._draft._audioBase64 = null;
                     this._draft.audioUrl = "";
+                    this._draft.telnyxAudioUrl = "";
                     if (this._editorAudioUrlInput) this._editorAudioUrlInput.value = "";
                 }
                 releaseOwned();
@@ -2985,6 +3038,7 @@ class CustomMessagesGame {
                 reasoningEffort: draft.reasoningEffort
             }),
             audioUrl,
+            telnyxAudioUrl: CustomMessagesGame._normalizeAudioUrl(draft.telnyxAudioUrl),
             audioKey: "",
             audioBlob,
             _audioBase64: null,
@@ -2995,9 +3049,6 @@ class CustomMessagesGame {
         const previous = idx >= 0 ? this.messages[idx] : null;
         if (previous?.audioKey && msg.audioBlob && msg.audioBlob === previous.audioBlob) {
             msg.audioKey = previous.audioKey;
-        }
-        if (previous?.telnyxAudioUrl && audioUrl && audioUrl === previous.audioUrl) {
-            msg.telnyxAudioUrl = previous.telnyxAudioUrl;
         }
         if (idx >= 0) this.messages[idx] = msg;
         else this.messages.push(msg);
@@ -3821,7 +3872,8 @@ class CustomMessagesGame {
         const agent = this._getAgent();
         if (agent && typeof agent._speakAsync === "function") {
             try {
-                await agent._speakAsync(text);
+                const voice = this._speechVoice(agent);
+                await agent._speakAsync(text, voice ? { voice } : {});
             } catch (err) {
                 console.warn("Custom TTS failed:", err);
             }

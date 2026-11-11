@@ -2089,9 +2089,11 @@ class AgentInterface {
 
     /**
      * @param {string} text
+     * @param {{ voice?: string }} [options] `voice` is used as given when it matches the provider
+     *   (a Telnyx id while Telnyx is selected). Omit it to keep the usual voice, including Telnyx stand-ins.
      * @returns {Promise<boolean>} true if this utterance finished without being superseded
      */
-    async _speakAsync(text) {
+    async _speakAsync(text, options = {}) {
         const content = String(text || "").trim();
         if (!content) return false;
         this._stopSpeaking();
@@ -2099,7 +2101,7 @@ class AgentInterface {
         const showPtt = this._isConversationMode();
         if (showPtt) this._setPttState("talking");
         try {
-            await this._speakSynthesizedAsync(content, generation);
+            await this._speakSynthesizedAsync(content, generation, options);
             return generation === this._speakGeneration;
         } finally {
             if (showPtt && generation === this._speakGeneration) {
@@ -2108,9 +2110,10 @@ class AgentInterface {
         }
     }
 
-    async _speakSynthesizedAsync(content, generation) {
-        const telnyx = this._isTelnyxProvider();
-        if (!telnyx && this._isBrowserTtsVoice()) {
+    async _speakSynthesizedAsync(content, generation, options = {}) {
+        const requested = String(options.voice || "").trim();
+        const telnyx = this._isTelnyxProvider() || this._isTelnyxVoiceId(requested);
+        if (!telnyx && this._isBrowserTtsVoice(requested || undefined)) {
             this._setVoiceStatus("Speaking (Web TTS)…");
             await this._speakBrowserFallback(content);
             if (generation === this._speakGeneration) {
@@ -2131,7 +2134,14 @@ class AgentInterface {
               ? window.GroqTts.splitInput(content)
               : [content];
         if (!chunks.length) return;
-        const voice = telnyx ? this._telnyxVoice() : this._ttsVoice;
+        // An explicit Telnyx id is that voice. Otherwise Telnyx keeps its stand-in list, which a Groq
+        // id such as Austin must not replace: synthesizeSpeechBlob treats a non-Telnyx id as "no voice".
+        const explicitTelnyx = telnyx && this._isTelnyxVoiceId(requested);
+        const voice = explicitTelnyx
+            ? requested
+            : telnyx
+              ? this._telnyxVoice()
+              : requested || this._ttsVoice;
         const provider = gemini ? "Gemini" : telnyx ? "Telnyx" : "Groq";
         let usedBrowserFallback = false;
         try {
@@ -2142,7 +2152,9 @@ class AgentInterface {
                 const partLabel =
                     chunks.length > 1 ? ` (${i + 1}/${chunks.length})` : "";
                 this._setVoiceStatus(`${provider} TTS (${voice})${partLabel}…`);
-                const blob = await this.synthesizeSpeechBlob(chunk, { voice: this._ttsVoice });
+                const blob = await this.synthesizeSpeechBlob(chunk, {
+                    voice: telnyx && !explicitTelnyx ? this._ttsVoice : requested || this._ttsVoice
+                });
                 if (generation !== this._speakGeneration) return;
                 await this._playSpeechBlob(blob, chunk, generation, {
                     speakingLabel: gemini
