@@ -2127,13 +2127,15 @@
       font-size: 1rem;
       letter-spacing: 0.02em;
     }
+    /* Above every editor (characters 10002, game editor 10003, name/games 10004).
+       A credit prompt explains a failed request, so it has to stay in front of whatever is open. */
     .play-billing-overlay {
       position: fixed;
       top: 0;
       left: 0;
       right: 0;
       bottom: 0;
-      z-index: 10001;
+      z-index: 10010;
       display: flex;
       align-items: flex-start;
       justify-content: center;

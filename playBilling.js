@@ -733,6 +733,8 @@ class PlayBilling {
             this._modalResolve = null;
         }
         if (!this._modal) this._buildModal();
+        // Editors are appended to <body> after this dialog is built. Move it last so it stays on top.
+        document.body.appendChild(this._modal);
         this._exitEmbeddedUi();
         // Warm up Stripe.js so Pay can open the in-page form; if it isn't ready, Pay falls back to a redirect.
         void this._loadStripeJs().catch(() => {});
