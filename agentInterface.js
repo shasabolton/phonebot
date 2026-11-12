@@ -23,6 +23,11 @@ class AgentInterface {
     static TELNYX_VOICE_ATTEMPTS = 3;
     /** Keep streaming briefly after finger-up; the Worker adds its own silence tail for the recogniser. */
     static TELNYX_RELEASE_TAIL_MS = 200;
+    /**
+     * Largest stop message sent on the Telnyx stream socket. A player-turn photo is a JPEG data
+     * URL inside that JSON, and the Worker's control-message cap matches this.
+     */
+    static TELNYX_STOP_MAX_CHARS = 900_000;
     /** Per-model sampling temperatures, used only for manually picked models. First match wins. */
     static MODEL_TEMPERATURES = [
         { match: /gpt-oss/i, temperature: 0.7 },
@@ -3254,6 +3259,7 @@ class AgentInterface {
         let userEntry = null;
         let reply = "";
         let replyPushed = false;
+        let sentPhoto = false;
         const live = () => generation === this._speakGeneration && this._agentEnabled;
         const speech = this._streamedReplySpeech(generation, this._telnyxVoice(agent), () => clipsReady);
 
@@ -3268,9 +3274,27 @@ class AgentInterface {
             );
             const prior = this._buildPriorConversationMessages();
             const outboundTemplate = await this._mergeIntroductionIntoFirstUserMessage(userTemplate, prior.length);
-            const chat = await this._telnyxStreamChat(agent, [...prior, { role: "user", content: outboundTemplate }]);
+            const conversation = [...prior, { role: "user", content: outboundTemplate }];
+            // The photo goes into the stop message, which is the request the Worker chats with
+            // once the transcript replaces the marker. Chat has not started yet.
+            if (gameTurn.sendCamera && live()) {
+                sentPhoto = await this._attachCameraPhotoWithOverlays(conversation, {
+                    skipCameraCountdown: true,
+                    isActive: () => live()
+                });
+                if (!sentPhoto) console.warn("Player turn camera photo was not captured.");
+            }
+            let chat = await this._telnyxStreamChat(agent, conversation);
+            if (sentPhoto && !this._telnyxStopFits(chat, marker)) {
+                console.warn("Player turn camera photo omitted: the stop message would be too large.");
+                this._stripCameraFromLastUserMessage(conversation);
+                sentPhoto = false;
+                chat = await this._telnyxStreamChat(agent, conversation);
+            }
 
-            done = await turn.release(
+            if (!live()) {
+                turn.cancel();
+            } else done = await turn.release(
                 { chat, transcriptMarker: marker },
                 {
                     onTranscript: (text) => {
@@ -3298,10 +3322,10 @@ class AgentInterface {
                 }
             );
             window.playBilling?.recordAiCharge?.(done?.chargeCents);
-            this._noteTelnyxModelFailures(done?.failedModels);
+            this._noteTelnyxModelFailures(done?.failedModels, { photo: sentPhoto });
             this._noteTelnyxSttFailures(done?.failedStt);
             this._noteTelnyxVoiceFailures(done?.failedVoices);
-            this._noteTelnyxWorked("chat", done?.model);
+            this._noteTelnyxChatWorked(done?.model, { photo: sentPhoto });
             this._noteTelnyxWorked("stt", done?.sttModel);
             this._noteTelnyxWorked("voice", done?.voice);
             if (done && userEntry && live()) {
@@ -3321,7 +3345,7 @@ class AgentInterface {
         } catch (err) {
             turn.cancel();
             if (!err?.logged) console.error("Telnyx stream turn failed:", err);
-            this._noteTelnyxModelFailures(err?.failedModels);
+            this._noteTelnyxModelFailures(err?.failedModels, { photo: sentPhoto });
             this._noteTelnyxSttFailures(err?.failedStt);
             this._noteTelnyxVoiceFailures(err?.failedVoices);
             if (this._statusEl) {
@@ -3422,28 +3446,88 @@ class AgentInterface {
         };
     }
 
-    /** The `chat` of a Worker stream turn's "stop" message, for these conversation messages. */
+    /** True when this stop payload fits the stream socket. A photo that does not is left off. */
+    _telnyxStopFits(chat, transcriptMarker) {
+        try {
+            return (
+                JSON.stringify({ type: "stop", chat, transcriptMarker }).length <=
+                AgentInterface.TELNYX_STOP_MAX_CHARS
+            );
+        } catch (_) {
+            return false;
+        }
+    }
+
+    /** Drop a camera photo from the last user message, leaving its text. */
+    _stripCameraFromLastUserMessage(messages) {
+        if (!Array.isArray(messages)) return;
+        for (let i = messages.length - 1; i >= 0; i--) {
+            if (messages[i]?.role !== "user" || !Array.isArray(messages[i].content)) continue;
+            messages[i].content = messages[i].content
+                .filter((p) => p?.type === "text")
+                .map((p) => p.text)
+                .join("\n\n");
+            return;
+        }
+    }
+
+    /**
+     * Capture the current camera frame as a data URL for a player turn, without a countdown.
+     * The reply must not be requested until this has resolved.
+     * @param {() => boolean} [isActive]
+     * @returns {Promise<string>}
+     */
+    async _playerTurnCameraDataUrl(isActive) {
+        const holder = [{ role: "user", content: "" }];
+        const ok = await this._attachCameraPhotoWithOverlays(holder, {
+            skipCameraCountdown: true,
+            isActive
+        });
+        if (!ok || !Array.isArray(holder[0].content)) return "";
+        const part = holder[0].content.find((p) => p?.type === "image_url");
+        return String(part?.image_url?.url || "");
+    }
+
+    /**
+     * The `chat` of a Worker stream turn's "stop" message, for these conversation messages.
+     * A camera photo stays on its user message as an image part. The stop message is what the
+     * Worker uses when it starts the reply, so the photo is already there and a text model is
+     * not asked first: a text model can answer without looking at the photo.
+     */
     async _telnyxStreamChat(agent, conversation) {
-        const textOnly = (content) =>
-            Array.isArray(content)
-                ? content.filter((p) => p?.type === "text").map((p) => p.text).join("\n\n")
-                : String(content ?? "");
+        const forStop = (content) => {
+            if (!Array.isArray(content)) return String(content ?? "");
+            const parts = [];
+            for (const part of content) {
+                if (!part || typeof part !== "object") continue;
+                if (part.type === "text") {
+                    parts.push({ type: "text", text: String(part.text ?? "") });
+                } else if (part.type === "image_url" || part.type === "image") {
+                    const url = String(part.image_url?.url || part.url || "");
+                    if (url.startsWith("data:image")) parts.push({ type: "image_url", image_url: { url } });
+                }
+            }
+            if (!parts.some((p) => p.type === "image_url")) return parts.map((p) => p.text).join("\n\n");
+            return parts;
+        };
         const messages = this._withSingleTurnReminder(this._toChatTemplate(this._withSystemPrompt(conversation))).map(
-            (m) => ({ role: m.role, content: textOnly(m.content) })
+            (m) => ({ role: m.role, content: forStop(m.content) })
         );
+        const photo = this._messagesIncludeVisionImage(messages);
         await this._loadTelnyxLists();
-        const models = this._telnyxChatModels(agent);
+        const models = this._telnyxChatModels(agent, { photo, ignorePick: photo });
         if (!models.length) {
             throw new Error(
                 `No Telnyx chat model is available${this._telnyxListError ? `: ${this._telnyxListError}` : "."} Click Refresh Telnyx lists.`
             );
         }
+        const maxTokens = this._resolveMaxTokens(agent, messages);
         return {
             models,
             model: models[0].id,
             messages,
             temperature: this._resolveTemperature(agent, models[0].id, null),
-            max_tokens: this._resolveMaxTokens(agent, messages)
+            max_tokens: photo ? Math.max(maxTokens, AgentInterface.TELNYX_PHOTO_MAX_TOKENS) : maxTokens
         };
     }
 
@@ -4012,8 +4096,9 @@ class AgentInterface {
      * for this turn, and any reasoning level it sets applies from this request on. The game may
      * start a clip now, while the request is on its way: call `clipsDone()` once the reply has
      * arrived and before adding it to the history, so the clip is heard and recorded before it.
-     * Call `finish(ok)` once the reply has been spoken.
-     * @returns {{ text: string, clipsDone: () => Promise<void>, finish: (ok: boolean) => void }}
+     * Call `finish(ok)` once the reply has been spoken. `sendCamera` means this player message
+     * must carry a camera photo, and the reply must not start until that photo is in the request.
+     * @returns {{ text: string, sendCamera: boolean, clipsDone: () => Promise<void>, finish: (ok: boolean) => void }}
      */
     _beginGamePlayerTurn() {
         const game = this.robot?._localGame;
@@ -4025,6 +4110,7 @@ class AgentInterface {
         });
         return {
             text: String(turn?.text || "").trim(),
+            sendCamera: !!turn?.sendCamera,
             clipsDone: async () => {
                 await beforeReply;
                 if (typeof turn?.recordSpoken === "function") turn.recordSpoken();
@@ -5206,7 +5292,7 @@ class AgentInterface {
 
     /**
      * One Gemini audio-turn: this clip (or typed text) + compact text history → transcripts + reply audio.
-     * @param {{ audioBlob?: Blob, typedUserText?: string, textHistory?: Array, systemOrIntro?: string, stateJson?: string, voice?: string }} args
+     * @param {{ audioBlob?: Blob, typedUserText?: string, textHistory?: Array, systemOrIntro?: string, stateJson?: string, voice?: string, imageDataUrl?: string }} args
      * @returns {Promise<{ userTranscript: string, assistantTranscript: string, audioBlob: Blob|null }>}
      */
     async sendGeminiAudioTurn({
@@ -5215,7 +5301,8 @@ class AgentInterface {
         textHistory = null,
         systemOrIntro = "",
         stateJson = "",
-        voice = ""
+        voice = "",
+        imageDataUrl = ""
     } = {}) {
         const agent = this.getSelectedAgent();
         if (!agent) throw new Error("No agent selected.");
@@ -5230,7 +5317,7 @@ class AgentInterface {
         return window.GeminiAudioTurn.sendAudioTurn({
             apiKey,
             baseUrl: window.GeminiAudioTurn.resolveBaseUrl(agent, this.defaultBaseUrl),
-            model: this._resolveModel(agent) || window.GeminiAudioTurn.DEFAULT_MODEL,
+            model: this._resolveModel(agent, { wantVision: !!imageDataUrl }) || window.GeminiAudioTurn.DEFAULT_MODEL,
             speechModel: this._resolveSpeechModel(agent),
             audioBlob,
             typedUserText,
@@ -5240,6 +5327,7 @@ class AgentInterface {
                 .join("\n\n"),
             stateJson,
             voice: voice || this._ttsVoice,
+            imageDataUrl,
             temperature: Number.isFinite(agent.temperature) ? agent.temperature : 0.3,
             maxTokens: Number.isFinite(agent.maxTokens) ? agent.maxTokens : 256
         });
@@ -5287,12 +5375,20 @@ class AgentInterface {
             const stateBlock = this._buildCurrentStateForIntroductionPrompt();
             const intro = await this._fetchIntroductionPromptContent();
             const prior = this._buildPriorConversationMessages();
+            let imageDataUrl = "";
+            if (gameTurn.sendCamera) {
+                imageDataUrl = await this._playerTurnCameraDataUrl(
+                    () => this._agentEnabled && this._sendInProgress
+                );
+                if (!imageDataUrl) console.warn("Player turn camera photo was not captured.");
+            }
             const result = await this.sendGeminiAudioTurn({
                 audioBlob: blob,
                 textHistory: prior,
                 systemOrIntro: this._withGameTurnInstruction(intro, gameTurn.text),
                 stateJson: stateBlock,
-                voice: this._ttsVoice
+                voice: this._ttsVoice,
+                imageDataUrl
             });
             const userTranscript = String(result?.userTranscript || "").trim();
             const assistantTranscript = String(result?.assistantTranscript || "").trim();
@@ -5436,7 +5532,11 @@ class AgentInterface {
                 at: new Date().toISOString()
             });
             this._renderHistory();
-            const reply = await this.sendPrompt("", { messages: conversationMessages });
+            const reply = await this.sendPrompt("", {
+                messages: conversationMessages,
+                forceCameraImage: !!gameTurn.sendCamera,
+                skipCameraCountdown: true
+            });
             await gameTurn.clipsDone();
             this.messageHistory.push({
                 role: "assistant",
@@ -5526,8 +5626,9 @@ class AgentInterface {
             if (this._sendCameraImageInput) {
                 this._sendCameraImage = !!this._sendCameraImageInput.checked;
             }
-            if (this._sendCameraImage) {
+            if (this._sendCameraImage || gameTurn.sendCamera) {
                 await this._attachCameraPhotoWithOverlays(conversationMessages, {
+                    skipCameraCountdown: true,
                     isActive: () => this._agentEnabled && this._sendInProgress
                 });
             }
@@ -5773,6 +5874,16 @@ class AgentInterface {
             const conversationMessages = [...prior, { role: "user", content: outboundUser }];
             const sendOpts = { messages: conversationMessages };
             this._assignCameraSendOptions(sendOpts, options);
+            // A text stream drops image parts and would start the reply before the photo exists.
+            if (gameTurn?.sendCamera) {
+                sendOpts.forceCameraImage = true;
+                sendOpts.skipCameraCountdown = true;
+                if (textTurn) {
+                    textTurn.cancel();
+                    if (this._telnyxTextTurn === textTurn) this._telnyxTextTurn = null;
+                    textTurn = null;
+                }
+            }
             let reply;
             if (textTurn) {
                 clipsReady = gameTurn ? gameTurn.clipsDone() : Promise.resolve();

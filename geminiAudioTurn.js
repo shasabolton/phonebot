@@ -400,7 +400,7 @@ class GeminiAudioTurn {
         return contents;
     }
 
-    static buildTurnInstruction({ typedUserText, hasAudio, stateJson, systemOrIntro, maxReplyChars }) {
+    static buildTurnInstruction({ typedUserText, hasAudio, hasImage, stateJson, systemOrIntro, maxReplyChars }) {
         const lines = [
             "This is a single Gemini turn. Do not assume any prior audio exists on the server.",
             "Memory is the text chat history only, plus this request.",
@@ -413,6 +413,9 @@ class GeminiAudioTurn {
             lines.push("If the clip has no speech, set userTranscript to an empty string.");
         } else {
             lines.push("There is no new mic clip. userTranscript must be exactly the typed user text below.");
+        }
+        if (hasImage) {
+            lines.push("A photo of the player is attached, taken as they finished speaking. Use what it shows.");
         }
         const intro = String(systemOrIntro || "").trim();
         if (intro) {
@@ -455,7 +458,8 @@ class GeminiAudioTurn {
         stateJson,
         voice,
         temperature,
-        maxTokens
+        maxTokens,
+        imageDataUrl = ""
     }) {
         const chatModel = String(model || GeminiAudioTurn.DEFAULT_MODEL).trim();
         const ttsModel = String(speechModel || GeminiAudioTurn.DEFAULT_SPEECH_MODEL).trim();
@@ -468,11 +472,14 @@ class GeminiAudioTurn {
         }
 
         const contents = GeminiAudioTurn.historyToGeminiContents(textHistory);
+        const imageUrl = String(imageDataUrl || "");
+        const imageMatch = imageUrl.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/s);
         const turnParts = [
             {
                 text: GeminiAudioTurn.buildTurnInstruction({
                     typedUserText: typed,
                     hasAudio,
+                    hasImage: !!imageMatch,
                     stateJson,
                     systemOrIntro,
                     maxReplyChars
@@ -481,6 +488,11 @@ class GeminiAudioTurn {
         ];
         if (hasAudio) {
             turnParts.push(await GeminiAudioTurn.blobToInlineAudioPart(audioBlob));
+        }
+        if (imageMatch) {
+            turnParts.push({
+                inlineData: { mimeType: imageMatch[1], data: imageMatch[2].replace(/\s+/g, "") }
+            });
         }
         contents.push({ role: "user", parts: turnParts });
 

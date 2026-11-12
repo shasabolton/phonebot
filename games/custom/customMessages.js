@@ -1235,7 +1235,6 @@ class CustomMessagesGame {
         };
         if (CustomMessagesGame._isTurnAttachment(msg)) {
             msg.clearHistory = false;
-            msg.sendCamera = false;
             msg.delaySec = 0;
             msg.reasoningEffort = CustomMessagesGame._normalizeTurnReasoningEffort(
                 entry.reasoningEffort
@@ -1816,7 +1815,7 @@ class CustomMessagesGame {
             const stage = CustomMessagesGame._playStage(msg);
             const playerTurn = msg.trigger === "playerTurn";
             const sendsPrompt = stage === "prompt" || playerTurn;
-            const cameraNote = stage === "prompt" && !playerTurn && msg.sendCamera ? " · camera" : "";
+            const cameraNote = msg.sendCamera && (stage === "prompt" || playerTurn) ? " · camera" : "";
             const clearNote = msg.clearHistory ? " · clear history" : "";
             let promptNote = "";
             if (sendsPrompt) {
@@ -2317,13 +2316,14 @@ class CustomMessagesGame {
                 if (CustomMessagesGame._messageReasoningEffort(draft)) {
                     steps.push("sets the reasoning level");
                 }
+                if (draft.sendCamera) steps.push("attaches a camera photo to the player's message");
                 if (stage === "audio") steps.push("plays the audio while the reply is on its way, before it is spoken");
                 if (stage === "text") {
                     steps.push("speaks the text to speak (TTS) while the reply is on its way, before it is spoken");
                 }
                 note.textContent = steps.length
                     ? `When triggered: ${steps.join(", ")}.`
-                    : "When triggered: nothing changes. Add an instruction, word limit, reasoning level, text to speak or audio.";
+                    : "When triggered: nothing changes. Add an instruction, word limit, reasoning level, text to speak, audio or a camera photo.";
                 return;
             }
             note.textContent =
@@ -2626,20 +2626,23 @@ class CustomMessagesGame {
         settings.appendChild(reasoningLabel);
         body.appendChild(settings);
 
-        if (!attachment) {
-            const cameraLabel = document.createElement("label");
-            cameraLabel.className = "custom-messages-camera-label";
-            const cameraCheck = document.createElement("input");
-            cameraCheck.type = "checkbox";
-            cameraCheck.className = "custom-messages-camera";
-            cameraCheck.checked = !!draft.sendCamera;
-            cameraCheck.addEventListener("change", () => {
-                draft.sendCamera = !!cameraCheck.checked;
-            });
-            cameraLabel.appendChild(cameraCheck);
-            cameraLabel.appendChild(document.createTextNode(" Camera (when sent live)"));
-            body.appendChild(cameraLabel);
-        }
+        const cameraLabel = document.createElement("label");
+        cameraLabel.className = "custom-messages-camera-label";
+        const cameraCheck = document.createElement("input");
+        cameraCheck.type = "checkbox";
+        cameraCheck.className = "custom-messages-camera";
+        cameraCheck.checked = !!draft.sendCamera;
+        cameraCheck.addEventListener("change", () => {
+            draft.sendCamera = !!cameraCheck.checked;
+            this._syncEditorState();
+        });
+        cameraLabel.appendChild(cameraCheck);
+        cameraLabel.appendChild(
+            document.createTextNode(
+                attachment ? " Camera (with the player's message)" : " Camera (when sent live)"
+            )
+        );
+        body.appendChild(cameraLabel);
 
         body.appendChild(status);
     }
@@ -3026,7 +3029,7 @@ class CustomMessagesGame {
             text: String(draft.text || ""),
             speechText: String(draft.speechText || ""),
             fileName: audioUrl || audioBlob ? String(draft.fileName || "") : "",
-            sendCamera: !attachment && !!draft.sendCamera,
+            sendCamera: !!draft.sendCamera,
             clearHistory: !attachment && !!draft.clearHistory,
             maxWords: CustomMessagesGame._messageMaxWords({
                 trigger,
@@ -3487,13 +3490,14 @@ class CustomMessagesGame {
      * Called by the agent as a player message is about to be sent. Counts the turn and returns:
      * - `text`: the instructions of the actions due now, to append to that message
      * - `reasoningEffort`: the level they set ("" = no change)
+     * - `sendCamera`: attach a camera photo to this player message before the reply starts
      * - `beforeReply`: resolves once their text to speak / audio has played. It starts now, while
      *   the request is on its way; the agent speaks the reply after it.
      * - `recordSpoken`: adds what they said to the chat history; the agent calls it after
      *   `beforeReply`, just before adding the reply
      * - `finish`: the agent calls it once the reply has been spoken, or with false if the
      *   request failed
-     * @returns {{ text: string, reasoningEffort: string, beforeReply: Promise<void>, recordSpoken: () => void, finish: (ok: boolean) => void }}
+     * @returns {{ text: string, reasoningEffort: string, sendCamera: boolean, beforeReply: Promise<void>, recordSpoken: () => void, finish: (ok: boolean) => void }}
      */
     beginPlayerTurn() {
         const generation = this._generation;
@@ -3501,6 +3505,7 @@ class CustomMessagesGame {
             return {
                 text: "",
                 reasoningEffort: "",
+                sendCamera: false,
                 beforeReply: Promise.resolve(),
                 recordSpoken: () => {},
                 finish: () => {}
@@ -3542,6 +3547,7 @@ class CustomMessagesGame {
         return {
             text,
             reasoningEffort,
+            sendCamera: due.some((m) => !!m.sendCamera),
             beforeReply,
             recordSpoken: () => {
                 if (recorded) return;
@@ -3673,7 +3679,7 @@ class CustomMessagesGame {
 
         const triggerLabel = CustomMessagesGame._triggerLabel(msg.trigger);
         const stage = CustomMessagesGame._playStage(msg);
-        const kindLabel =
+        let kindLabel =
             stage === "prompt"
                 ? msg.sendCamera
                     ? "Game instruction + camera photo"
@@ -3681,6 +3687,7 @@ class CustomMessagesGame {
                 : stage === "audio"
                   ? "Audio clip"
                   : "Text (TTS)";
+        if (msg.sendCamera && stage !== "prompt") kindLabel += " + camera photo";
         const text = String(msg.text || "").trim();
         const delaySec = CustomMessagesGame._normalizeDelaySec(msg.delaySec);
         const constraints = CustomMessagesGame._constraintsSummary(msg.constraints) || "none";
@@ -3990,7 +3997,8 @@ class CustomMessagesGame {
  * @property {string} speechText Words to speak, generated from the prompt or typed; may be empty.
  *   Audio plays instead of these, and these instead of sending the prompt (see `_playStage`).
  * @property {string} fileName Audio clip name.
- * @property {boolean} sendCamera
+ * @property {boolean} sendCamera Attach a camera photo when this is sent. On a player-message
+ *   trigger the photo goes out with that message, before the reply starts.
  * @property {boolean} clearHistory
  * @property {number} maxWords Prompt reply word limit, at most MAX_PROMPT_WORDS; MAX_WORDS_UNCHANGED appends nothing.
  * @property {""|"low"|"medium"|"high"} reasoningEffort Sets the talking-head reasoning level when the prompt is sent; "" (Player turn only) = no change.

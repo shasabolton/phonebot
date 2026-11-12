@@ -10,7 +10,10 @@
  *           them only `stt` and `voice` are used),
  *           binary 16 kHz mono 16-bit PCM frames while they talk,
  *           {type:"stop", chat:{models:[{id, thinkingOff}], messages, max_tokens, temperature}, transcriptMarker}
- *           on release (`chat.model` alone is still accepted).
+ *           on release (`chat.model` alone is still accepted). A message's content may be a string
+ *           or parts `{type:"text", text}` and `{type:"image_url", image_url:{url}}` (a data URL).
+ *           The image is already on the last user message when the transcript replaces the marker,
+ *           and chat starts only then.
  *           A text turn sends {type:"start", input:"text", key, voice, voiceOptions, speak} then the same
  *           "stop" with complete `chat.messages`: no audio, no transcript and no marker.
  *   page <- {type:"ready"}, {type:"partial", text}, {type:"transcript", text}, {type:"reply", text},
@@ -32,7 +35,8 @@ import { REJECTS_TEMPLATE_KWARGS, THINKING_OFF_KWARGS, stripReasoning } from "./
 const TELNYX_BASE = "https://api.telnyx.com/v2";
 const INPUT_RATE = 16000;
 const MAX_AUDIO_BYTES = INPUT_RATE * 2 * 30;
-const MAX_CONTROL_MESSAGE_CHARS = 400_000;
+/** A stop message may carry one camera JPEG. Kept under the socket message limit. */
+const MAX_CONTROL_MESSAGE_CHARS = 900_000;
 const MAX_TOKENS_CAP = 1024;
 const STT_CLOSE_TIMEOUT_MS = 4000;
 /** Engines without CloseStream never close on their own; wait this long for a final transcript. */
@@ -74,9 +78,53 @@ const CLOSE_STREAM_ENGINES = new Set(["Deepgram", "Speechmatics", "Soniox"]);
 /** The providers list prefixes every model; the WebSocket wants these engines' models bare. */
 const BARE_MODEL_ENGINES = new Set(["Deepgram", "Google"]);
 
+/** Keep a data-URL photo; everything else in a stop message is text. */
+function streamMessageContent(content) {
+    if (!Array.isArray(content)) return String(content ?? "");
+    const parts = [];
+    for (const part of content) {
+        if (!part || typeof part !== "object") continue;
+        if (part.type === "text") parts.push({ type: "text", text: String(part.text ?? "") });
+        else if (part.type === "image_url" || part.type === "image") {
+            const url = String(part.image_url?.url || part.url || "");
+            if (url.startsWith("data:image")) parts.push({ type: "image_url", image_url: { url } });
+        }
+    }
+    if (!parts.some((p) => p.type === "image_url")) return parts.map((p) => p.text).join("\n\n");
+    return parts;
+}
+
+/** A copy chat retries can replace the transcript marker in, without editing the stored turn. */
+function cloneContent(content) {
+    if (!Array.isArray(content)) return content;
+    return content.map((part) =>
+        part?.type === "image_url"
+            ? { type: "image_url", image_url: { url: part.image_url?.url || "" } }
+            : { type: "text", text: String(part?.text ?? "") }
+    );
+}
+
+/** Put the finished transcript where the marker is, including inside a text part next to a photo. */
+function replaceTranscriptMarker(content, marker, transcript) {
+    const token = String(marker || "");
+    if (!token) return { content, replaced: false };
+    if (typeof content === "string") {
+        if (!content.includes(token)) return { content, replaced: false };
+        return { content: content.replace(token, () => transcript), replaced: true };
+    }
+    if (!Array.isArray(content)) return { content, replaced: false };
+    let replaced = false;
+    const next = content.map((part) => {
+        if (replaced || part?.type !== "text" || typeof part.text !== "string" || !part.text.includes(token)) return part;
+        replaced = true;
+        return { ...part, text: part.text.replace(token, () => transcript) };
+    });
+    return { content: next, replaced };
+}
+
 /**
  * @param billing hosted Telnyx billing from index.js, used only when the start message has no key
- * @param {(outcome: { kind: "text", ok: string, failed: { id: string, message: string }[] }) => void} [afterTurn]
+ * @param {(outcome: { kind: "text"|"photo", ok: string, failed: { id: string, message: string }[] }) => void} [afterTurn]
  *   told which chat model answered and which failed, once the turn is over
  */
 export function handleTelnyxStream(request, billing, afterTurn) {
@@ -187,7 +235,10 @@ class TelnyxStreamSession {
         if (this.chatReported || !this.chatFailures) return;
         this.chatReported = true;
         try {
-            this.afterTurn?.({ kind: "text", ok: this.chatModel || "", failed: this.chatFailures });
+            const photo = (this.chat?.messages || []).some(
+                (m) => Array.isArray(m.content) && m.content.some((p) => p?.type === "image_url")
+            );
+            this.afterTurn?.({ kind: photo ? "photo" : "text", ok: this.chatModel || "", failed: this.chatFailures });
         } catch (_) {}
     }
 
@@ -466,7 +517,7 @@ class TelnyxStreamSession {
             models,
             messages: chat.messages
                 .filter((m) => ["system", "user", "assistant"].includes(m?.role))
-                .map((m) => ({ role: m.role, content: String(m.content ?? "") })),
+                .map((m) => ({ role: m.role, content: streamMessageContent(m.content) })),
             maxTokens: Math.min(MAX_TOKENS_CAP, Math.max(16, Math.round(Number(chat.max_tokens) || 400))),
             temperature: Number.isFinite(Number(chat.temperature)) ? Number(chat.temperature) : 0.7
         };
@@ -605,12 +656,14 @@ class TelnyxStreamSession {
     }
 
     chatBody(model) {
-        const messages = this.chat.messages.map((m) => ({ ...m }));
+        const messages = this.chat.messages.map((m) => ({ ...m, content: cloneContent(m.content) }));
         const last = messages[messages.length - 1];
         if (this.textInput) {
             // Text turns send the whole prompt.
-        } else if (this.transcriptMarker && last?.role === "user" && last.content.includes(this.transcriptMarker)) {
-            last.content = last.content.replace(this.transcriptMarker, () => this.transcript);
+        } else if (last?.role === "user") {
+            const replaced = replaceTranscriptMarker(last.content, this.transcriptMarker, this.transcript);
+            if (replaced.replaced) last.content = replaced.content;
+            else messages.push({ role: "user", content: this.transcript });
         } else {
             messages.push({ role: "user", content: this.transcript });
         }
