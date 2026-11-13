@@ -2093,6 +2093,20 @@
     .app-help-section-body p:last-child {
       margin-bottom: 0;
     }
+    .app-firmware-page p {
+      margin: 0 0 12px 0;
+      line-height: 1.45;
+    }
+    .app-firmware-board {
+      font-weight: 600;
+    }
+    .app-firmware-status {
+      min-height: 1.2em;
+    }
+    .app-firmware-page button:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
     #appBootSplash {
       position: fixed;
       inset: 0;
@@ -2393,6 +2407,7 @@
     "characters/characters.js",
     "robots.js",
     "robot.js",
+    "firmwareFlash.js",
     "app.js"
   ];
 

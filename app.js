@@ -936,13 +936,15 @@ class App {
         this.settingsMenuEl = menuPage;
 
         const helpPage = this._buildHelpPage();
+        const firmwarePage = this._buildFirmwarePage();
 
         this._settingsPages = {
             menu: menuPage,
             transmitter: txPage,
             robotSelect: robotSelectPage,
             robotPanel: robotPanelPage,
-            help: helpPage
+            help: helpPage,
+            firmware: firmwarePage
         };
 
         const pageHold = document.createElement('div');
@@ -991,7 +993,8 @@ class App {
             transmitter: { title: 'Transmitter' },
             robotSelect: { title: 'Robot Selection' },
             robotPanel: { title: 'Robot Panel' },
-            help: { title: 'Help' }
+            help: { title: 'Help' },
+            firmware: { title: 'Firmware' }
         };
         return map[id] || { title: id };
     }
@@ -1064,6 +1067,91 @@ class App {
         return page;
     }
 
+    _buildFirmwarePage() {
+        const page = document.createElement('div');
+        page.className = 'app-settings-page app-firmware-page';
+        page.dataset.page = 'firmware';
+
+        const intro = document.createElement('p');
+        intro.className = 'muted';
+        intro.textContent =
+            'Boards with old firmware can be updated over WiFi in the Transmitter section of this app. For a new blank board, remove all motors, plug it in via the USB port, and click Flash.';
+        page.appendChild(intro);
+
+        const board = document.createElement('p');
+        board.className = 'app-firmware-board';
+        board.hidden = true;
+        this._firmwareBoardEl = board;
+        page.appendChild(board);
+
+        const status = document.createElement('p');
+        status.className = 'app-firmware-status muted';
+        status.hidden = true;
+        status.setAttribute('aria-live', 'polite');
+        this._firmwareStatusEl = status;
+        page.appendChild(status);
+
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.textContent = 'Flash';
+        this._firmwareFlashBtn = button;
+        button.addEventListener('click', () => this._flashFirmwareOverUsb());
+        page.appendChild(button);
+
+        return page;
+    }
+
+    _setFirmwareStatus(state) {
+        const status = this._firmwareStatusEl;
+        if (!status) return;
+        const text = state && state.text ? state.text : '';
+        status.textContent = text;
+        status.hidden = !text;
+        status.className = 'app-firmware-status';
+        if (!state || state.phase === 'searching' || state.phase === 'flashing' || state.phase === 'found') {
+            status.classList.add('muted');
+        } else if (state.phase === 'done') {
+            status.classList.add('ok');
+        } else if (state.phase === 'error') {
+            status.classList.add('error');
+        }
+        const board = this._firmwareBoardEl;
+        if (board && state && state.board) {
+            board.hidden = false;
+            board.textContent = 'Board: ' + state.board;
+        } else if (board && state && state.phase === 'searching') {
+            board.hidden = true;
+            board.textContent = '';
+        }
+    }
+
+    async _flashFirmwareOverUsb() {
+        const button = this._firmwareFlashBtn;
+        if (!button || button.disabled) return;
+        if (typeof PhonebotUsbFlash === 'undefined') {
+            this._setFirmwareStatus({
+                phase: 'error',
+                text: 'USB flasher is not loaded.'
+            });
+            return;
+        }
+        button.disabled = true;
+        try {
+            await PhonebotUsbFlash.flash((state) => this._setFirmwareStatus(state));
+        } catch (e) {
+            const name = e && e.name;
+            const cancelled = name === 'NotFoundError' || name === 'AbortError';
+            this._setFirmwareStatus({
+                phase: 'error',
+                text: cancelled
+                    ? 'No board selected.'
+                    : (e && e.message ? e.message : 'Flash failed.')
+            });
+        } finally {
+            button.disabled = false;
+        }
+    }
+
     _refreshSettingsMenu() {
         if (!this.settingsMenuEl) return;
         // Banner is moved into this menu; detach before clearing or innerHTML destroys it.
@@ -1088,6 +1176,7 @@ class App {
             });
         }
         items.push({ id: 'help', label: 'Help' });
+        items.push({ id: 'firmware', label: 'Firmware' });
 
         for (const item of items) {
             const btn = document.createElement('button');
