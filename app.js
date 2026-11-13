@@ -1075,8 +1075,13 @@ class App {
         const intro = document.createElement('p');
         intro.className = 'muted';
         intro.textContent =
-            'Boards with old firmware can be updated over WiFi in the Transmitter section of this app. For a new blank board, remove all motors, plug it in via the USB port, and click Flash.';
+            'Boards with old firmware can be updated over WiFi in the Transmitter section of this app. For a new blank board, remove all motors and plug it in via the USB port. Use a PC, not a phone. It may come up as a USB-JTAG device.';
         page.appendChild(intro);
+
+        const steps = document.createElement('p');
+        steps.textContent =
+            'Hold down the boot button on the board while you pulse the reset button, then click Done.';
+        page.appendChild(steps);
 
         const board = document.createElement('p');
         board.className = 'app-firmware-board';
@@ -1093,10 +1098,40 @@ class App {
 
         const button = document.createElement('button');
         button.type = 'button';
-        button.textContent = 'Flash';
+        button.textContent = 'Done';
         this._firmwareFlashBtn = button;
         button.addEventListener('click', () => this._flashFirmwareOverUsb());
         page.appendChild(button);
+
+        const alt = document.createElement('p');
+        alt.className = 'muted app-firmware-alt';
+        alt.textContent =
+            'Alternatively, download the firmware and flash it with the Arduino IDE or esptool.';
+        page.appendChild(alt);
+
+        const supported = document.createElement('p');
+        supported.className = 'app-firmware-supported';
+        supported.textContent = 'Supported boards';
+        page.appendChild(supported);
+
+        const list = document.createElement('ul');
+        list.className = 'app-firmware-downloads';
+        const boards = typeof PhonebotUsbFlash !== 'undefined' ? PhonebotUsbFlash.boards : null;
+        const order = boards ? ['s3', 'classic'] : [];
+        for (const key of order) {
+            const board = boards[key];
+            const item = document.createElement('li');
+            const link = document.createElement('a');
+            link.href = '#';
+            link.textContent = board.label;
+            link.addEventListener('click', (event) => {
+                event.preventDefault();
+                this._downloadFirmware(board);
+            });
+            item.appendChild(link);
+            list.appendChild(item);
+        }
+        page.appendChild(list);
 
         return page;
     }
@@ -1108,7 +1143,7 @@ class App {
         status.textContent = text;
         status.hidden = !text;
         status.className = 'app-firmware-status';
-        if (!state || state.phase === 'searching' || state.phase === 'flashing' || state.phase === 'found') {
+        if (!state || state.phase === 'searching' || state.phase === 'flashing' || state.phase === 'found' || state.phase === 'download') {
             status.classList.add('muted');
         } else if (state.phase === 'done') {
             status.classList.add('ok');
@@ -1149,6 +1184,27 @@ class App {
             });
         } finally {
             button.disabled = false;
+        }
+    }
+
+    async _downloadFirmware(board) {
+        if (!board || typeof PhonebotUsbFlash === 'undefined') return;
+        if (this._firmwareDownloadBusy || PhonebotUsbFlash._busy) return;
+        this._firmwareDownloadBusy = true;
+        this._setFirmwareStatus({
+            phase: 'download',
+            text: 'Preparing ' + board.label + ' download…'
+        });
+        try {
+            await PhonebotUsbFlash.download(board);
+            this._setFirmwareStatus({ phase: 'download', text: '' });
+        } catch (e) {
+            this._setFirmwareStatus({
+                phase: 'error',
+                text: e && e.message ? e.message : 'Download failed.'
+            });
+        } finally {
+            this._firmwareDownloadBusy = false;
         }
     }
 

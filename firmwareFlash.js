@@ -9,8 +9,21 @@ const PhonebotUsbFlash = {
   boards: {
     s3: {
       label: "ESP32-S3",
+      zipName: "phonebot-esp32-s3.zip",
       flashSize: "16MB",
       dir: "espBootstrapEsp32/build/esp32.esp32.esp32s3/",
+      readme:
+        "Phonebot firmware for the ESP32-S3.\n\n" +
+        "Arduino IDE\n" +
+        "Open espBootstrapEsp32.ino. Install the ESP32 boards package, then set:\n" +
+        "  Board: ESP32S3 Dev Module\n" +
+        "  USB CDC On Boot: Enabled\n" +
+        "  Flash Size: 16MB\n" +
+        "  Partition Scheme: Minimal SPIFFS (1.9MB APP with OTA/128KB SPIFFS), or Custom to use partitions.csv\n" +
+        "  PSRAM: Disabled\n" +
+        "Upload compiles this sketch. It does not flash the files in build/.\n\n" +
+        "esptool\n" +
+        "The build folder is a ready-to-flash image. Offsets and flash settings are in build/flash_args.\n",
       parts: [
         { address: 0x0, file: "espBootstrapEsp32.ino.bootloader.bin" },
         { address: 0x8000, file: "espBootstrapEsp32.ino.partitions.bin" },
@@ -20,8 +33,19 @@ const PhonebotUsbFlash = {
     },
     classic: {
       label: "ESP32",
+      zipName: "phonebot-esp32.zip",
       flashSize: "4MB",
       dir: "espBootstrapEsp32/build/esp32.esp32.esp32/",
+      readme:
+        "Phonebot firmware for the classic ESP32.\n\n" +
+        "Arduino IDE\n" +
+        "Open espBootstrapEsp32.ino. Install the ESP32 boards package, then set:\n" +
+        "  Board: ESP32 Dev Module\n" +
+        "  Flash Size: 4MB\n" +
+        "  Partition Scheme: Minimal SPIFFS (1.9MB APP with OTA/128KB SPIFFS), or Custom to use partitions.csv\n" +
+        "Upload compiles this sketch. It does not flash the files in build/.\n\n" +
+        "esptool\n" +
+        "The build folder is a ready-to-flash image. Offsets and flash settings are in build/flash_args.\n",
       parts: [
         { address: 0x1000, file: "espBootstrapEsp32.ino.bootloader.bin" },
         { address: 0x8000, file: "espBootstrapEsp32.ino.partitions.bin" },
@@ -29,6 +53,63 @@ const PhonebotUsbFlash = {
         { address: 0x10000, file: "espBootstrapEsp32.ino.bin" }
       ]
     }
+  },
+
+  sketchFiles: [
+    "espBootstrapEsp32/espBootstrapEsp32.ino",
+    "espBootstrapEsp32/phonebotProcess.h",
+    "espBootstrapEsp32/partitions.csv"
+  ],
+
+  /** @param {string} path */
+  async fetchBytes(path) {
+    const res = await fetch(new URL(path, window.location.href).href, { cache: "no-store" });
+    if (!res.ok) throw new Error("Could not load " + path);
+    return new Uint8Array(await res.arrayBuffer());
+  },
+
+  /**
+   * Sketch plus this board's flash image, as a zip the browser downloads.
+   * @param {object} board
+   * @returns {Promise<Blob>}
+   */
+  async firmwareZip(board) {
+    if (typeof PhonebotZip === "undefined") throw new Error("Zip support is not loaded.");
+    const entries = [];
+    for (let i = 0; i < this.sketchFiles.length; i++) {
+      const path = this.sketchFiles[i];
+      const name = path.slice(path.lastIndexOf("/") + 1);
+      entries.push({
+        path: "espBootstrapEsp32/" + name,
+        data: await this.fetchBytes(path)
+      });
+    }
+    entries.push({ path: "espBootstrapEsp32/README.txt", data: board.readme });
+    for (let i = 0; i < board.parts.length; i++) {
+      const part = board.parts[i];
+      entries.push({
+        path: "espBootstrapEsp32/build/" + part.file,
+        data: await this.fetchBytes(board.dir + part.file)
+      });
+    }
+    entries.push({
+      path: "espBootstrapEsp32/build/flash_args",
+      data: await this.fetchBytes(board.dir + "flash_args")
+    });
+    return PhonebotZip.create(entries);
+  },
+
+  /** @param {object} board */
+  async download(board) {
+    const blob = await this.firmwareZip(board);
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = board.zipName;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1500);
   },
 
   /** @param {string} description Chip string from ESPLoader.main(). */
@@ -110,8 +191,8 @@ const PhonebotUsbFlash = {
       } catch (e) {
         const detail = e && e.message ? e.message : "Could not connect.";
         throw new Error(
-          detail +
-            " Hold BOOT, tap reset, release BOOT, then click Flash again."
+          "Hold down the boot button on the board while you pulse the reset button, then click Done. " +
+            detail
         );
       }
 
