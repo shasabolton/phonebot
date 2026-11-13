@@ -6460,6 +6460,12 @@ class AgentInterface {
         rememberInput.checked = this._rememberKey;
         rememberInput.addEventListener("change", () => {
             this._rememberKey = rememberInput.checked;
+            // Paste often lands before this box is ticked, and on a phone the field may
+            // only commit that paste as the box is tapped. Save whichever value we have.
+            const typed = String(keyInput.value || "").trim();
+            if (typed) this._apiKey = typed;
+            const agent = this.getSelectedAgent();
+            if (agent) this._persistKeyForAgent(agent.name, typed || this._apiKey);
         });
         rememberWrap.appendChild(rememberInput);
         rememberWrap.appendChild(document.createTextNode("Remember key for selected agent"));
