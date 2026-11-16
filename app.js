@@ -1010,58 +1010,176 @@ class App {
             'Phonebot boards are powered from a normal USB 5 V supply. The board is rated for 3 A continuous, the same as most USB phone chargers.';
         page.appendChild(intro);
 
-        const sections = [
+        const groups = [
             {
-                title: 'What power supply do I need?',
-                body: [
-                    'The board is intended to run off a typical 5 V USB phone charger, ideally 3 A. A 2 A charger can work if you are only using up to 5 micro servos.',
-                    'Prefer a decent cable. Weak cables drop voltage when several servos move.'
+                sections: [
+                    {
+                        title: 'What is this app for?',
+                        body: [
+                            'This app is built to control simple servo motor robots from your phone or PC web browser over WiFi or Bluetooth. This gives them access to the camera, microphone, speakers, internet, AI, and a touch screen user interface.',
+                            'It is intended to run particular robots produced by Contraption Cart, available as kits or laser cutting files.'
+                        ]
+                    },
+                    {
+                        title: 'Can I use my own controller?',
+                        body: [
+                            'You can purchase our plug-and-play custom controller, which has built-in power distribution to the servos, or you may use your own.',
+                            'Recommended board: ESP32-S3 with 16 MB flash. Other supported boards: ESP32.',
+                            'You will need to flash our firmware so the board can talk to this app, and use the pins designated in the app’s robot settings.'
+                        ]
+                    },
+                    {
+                        title: 'How do I connect?',
+                        body: [
+                            'If you purchased the kit from Contraption Cart, the board will be ready to go with firmware flashed.',
+                            'Choose a robot, then follow its start steps. Talking head pairs over Bluetooth: tap Pair. Use Chrome, or Bluefy on iPhone. Web Bluetooth needs a secure page (HTTPS or localhost).',
+                            'For WiFi, open the phone’s WiFi settings and join the network whose name starts with Robot-. The password is 12345678. On the Transmitter page, use Connect Robot to Your WiFi and enter your home network. Control works after the robot is on that network, not while the phone is still on Robot-.',
+                            'A blank board is flashed from Firmware in this menu, from a PC over USB. A board that already runs can be updated over WiFi from Transmitter.'
+                        ]
+                    }
                 ]
             },
             {
-                title: 'How many servos can I run?',
-                body: [
-                    'Aim for about 3 A max continuous current on the servo rail, the same as a typical USB phone charger.',
-                    '8 micro servos: fine for moderate motion. A stall can make the charger limit or cut power until the load falls.',
-                    '8 standard servos: light loads only. A stall can pull several amps. Prefer ≤6 standards, and avoid holding against a jam.',
-                    '5 standard servos with light motion (and brief spikes) is a practical USB budget.',
-                    'Servos and the ESP share the same 5 V rail. A heavy stall can sag or shut down the USB supply, so the link can drop with the servos.'
+                heading: 'Power',
+                sections: [
+                    {
+                        title: 'What power supply do I need?',
+                        body: [
+                            'The board is intended to run off a typical 5 V USB phone charger, ideally 3 A. A 2 A charger can work if you are only using up to 5 micro servos.',
+                            'Prefer a decent cable. Weak cables drop voltage when several servos move.'
+                        ]
+                    },
+                    {
+                        title: 'How many servos can I run?',
+                        body: [
+                            'Aim for about 3 A max continuous current on the servo rail, the same as a typical USB phone charger.',
+                            '8 micro servos: fine for moderate motion. A stall can make the charger limit or cut power until the load falls.',
+                            '8 standard servos: light loads only. A stall can pull several amps. Prefer ≤6 standards, and avoid holding against a jam.',
+                            '5 standard servos with light motion (and brief spikes) is a practical USB budget.',
+                            'Servos and the ESP share the same 5 V rail. A heavy stall can sag or shut down the USB supply, so the link can drop with the servos.'
+                        ]
+                    },
+                    {
+                        title: 'Current limits (typical hobby servos at 5 V)',
+                        body: [
+                            'Micro (e.g. SG90): free motion ~100–200 mA each; stall ~500–800 mA.',
+                            'Standard (e.g. MG995 class): free motion ~200–500 mA each; stall ~1.5–2.5 A.',
+                            'Idle holding with no external load is much lower (tens of mA per servo).',
+                            'Stay under about 3 A continuous on the servo rail. Brief start spikes are normal; a sustained stall of several servos is not.'
+                        ]
+                    },
+                    {
+                        title: 'What happens if I overload?',
+                        body: [
+                            'The board is rated for 3 A continuous, the same as most USB phone chargers. It relies on your charger’s built-in overload protection.',
+                            'If the servos draw more than the charger can supply, the charger’s internal fuse limits the current or cuts power to the controller and servo motors until the load falls and the charger resets.',
+                            'That keeps both the charger and the board within what they are built for.'
+                        ]
+                    }
                 ]
             },
             {
-                title: 'Current limits (typical hobby servos at 5 V)',
-                body: [
-                    'Micro (e.g. SG90): free motion ~100–200 mA each; stall ~500–800 mA.',
-                    'Standard (e.g. MG995 class): free motion ~200–500 mA each; stall ~1.5–2.5 A.',
-                    'Idle holding with no external load is much lower (tens of mA per servo).',
-                    'Stay under about 3 A continuous on the servo rail. Brief start spikes are normal; a sustained stall of several servos is not.'
-                ]
-            },
-            {
-                title: 'What happens if I overload?',
-                body: [
-                    'The board is rated for 3 A continuous, the same as most USB phone chargers. It relies on your charger’s built-in overload protection.',
-                    'If the servos draw more than the charger can supply, the charger’s internal fuse limits the current or cuts power to the controller and servo motors until the load falls and the charger resets.',
-                    'That keeps both the charger and the board within what they are built for.'
+                heading: 'Talking head',
+                sections: [
+                    {
+                        title: 'What should it do?',
+                        body: [
+                            'Its eyes should track the user’s face left to right in the phone camera. Eye and eyebrow positions are also randomised.',
+                            'The mouth should move in sync with audio played by the app.',
+                            'You can have conversations and play games with AI inside the character. You can create your own custom character interactions with audio files and AI prompts.'
+                        ]
+                    },
+                    {
+                        title: 'How do I talk to it?',
+                        body: [
+                            'On Talking head, the start steps pair the robot, ask you to turn the volume up, and ask you to put the phone behind the character’s forehead. The QR code on the forehead opens this app.',
+                            'The character listens while you hold the on-screen Hold to talk button, or while you lean in close to the camera. It stops when you let go or lean back.'
+                        ]
+                    },
+                    {
+                        title: 'How can I make my own character?',
+                        body: [
+                            'Open the characters panel in the Talking head robot panel and click New.',
+                            'Give it a name, a bio, and select a suitable AI voice. Add games to your character, then add messages to those games.',
+                            'Messages can simply be your own audio files for the character to speak, or they can be prompts sent to an AI agent for them to answer in real time.'
+                        ]
+                    },
+                    {
+                        title: 'When do messages play?',
+                        body: [
+                            'Each message has a trigger: when the game loads, when a face is seen or lost, when speech finishes, after another message, or after the player or the character has spoken a set number of times.',
+                            'A delay waits that many seconds before it runs. Under "Only fire if", you can require a user’s face to be present or absent in the camera.',
+                            'After it ends, the game can wait for the next trigger, play another message, or leave the game.'
+                        ]
+                    },
+                    {
+                        title: 'What does AI credit pay for?',
+                        body: [
+                            'Live replies, and generating new spoken audio, use hosted AI credit. Audio you upload, and clips already saved in the character, keep playing after the credit runs out.',
+                            'There is no subscription. Tap the credit bar and choose an amount. That amount becomes the credit, and it lasts 7 days without use.'
+                        ]
+                    },
+                    {
+                        title: 'How are my characters saved?',
+                        body: [
+                            'All data for your custom characters, such as audio files, bio descriptions, and prompts, is saved in your web browser and can be downloaded to your device as a zip file.',
+                            'They are not saved in the cloud. Download and share that zip if you want to run your character on a different device.'
+                        ]
+                    },
+                    {
+                        title: 'What if I clear this browser?',
+                        body: [
+                            'Custom characters are stored in this browser. Clearing this site’s data, or opening a private window, removes them unless you already downloaded the zip.',
+                            'Characters that ship with the app load again on their own. A character you made has to be uploaded from its zip.'
+                        ]
+                    },
+                    {
+                        title: 'Tutorial videos',
+                        body: [
+                            'Watch the build, electronics, and custom character videos.'
+                        ],
+                        link: {
+                            href: 'https://www.contraptioncart.com/talking-head-help/',
+                            text: 'Talking head help'
+                        }
+                    }
                 ]
             }
         ];
 
-        for (const section of sections) {
-            const details = document.createElement('details');
-            details.className = 'cursor-collapsible-panel app-help-section';
-            const summary = document.createElement('summary');
-            summary.textContent = section.title;
-            details.appendChild(summary);
-            const body = document.createElement('div');
-            body.className = 'app-help-section-body';
-            for (const paragraph of section.body) {
-                const p = document.createElement('p');
-                p.textContent = paragraph;
-                body.appendChild(p);
+        for (const group of groups) {
+            if (group.heading) {
+                const heading = document.createElement('h3');
+                heading.className = 'app-help-heading';
+                heading.textContent = group.heading;
+                page.appendChild(heading);
             }
-            details.appendChild(body);
-            page.appendChild(details);
+            for (const section of group.sections) {
+                const details = document.createElement('details');
+                details.className = 'cursor-collapsible-panel app-help-section';
+                const summary = document.createElement('summary');
+                summary.textContent = section.title;
+                details.appendChild(summary);
+                const body = document.createElement('div');
+                body.className = 'app-help-section-body';
+                for (const paragraph of section.body) {
+                    const p = document.createElement('p');
+                    p.textContent = paragraph;
+                    body.appendChild(p);
+                }
+                if (section.link) {
+                    const p = document.createElement('p');
+                    const a = document.createElement('a');
+                    a.href = section.link.href;
+                    a.textContent = section.link.text || section.link.href;
+                    a.target = '_blank';
+                    a.rel = 'noopener noreferrer';
+                    p.appendChild(a);
+                    body.appendChild(p);
+                }
+                details.appendChild(body);
+                page.appendChild(details);
+            }
         }
 
         return page;
