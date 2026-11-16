@@ -367,12 +367,13 @@ function openBrowserInstallStore() {
   } catch (_) {}
 }
 
-/** Show install/open only after the page URL is on the clipboard. */
+/** Enable launch and download only after the page URL is on the clipboard. */
 function revealBrowserSwitchActions(fromEl) {
   const root = fromEl && fromEl.closest("[data-browser-switch]");
   if (!root) return;
-  const actions = root.querySelector("[data-browser-switch-actions]");
-  if (actions) actions.hidden = false;
+  root.querySelectorAll(".browser-switch-stack button[disabled]").forEach((btn) => {
+    btn.disabled = false;
+  });
   const copyBtn = root.querySelector('[data-action="copy-page-url"]');
   if (copyBtn) copyBtn.textContent = "url copied";
 }
@@ -398,21 +399,25 @@ function handleBrowserSwitchClick(e) {
     });
     return true;
   }
-  if (el.closest('[data-action="open-in-chrome"]')) {
+  const launchBtn = el.closest(
+    '[data-action="open-in-chrome"], [data-action="open-in-bluefy"]'
+  );
+  if (launchBtn) {
     e.preventDefault();
     e.stopPropagation();
-    openCurrentPageInChrome();
+    if (launchBtn.disabled) return true;
+    if (launchBtn.getAttribute("data-action") === "open-in-chrome") {
+      openCurrentPageInChrome();
+    } else {
+      openCurrentPageInBluefy();
+    }
     return true;
   }
-  if (el.closest('[data-action="open-in-bluefy"]')) {
+  const installBtn = el.closest('[data-action="open-browser-install"]');
+  if (installBtn) {
     e.preventDefault();
     e.stopPropagation();
-    openCurrentPageInBluefy();
-    return true;
-  }
-  if (el.closest('[data-action="open-browser-install"]')) {
-    e.preventDefault();
-    e.stopPropagation();
+    if (installBtn.disabled) return true;
     openBrowserInstallStore();
     return true;
   }
@@ -420,8 +425,9 @@ function handleBrowserSwitchClick(e) {
 }
 
 /**
- * Error text, then Copy URL. Install and open stay hidden until the copy succeeds.
- * Bluefy on iOS, Chrome otherwise. No "click when connected" retry.
+ * Error text, then copy url, then launch or download.
+ * Launch and download stay greyed until the copy succeeds, and each tap does
+ * only one of those. Bluefy on iOS, Chrome otherwise.
  * @param {string} errorText Plain error sentence (wrapped in .error).
  */
 function browserRefusedSwitchHtml(errorText) {
@@ -432,25 +438,27 @@ function browserRefusedSwitchHtml(errorText) {
     platform === "ios" ? bluefyOpenCurrentPageHref() : chromeIntentHref();
   const installHref =
     platform === "ios" ? BLUEFY_APP_STORE_URL : CHROME_PLAY_STORE_URL;
+  const arrow = '<span class="browser-switch-arrow" aria-hidden="true">↓</span>';
 
   return (
     "<span data-browser-switch>" +
     "<span class='error'>" +
     escapeHtml(errorText) +
-    "</span><br><br>" +
+    "</span>" +
+    '<span class="browser-switch-stack">' +
     '<button type="button" data-action="copy-page-url">copy url</button>' +
-    '<span class="browser-switch-actions" data-browser-switch-actions hidden>' +
-    "<br><br>" +
-    '<button type="button" data-action="open-browser-install" data-href="' +
-    escapeHtml(installHref) +
-    '">install ' +
-    name +
-    "</button><br><br>" +
+    arrow +
     '<button type="button" data-action="' +
     launchAction +
     '" data-href="' +
     escapeHtml(launchHref) +
-    '">open ' +
+    '" disabled>launch ' +
+    name +
+    "</button>" +
+    '<span class="browser-switch-or">or</span>' +
+    '<button type="button" data-action="open-browser-install" data-href="' +
+    escapeHtml(installHref) +
+    '" disabled>download ' +
     name +
     "</button></span></span>"
   );

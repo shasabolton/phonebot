@@ -173,34 +173,41 @@ class BluetoothTransmitter {
     if (!status || !connectBtn) return;
 
     if (!navigator.bluetooth) {
-      status.innerHTML =
-        typeof browserRefusedSwitchHtml === "function"
-          ? browserRefusedSwitchHtml("Web Bluetooth is not available in this browser.")
-          : "<span class='error'>Web Bluetooth is not available in this browser.</span>";
-      this._setBrowserBlockedUi(true);
-      this.setReady(false);
+      this._showBrowserSwitch("Web Bluetooth is not available in this browser.");
       return;
     }
 
     if (!window.isSecureContext) {
-      status.innerHTML =
-        typeof browserRefusedSwitchHtml === "function"
-          ? browserRefusedSwitchHtml(
-              "Web Bluetooth requires a secure context (HTTPS or localhost)."
-            )
-          : "<span class='error'>Web Bluetooth requires a secure context (HTTPS or localhost).</span>";
-      this._setBrowserBlockedUi(true);
-      this.setReady(false);
+      this._showBrowserSwitch(
+        "Web Bluetooth requires a secure context (HTTPS or localhost)."
+      );
       return;
     }
 
     this._setBrowserBlockedUi(false);
+    status.classList.remove("robot-start-flow-text", "robot-start-flow-text--browser-switch");
     status.innerHTML = this.deviceFilter
       ? "<span class='muted'>Not connected.</span> Tap Connect to pair with <b>" +
         escapeHtml(this.deviceFilter.bleName) +
         "</b>."
       : "<span class='muted'>Not connected.</span> Tap Connect and pick your robot from the list.";
     connectBtn.disabled = false;
+    this.setReady(false);
+  }
+
+  /** Same copy → launch or download stack as the start-flow handoff. */
+  _showBrowserSwitch(message) {
+    const status = this.el("bleStatus");
+    if (!status) return;
+    const text =
+      String(message || "").trim() ||
+      "Web Bluetooth is not available in this browser.";
+    status.classList.add("robot-start-flow-text", "robot-start-flow-text--browser-switch");
+    status.innerHTML =
+      typeof browserRefusedSwitchHtml === "function"
+        ? browserRefusedSwitchHtml(text)
+        : "<span class='error'>" + escapeHtml(text) + "</span>";
+    this._setBrowserBlockedUi(true);
     this.setReady(false);
   }
 

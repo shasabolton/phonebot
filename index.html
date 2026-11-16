@@ -1134,8 +1134,37 @@
     .robot-start-flow-text .error {
       color: #ff6b6b;
     }
-    .browser-switch-actions[hidden] {
-      display: none !important;
+    [data-browser-switch] {
+      display: block;
+    }
+    .browser-switch-stack {
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+      width: 100%;
+      margin-top: 16px;
+    }
+    .browser-switch-stack button {
+      margin-top: 0;
+    }
+    .browser-switch-arrow,
+    .browser-switch-or {
+      display: block;
+      text-align: center;
+      margin: 6px 0;
+      color: #8a8a8a;
+      line-height: 1;
+      user-select: none;
+    }
+    .browser-switch-arrow {
+      font-size: 1.25rem;
+    }
+    .browser-switch-or {
+      font-size: 0.95rem;
+    }
+    .browser-switch-stack button:disabled {
+      opacity: 0.45;
+      cursor: default;
     }
     .robot-start-flow-text--browser-switch button,
     .robot-start-flow-btn {
@@ -1150,9 +1179,19 @@
       border-radius: 10px;
       cursor: pointer;
     }
+    .robot-start-flow-text--browser-switch .browser-switch-stack button:disabled {
+      opacity: 1;
+      color: #6d6d6d;
+      border-color: #3a3a3a;
+      background: #161616;
+      cursor: default;
+    }
     .robot-start-flow-text--browser-switch button:active,
     .robot-start-flow-btn:active {
       background: rgba(61, 220, 132, 0.15);
+    }
+    .robot-start-flow-text--browser-switch .browser-switch-stack button:disabled:active {
+      background: #161616;
     }
     .robot-start-flow-btn:disabled {
       opacity: 0.5;
