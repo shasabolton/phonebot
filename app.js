@@ -1004,12 +1004,6 @@ class App {
         page.className = 'app-settings-page app-help-page';
         page.dataset.page = 'help';
 
-        const intro = document.createElement('p');
-        intro.className = 'app-help-intro muted';
-        intro.textContent =
-            'Phonebot boards are powered from a normal USB 5 V supply. The board is rated for 3 A continuous, the same as most USB phone chargers.';
-        page.appendChild(intro);
-
         const groups = [
             {
                 sections: [
