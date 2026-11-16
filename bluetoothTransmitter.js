@@ -9,7 +9,8 @@ const PHONEBOT_BLE = {
   serviceUuid: "4faf2012-5fb4-459e-8fcc-c5c9c331914b",
   pinSetupUuid: "4faf2013-5fb4-459e-8fcc-c5c9c331914b",
   actionUuid: "4faf2014-5fb4-459e-8fcc-c5c9c331914b",
-  statusUuid: "4faf2015-5fb4-459e-8fcc-c5c9c331914b"
+  statusUuid: "4faf2015-5fb4-459e-8fcc-c5c9c331914b",
+  wifiUuid: "4faf2016-5fb4-459e-8fcc-c5c9c331914b"
 };
 
 class BluetoothTransmitter {
@@ -31,6 +32,8 @@ class BluetoothTransmitter {
     this._pinSetupChar = null;
     /** @type {BluetoothRemoteGATTCharacteristic|null} */
     this._actionChar = null;
+    /** @type {BluetoothRemoteGATTCharacteristic|null} */
+    this._wifiChar = null;
     /** Canonical board id from the BLE status characteristic, or null. */
     this._robotBoard = null;
     /** @type {TextEncoder} */
@@ -131,6 +134,16 @@ class BluetoothTransmitter {
 <button type="button" id="bleDisconnectBtn" style="display:none;">Disconnect</button>
 <div id="bleDeviceInfo" class="muted" style="margin-top:8px;word-break:break-all;"></div>
 <div id="bleFirmwareInfo" class="box" style="display:none;margin-top:8px;"></div>
+<div id="bleWifiPanel" class="box" style="display:none;">
+  <h3>Robot WiFi</h3>
+  <p class="muted" style="margin-top:0;">
+    Send your WiFi name and password over Bluetooth. The robot joins that network without using its setup access point.
+  </p>
+  <input id="bleSsid" placeholder="WiFi Name (SSID)" autocomplete="off">
+  <input id="blePass" type="password" placeholder="WiFi Password" autocomplete="off">
+  <button type="button" id="bleSendWifiBtn">Send WiFi to robot</button>
+  <div id="bleWifiResult" class="muted" style="margin-top:8px;"></div>
+</div>
 <div id="actionRatePanel" class="box" style="display:none;">
   <label for="actionFreqHz"><b>Action send rate</b> <span id="actionFreqHzValue">10</span> Hz</label>
   <input type="range" id="actionFreqHz" min="1" max="20" step="1" value="10" style="width:100%;margin-top:8px;">
@@ -144,6 +157,8 @@ class BluetoothTransmitter {
   _bindControls() {
     const disc = this.el("bleDisconnectBtn");
     if (disc) disc.addEventListener("click", () => void this.disconnect());
+    const sendWifi = this.el("bleSendWifiBtn");
+    if (sendWifi) sendWifi.addEventListener("click", () => void this.sendWifiCredentials());
     const freq = this.el("actionFreqHz");
     if (freq) {
       const onFreq = () => this.setActionFrequencyHz(freq.value);
@@ -206,6 +221,19 @@ class BluetoothTransmitter {
     }
     const disc = this.el("bleDisconnectBtn");
     if (blocked && disc) disc.style.display = "none";
+    if (blocked) this._setWifiPanelVisible(false);
+  }
+
+  _setWifiPanelVisible(show) {
+    const panel = this.el("bleWifiPanel");
+    if (!panel) return;
+    panel.style.display = show ? "block" : "none";
+    if (!show) {
+      const result = this.el("bleWifiResult");
+      if (result) result.innerHTML = "";
+      const btn = this.el("bleSendWifiBtn");
+      if (btn) btn.disabled = false;
+    }
   }
 
   _setFirmwareInfoHtml(html) {
@@ -271,7 +299,9 @@ class BluetoothTransmitter {
     this._server = null;
     this._pinSetupChar = null;
     this._actionChar = null;
+    this._wifiChar = null;
     this._robotBoard = null;
+    this._setWifiPanelVisible(false);
     this.setReady(false);
     if (!updateUi) return;
     this._setFirmwareInfoHtml("");
@@ -313,6 +343,12 @@ class BluetoothTransmitter {
       const service = await server.getPrimaryService(PHONEBOT_BLE.serviceUuid);
       this._pinSetupChar = await service.getCharacteristic(PHONEBOT_BLE.pinSetupUuid);
       this._actionChar = await service.getCharacteristic(PHONEBOT_BLE.actionUuid);
+      this._wifiChar = null;
+      try {
+        this._wifiChar = await service.getCharacteristic(PHONEBOT_BLE.wifiUuid);
+      } catch (_) {
+        /* older firmware has no WiFi characteristic */
+      }
 
       let robotFw = null;
       this._robotBoard = null;
@@ -335,6 +371,16 @@ class BluetoothTransmitter {
       const discBtn = this.el("bleDisconnectBtn");
       if (connectBtn) connectBtn.style.display = "none";
       if (discBtn) discBtn.style.display = "";
+      this._setWifiPanelVisible(true);
+      const sendWifiBtn = this.el("bleSendWifiBtn");
+      if (sendWifiBtn) sendWifiBtn.disabled = !this._wifiChar;
+      if (!this._wifiChar) {
+        const wifiResult = this.el("bleWifiResult");
+        if (wifiResult) {
+          wifiResult.innerHTML =
+            "<span class='warn'>This firmware cannot take WiFi credentials over Bluetooth. Update the robot over WiFi first.</span>";
+        }
+      }
 
       const boardNote = this._boardNoteHtml(this._robotBoard);
       if (fwCheck.ok) {
@@ -424,6 +470,50 @@ class BluetoothTransmitter {
     this._setStatus("<span class='muted'>Disconnected.</span>");
     const connectBtn = this.el("bleConnectBtn");
     if (connectBtn) connectBtn.disabled = false;
+  }
+
+  async sendWifiCredentials() {
+    const ssidEl = this.el("bleSsid");
+    const passEl = this.el("blePass");
+    const result = this.el("bleWifiResult");
+    const btn = this.el("bleSendWifiBtn");
+    if (!ssidEl || !passEl || !result || !btn) return;
+
+    const ssid = String(ssidEl.value || "").trim();
+    const pass = String(passEl.value || "");
+    if (!ssid) {
+      result.innerHTML = "<span class='error'>Enter a WiFi name (SSID).</span>";
+      return;
+    }
+    if (ssid.length > 32) {
+      result.innerHTML = "<span class='error'>WiFi name must be 32 characters or less.</span>";
+      return;
+    }
+    if (pass.length > 63) {
+      result.innerHTML = "<span class='error'>WiFi password must be 63 characters or less.</span>";
+      return;
+    }
+    if (!this._wifiChar) {
+      result.innerHTML =
+        "<span class='warn'>This firmware cannot take WiFi credentials over Bluetooth. Update the robot over WiFi first.</span>";
+      return;
+    }
+
+    btn.disabled = true;
+    result.textContent = "Sending WiFi credentials…";
+    try {
+      await this._writeCharacteristic(
+        this._wifiChar,
+        JSON.stringify({ ssid: ssid, password: pass })
+      );
+      result.innerHTML =
+        "<span class='ok'>Credentials sent.</span> The robot is joining that WiFi. Bluetooth may disconnect while it connects. Stay on your network, switch the transmitter to WiFi, and tap Check connection.";
+    } catch (e) {
+      const msg = e && e.message ? e.message : "send failed";
+      result.innerHTML = "<span class='error'>Could not send WiFi credentials: " + escapeHtml(msg) + "</span>";
+    } finally {
+      btn.disabled = !this._wifiChar;
+    }
   }
 
   async _writeCharacteristic(characteristic, message) {

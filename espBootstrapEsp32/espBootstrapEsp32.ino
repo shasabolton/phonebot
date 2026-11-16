@@ -13,7 +13,7 @@
 
 // ===== CONFIG =====
 /** Bump this when releasing firmware; keep version.json in the repo in sync (manual for now). */
-#define FW_VERSION "1.2.10"
+#define FW_VERSION "1.2.11"
 
 /**
  * Chip this binary was built for. Sent as "board" on /version, /status, and the BLE
@@ -59,6 +59,7 @@ const int SERVO_PERIOD_US = 20000;
 #define BLE_CHAR_PIN_SETUP_UUID "4faf2013-5fb4-459e-8fcc-c5c9c331914b"
 #define BLE_CHAR_ACTION_UUID    "4faf2014-5fb4-459e-8fcc-c5c9c331914b"
 #define BLE_CHAR_STATUS_UUID    "4faf2015-5fb4-459e-8fcc-c5c9c331914b"
+#define BLE_CHAR_WIFI_UUID      "4faf2016-5fb4-459e-8fcc-c5c9c331914b"
 
 const char* AP_PASS = "12345678";
 
@@ -70,10 +71,15 @@ String robotApSsid;
 String robotHostname;
 
 String jsonEscape(const String& s);
+bool parseWifiCredentials(const String& body, String& outSsid, String& outPass);
 
 // Stored credentials
 String ssid = "";
 String password = "";
+/** Filled by a BLE write, then applied from loop() so the GATT response is sent first. */
+String pendingWifiSsid;
+String pendingWifiPass;
+bool wifiCredsPending = false;
 
 const int MAX_SERVO_CHANNELS = 8;
 bool servoAttached[MAX_SERVO_CHANNELS] = {false};
@@ -396,6 +402,24 @@ class PinSetupBLECallbacks : public BLECharacteristicCallbacks {
   }
 };
 
+class WifiCredsBLECallbacks : public BLECharacteristicCallbacks {
+  void onWrite(BLECharacteristic* pCharacteristic) {
+    String rx = pCharacteristic->getValue();
+    if (rx.length() == 0) return;
+    String newSsid;
+    String newPass;
+    if (!parseWifiCredentials(rx, newSsid, newPass)) {
+      Serial.println("BLE WiFi credentials rejected");
+      return;
+    }
+    if (wifiCredsPending) return;
+    pendingWifiSsid = newSsid;
+    pendingWifiPass = newPass;
+    wifiCredsPending = true;
+    Serial.println("BLE WiFi credentials queued");
+  }
+};
+
 class ActionBLECallbacks : public BLECharacteristicCallbacks {
   void onWrite(BLECharacteristic* pCharacteristic) {
     String rx = pCharacteristic->getValue();
@@ -433,6 +457,12 @@ void startBLE() {
     BLECharacteristic::PROPERTY_READ
   );
   updateBleStatusValue();
+
+  BLECharacteristic* wifiChar = service->createCharacteristic(
+    BLE_CHAR_WIFI_UUID,
+    BLECharacteristic::PROPERTY_WRITE
+  );
+  wifiChar->setCallbacks(new WifiCredsBLECallbacks());
 
   service->start();
 
@@ -541,6 +571,44 @@ void buildRobotIdentity() {
   robotChipId = String(chipHexUpper);
   robotApSsid = String("Robot-") + chipHexUpper;
   robotHostname = String("robot-") + chipHexLower;
+}
+
+/** JSON object string value for "key". Handles \" and \\. */
+bool jsonStringField(const String& body, const char* key, String& out) {
+  String pattern = String("\"") + key + "\"";
+  int k = body.indexOf(pattern);
+  if (k < 0) return false;
+  int colon = body.indexOf(':', k + pattern.length());
+  if (colon < 0) return false;
+  int q1 = body.indexOf('"', colon + 1);
+  if (q1 < 0) return false;
+  String value;
+  for (int i = q1 + 1; i < (int)body.length(); i++) {
+    char c = body.charAt(i);
+    if (c == '\\' && i + 1 < (int)body.length()) {
+      char n = body.charAt(i + 1);
+      if (n == '"' || n == '\\' || n == '/') value += n;
+      else if (n == 'n') value += '\n';
+      else value += n;
+      i++;
+      continue;
+    }
+    if (c == '"') {
+      out = value;
+      return true;
+    }
+    value += c;
+  }
+  return false;
+}
+
+bool parseWifiCredentials(const String& body, String& outSsid, String& outPass) {
+  if (!jsonStringField(body, "ssid", outSsid)) return false;
+  if (!jsonStringField(body, "password", outPass)) return false;
+  outSsid.trim();
+  if (outSsid.length() == 0 || outSsid.length() > 32) return false;
+  if (outPass.length() > 63) return false;
+  return true;
 }
 
 String jsonEscape(const String& s) {
@@ -690,20 +758,11 @@ void handleConfig() {
 
   if (server.hasArg("plain")) {
     String body = server.arg("plain");
-
-    int s = body.indexOf("ssid");
-    int p = body.indexOf("password");
-
-    if (s >= 0 && p >= 0) {
-      // Very simple parsing (expects JSON)
-      int s1 = body.indexOf(":", s) + 2;
-      int s2 = body.indexOf("\"", s1);
-      int p1 = body.indexOf(":", p) + 2;
-      int p2 = body.indexOf("\"", p1);
-
-      ssid = body.substring(s1, s2);
-      password = body.substring(p1, p2);
-
+    String newSsid;
+    String newPass;
+    if (parseWifiCredentials(body, newSsid, newPass)) {
+      ssid = newSsid;
+      password = newPass;
       saveCredentials(ssid, password);
       beginWifiConnect();
       String json = "{\"saved\":true,\"connected\":false,\"connecting\":true}";
@@ -815,6 +874,15 @@ void setup() {
 
 void loop() {
   server.handleClient();
+  if (wifiCredsPending) {
+    String newSsid = pendingWifiSsid;
+    String newPass = pendingWifiPass;
+    wifiCredsPending = false;
+    ssid = newSsid;
+    password = newPass;
+    saveCredentials(ssid, password);
+    beginWifiConnect();
+  }
   tickWifiConnect();
   tickApBleCoex();
 }
