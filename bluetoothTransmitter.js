@@ -31,6 +31,8 @@ class BluetoothTransmitter {
     this._pinSetupChar = null;
     /** @type {BluetoothRemoteGATTCharacteristic|null} */
     this._actionChar = null;
+    /** Canonical board id from the BLE status characteristic, or null. */
+    this._robotBoard = null;
     /** @type {TextEncoder} */
     this._encoder = new TextEncoder();
     this._connectBusy = false;
@@ -218,6 +220,12 @@ class BluetoothTransmitter {
     fw.style.display = "block";
   }
 
+  _boardNoteHtml(board) {
+    const label = typeof phonebotBoardLabel === "function" ? phonebotBoardLabel(board) : "";
+    if (!label) return "";
+    return " Board: <b>" + escapeHtml(label) + "</b>.";
+  }
+
   /**
    * Compare robot BLE status fwVersion to page version.json.
    * @returns {Promise<{ok: boolean, robotFw: string|null, latestFw: string|null}>}
@@ -263,6 +271,7 @@ class BluetoothTransmitter {
     this._server = null;
     this._pinSetupChar = null;
     this._actionChar = null;
+    this._robotBoard = null;
     this.setReady(false);
     if (!updateUi) return;
     this._setFirmwareInfoHtml("");
@@ -306,11 +315,15 @@ class BluetoothTransmitter {
       this._actionChar = await service.getCharacteristic(PHONEBOT_BLE.actionUuid);
 
       let robotFw = null;
+      this._robotBoard = null;
       try {
         const statusChar = await service.getCharacteristic(PHONEBOT_BLE.statusUuid);
         const value = await statusChar.readValue();
         const json = JSON.parse(new TextDecoder().decode(value));
         if (json.fwVersion != null) robotFw = String(json.fwVersion);
+        if (json.board != null && typeof normalizePhonebotBoard === "function") {
+          this._robotBoard = normalizePhonebotBoard(json.board);
+        }
       } catch (_) {
         /* status read optional */
       }
@@ -323,11 +336,14 @@ class BluetoothTransmitter {
       if (connectBtn) connectBtn.style.display = "none";
       if (discBtn) discBtn.style.display = "";
 
+      const boardNote = this._boardNoteHtml(this._robotBoard);
       if (fwCheck.ok) {
         this._setFirmwareInfoHtml(
           "<span class='ok'>Firmware up to date with version <b>" +
             escapeHtml(fwCheck.robotFw) +
-            "</b>.</span>"
+            "</b>." +
+            boardNote +
+            "</span>"
         );
         this._setStatus("<span class='ok'>Connected via Bluetooth.</span>");
         this.setReady(true);
@@ -337,7 +353,9 @@ class BluetoothTransmitter {
             escapeHtml(fwCheck.robotFw) +
             "</b>. Update to <b>" +
             escapeHtml(fwCheck.latestFw) +
-            "</b>.</span><br><br>" +
+            "</b>." +
+            boardNote +
+            "</span><br><br>" +
             "Connect via <b>WiFi</b> (station mode) to update firmware. Bluetooth control is disabled until then."
         );
         this._setStatus(
@@ -348,7 +366,9 @@ class BluetoothTransmitter {
         this._setFirmwareInfoHtml(
           "<span class='warn'>Robot firmware version: <b>" +
             escapeHtml(fwCheck.robotFw) +
-            "</b>. Could not load <code>version.json</code> from this page to verify.</span><br><br>" +
+            "</b>." +
+            boardNote +
+            " Could not load <code>version.json</code> from this page to verify.</span><br><br>" +
             "Connect via <b>WiFi</b> to update firmware if needed. Bluetooth control is disabled until the app can verify the version."
         );
         this._setStatus(

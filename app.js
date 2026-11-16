@@ -1106,7 +1106,7 @@ class App {
         const alt = document.createElement('p');
         alt.className = 'muted app-firmware-alt';
         alt.textContent =
-            'Alternatively, download the firmware and flash it with the Arduino IDE or esptool.';
+            'Flashing from this page is for a 16MB ESP32-S3 or a 4MB classic ESP32. For another S3 flash size, download the firmware and flash it with the Arduino IDE or esptool.';
         page.appendChild(alt);
 
         const supported = document.createElement('p');
@@ -1118,6 +1118,10 @@ class App {
         list.className = 'app-firmware-downloads';
         const boards = typeof PhonebotUsbFlash !== 'undefined' ? PhonebotUsbFlash.boards : null;
         const order = boards ? ['s3', 'classic'] : [];
+        const notes = {
+            s3: 'runs on 4MB, 8MB, 16MB, and 32MB flash. Not on 2MB.',
+            classic: 'classic board, 4MB flash.'
+        };
         for (const key of order) {
             const board = boards[key];
             const item = document.createElement('li');
@@ -1129,6 +1133,9 @@ class App {
                 this._downloadFirmware(board);
             });
             item.appendChild(link);
+            if (notes[key]) {
+                item.appendChild(document.createTextNode(' — ' + notes[key]));
+            }
             list.appendChild(item);
         }
         page.appendChild(list);

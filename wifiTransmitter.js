@@ -3,18 +3,63 @@ const ESP_AP_PASS = "12345678"; // AP_PASS in epsBootstrap.ino
 const LEGACY_STA_IP_KEY = "robot_sta_ip";
 const ROBOTS_KEY = "phonebot_known_robots";
 
-/** Tried in order when loading firmware from the page origin (serve project root over HTTP). */
-const FIRMWARE_RELATIVE_PATHS = [
-  "espBootstrapEsp32/build/esp32.esp32.esp32s3/espBootstrapEsp32.ino.bin",
-  "espBootstrapEsp32/build/esp32.esp32.esp32s3/firmware.bin",
-  "espBootstrapEsp32/build/esp32.esp32.esp32/espBootstrapEsp32.ino.bin",
-  "espBootstrapEsp32/build/esp32.esp32.esp32/firmware.bin",
-  "espBootstrap/build/esp8266.esp8266.nodemcuv2/espBootstrap.ino.bin",
-  "espBootstrap/build/esp8266.esp8266.nodemcuv2/firmware.bin",
-  "espBootstrap/build/esp8266.esp8266.d1_mini/espBootstrap.ino.bin",
-  "espBootstrap/build/esp8266.esp8266.d1_mini/firmware.bin",
-  "firmware.bin"
-];
+/**
+ * App image for each board the robot can report. Only the matching folder is fetched.
+ * chipId is the uint16 at offset 12 of an ESP app image (magic 0xE9).
+ */
+const FIRMWARE_BY_BOARD = {
+  esp32s3: {
+    label: "ESP32-S3",
+    chipId: 0x0009,
+    paths: [
+      "espBootstrapEsp32/build/esp32.esp32.esp32s3/espBootstrapEsp32.ino.bin",
+      "espBootstrapEsp32/build/esp32.esp32.esp32s3/firmware.bin"
+    ]
+  },
+  esp32: {
+    label: "ESP32",
+    chipId: 0x0000,
+    paths: [
+      "espBootstrapEsp32/build/esp32.esp32.esp32/espBootstrapEsp32.ino.bin",
+      "espBootstrapEsp32/build/esp32.esp32.esp32/firmware.bin"
+    ]
+  }
+};
+
+/** @param {string|null|undefined} raw Robot "board" field. */
+function normalizePhonebotBoard(raw) {
+  const s = String(raw || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ");
+  if (s === "esp32s3" || s === "esp32 s3" || s === "s3") return "esp32s3";
+  if (s === "esp32" || s === "classic" || s === "esp32 classic") return "esp32";
+  return null;
+}
+
+/** @param {string|null|undefined} board */
+function phonebotBoardLabel(board) {
+  const id = normalizePhonebotBoard(board) || board;
+  const entry = id && FIRMWARE_BY_BOARD[id];
+  return entry ? entry.label : "";
+}
+
+/**
+ * ESP app images start with 0xE9 and name the chip at offset 12.
+ * @param {ArrayBuffer|Uint8Array} bytes
+ * @param {string} board
+ */
+function firmwareImageMatchesBoard(bytes, board) {
+  const entry = FIRMWARE_BY_BOARD[board];
+  if (!entry || !bytes) return false;
+  const view =
+    bytes instanceof ArrayBuffer
+      ? new DataView(bytes)
+      : new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  if (view.byteLength < 16 || view.getUint8(0) !== 0xe9) return false;
+  return view.getUint16(12, true) === entry.chipId;
+}
 
 function loadRobots() {
   try {
@@ -441,6 +486,8 @@ class WifiTransmitter {
     this.actionFrequencyHz = 10;
     this._actionFreqChangeHandler = null;
     this._uploadFirmwareBusy = false;
+    /** Canonical board id from /version ("esp32s3" or "esp32"), or null. */
+    this._robotBoard = null;
     /** @type {Promise<void> | null} */
     this._detectPromise = null;
     /** Bumps on each detectMode so a hung probe cannot block later taps. */
@@ -601,9 +648,18 @@ class WifiTransmitter {
   <h3>Firmware</h3>
   <div id="firmwareVersionInfo" class="muted" style="margin-bottom:10px;"></div>
   <p class="muted">
-    OTA loads the sketch’s Arduino build output under <code>espBootstrap/build/</code> or <code>espBootstrapEsp32/build/</code> (same repo you serve with this HTML).
-    After compile or “Export compiled Binary”, use the <code>.bin</code> under the board-specific folder (for example <code>esp32s3/espBootstrapEsp32.ino.bin</code>). Serve the project root over HTTP.
+    The robot reports ESP32-S3 or ESP32. The update uses only that board’s Arduino binary
+    (<code>esp32.esp32.esp32s3</code> or <code>esp32.esp32.esp32</code>).
+    Export compiled Binary and serve the project root over HTTP.
   </p>
+  <label id="firmwareBoardWrap" style="display:none;margin-bottom:10px;">
+    <b>Board</b>
+    <select id="firmwareBoardSelect">
+      <option value="">Choose board type…</option>
+      <option value="esp32s3">ESP32-S3</option>
+      <option value="esp32">ESP32</option>
+    </select>
+  </label>
   <input type="file" id="firmwareFile" accept=".bin" style="display:none;">
   <button type="button" id="firmwareBtn" style="display:none;">Update firmware</button>
   <div id="firmwareStatus" class="muted" style="margin-top:8px;"></div>
@@ -878,7 +934,26 @@ class WifiTransmitter {
         btn.style.display = "none";
       }
       if (vi) vi.innerHTML = "";
+      this._robotBoard = null;
+      this._setBoardPromptVisible(false);
     }
+  }
+
+  _setBoardPromptVisible(show) {
+    const wrap = this.el("firmwareBoardWrap");
+    if (!wrap) return;
+    wrap.style.display = show ? "block" : "none";
+    if (!show) {
+      const sel = this.el("firmwareBoardSelect");
+      if (sel) sel.value = "";
+    }
+  }
+
+  /** Reported board wins. The menu is only for firmware that does not send a type. */
+  _firmwareTargetBoard() {
+    if (this._robotBoard && FIRMWARE_BY_BOARD[this._robotBoard]) return this._robotBoard;
+    const sel = this.el("firmwareBoardSelect");
+    return sel ? normalizePhonebotBoard(sel.value) : null;
   }
 
   /** Hide rate / firmware when the browser cannot reach the robot at all. */
@@ -911,12 +986,20 @@ class WifiTransmitter {
     this._setWifiConnectMode("prompt");
   }
 
+  _boardNoteHtml() {
+    const label = phonebotBoardLabel(this._robotBoard);
+    if (!label) return "";
+    return " Board: <b>" + escapeHtml(label) + "</b>.";
+  }
+
   async checkFirmwareVersion(baseUrl) {
     const versionInfo = this.el("firmwareVersionInfo");
     const btn = this.el("firmwareBtn");
     if (!versionInfo || !btn) return;
     versionInfo.innerHTML = "Checking firmware version…";
     btn.style.display = "none";
+    this._robotBoard = null;
+    this._setBoardPromptVisible(false);
 
     let robotFw = null;
     const ac = new AbortController();
@@ -929,6 +1012,7 @@ class WifiTransmitter {
       if (r.ok) {
         const j = await r.json();
         robotFw = j.fwVersion != null ? String(j.fwVersion) : null;
+        this._robotBoard = j.board != null ? normalizePhonebotBoard(j.board) : null;
       }
     } catch (e) {}
     finally {
@@ -940,9 +1024,13 @@ class WifiTransmitter {
       latestFw = await fetchAppFwVersion(2500);
     }
 
+    const boardNote = this._boardNoteHtml();
+    const needBoardChoice = !this._robotBoard;
+
     if (!robotFw) {
       versionInfo.innerHTML =
         "<span class='warn'>Could not read firmware version from the robot (<code>/version</code>).</span>";
+      this._setBoardPromptVisible(needBoardChoice);
       btn.style.display = "block";
       return;
     }
@@ -951,15 +1039,22 @@ class WifiTransmitter {
       versionInfo.innerHTML =
         "<span class='muted'>Robot firmware version: <b>" +
         escapeHtml(robotFw) +
-        "</b>.<br>" +
+        "</b>." +
+        boardNote +
+        "<br>" +
         "Could not load <code>version.json</code> from this page’s server — serve the project over HTTP (same folder as this HTML) to compare with your repo.</span>";
+      this._setBoardPromptVisible(needBoardChoice);
       btn.style.display = "block";
       return;
     }
 
     if (robotFw === latestFw) {
       versionInfo.innerHTML =
-        "<span class='ok'>Firmware up to date with version <b>" + escapeHtml(robotFw) + "</b>.</span>";
+        "<span class='ok'>Firmware up to date with version <b>" +
+        escapeHtml(robotFw) +
+        "</b>." +
+        boardNote +
+        "</span>";
       btn.style.display = "none";
       return;
     }
@@ -969,19 +1064,33 @@ class WifiTransmitter {
       escapeHtml(robotFw) +
       "</b>. Update to the latest version <b>" +
       escapeHtml(latestFw) +
-      "</b>.</span>";
+      "</b>." +
+      boardNote +
+      (needBoardChoice
+        ? " This firmware did not report a board type. Choose ESP32-S3 or ESP32 before updating."
+        : "") +
+      "</span>";
+    this._setBoardPromptVisible(needBoardChoice);
     btn.style.display = "block";
   }
 
-  async resolveFirmwareBlob() {
+  /**
+   * Load the app image for a known board. Refuses every other build folder.
+   * @param {string} board
+   */
+  async resolveFirmwareBlob(board) {
+    const entry = FIRMWARE_BY_BOARD[board];
+    if (!entry) {
+      return Promise.reject(new Error("Unknown board"));
+    }
     if (window.location.protocol === "http:" || window.location.protocol === "https:") {
-      for (const rel of FIRMWARE_RELATIVE_PATHS) {
+      for (const rel of entry.paths) {
         const url = new URL(rel, window.location.href).href;
         try {
           const res = await fetch(url, { method: "GET", cache: "no-store" });
           if (res.ok) {
             const buf = await res.arrayBuffer();
-            if (buf.byteLength > 10000) {
+            if (buf.byteLength > 10000 && firmwareImageMatchesBoard(buf, board)) {
               return new Blob([buf], { type: "application/octet-stream" });
             }
           }
@@ -1077,14 +1186,34 @@ class WifiTransmitter {
       return;
     }
     if (this._uploadFirmwareBusy) return;
+    const board = this._firmwareTargetBoard();
+    if (!board) {
+      st.innerHTML =
+        "<span class='warn'>No firmware was sent. The robot did not report ESP32-S3 or ESP32. Choose the board type first.</span>";
+      return;
+    }
     this._uploadFirmwareBusy = true;
-    st.textContent = "Loading firmware file…";
+    st.textContent = "Loading " + phonebotBoardLabel(board) + " firmware…";
     let blob;
     try {
-      blob = await this.resolveFirmwareBlob();
+      blob = await this.resolveFirmwareBlob(board);
+      const bytes = await blob.arrayBuffer();
+      if (!firmwareImageMatchesBoard(bytes, board)) {
+        st.innerHTML =
+          "<span class='warn'>That file is not " +
+          escapeHtml(phonebotBoardLabel(board)) +
+          " firmware. Nothing was sent.</span>";
+        this._uploadFirmwareBusy = false;
+        return;
+      }
+      blob = new Blob([bytes], { type: "application/octet-stream" });
     } catch (e) {
       st.innerHTML =
-        "<span class='warn'>No firmware file. Serve the project over HTTP after compiling (see <code>espBootstrap/build/…</code>), or pick a <code>.bin</code> when prompted.</span>";
+        "<span class='warn'>No " +
+        escapeHtml(phonebotBoardLabel(board)) +
+        " firmware file. Export compiled Binary into <code>" +
+        escapeHtml(FIRMWARE_BY_BOARD[board].paths[0]) +
+        "</code>, or pick that board’s <code>.bin</code>.</span>";
       this._uploadFirmwareBusy = false;
       return;
     }

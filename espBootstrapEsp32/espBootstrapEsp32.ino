@@ -13,7 +13,21 @@
 
 // ===== CONFIG =====
 /** Bump this when releasing firmware; keep version.json in the repo in sync (manual for now). */
-#define FW_VERSION "1.2.9"
+#define FW_VERSION "1.2.10"
+
+/**
+ * Chip this binary was built for. Sent as "board" on /version, /status, and the BLE
+ * status characteristic so the browser OTAs the matching image:
+ *   esp32s3 → build/esp32.esp32.esp32s3/   (ESP32-S3)
+ *   esp32   → build/esp32.esp32.esp32/     (classic ESP32)
+ */
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+#define PHONEBOT_BOARD "esp32s3"
+#elif defined(CONFIG_IDF_TARGET_ESP32)
+#define PHONEBOT_BOARD "esp32"
+#else
+#define PHONEBOT_BOARD "unknown"
+#endif
 
 /**
  * BUILD (ESP32-S3, e.g. ESP32-S3-WROOM-1 with 16MB flash):
@@ -274,6 +288,7 @@ ProcessResult processAction(const String& body, ControlSource src) {
 void updateBleStatusValue() {
   if (!bleStatusChar) return;
   String json = "{\"fwVersion\":\"" + jsonEscape(String(FW_VERSION)) + "\",";
+  json += "\"board\":\"" + jsonEscape(String(PHONEBOT_BOARD)) + "\",";
   json += "\"controlSource\":\"" + String(controlSourceName()) + "\",";
   json += "\"bleConnected\":" + String(bleClientConnected ? "true" : "false") + "}";
   bleStatusChar->setValue(json.c_str());
@@ -627,6 +642,7 @@ void handleStatus() {
   json += "\"connected\":" + String(connected ? "true" : "false") + ",";
   json += "\"ip\":\"" + ip + "\",";
   json += "\"fwVersion\":\"" + jsonEscape(String(FW_VERSION)) + "\",";
+  json += "\"board\":\"" + jsonEscape(String(PHONEBOT_BOARD)) + "\",";
   json += "\"controlSource\":\"" + String(controlSourceName()) + "\"";
   json += "}";
   server.send(200, "application/json", json);
@@ -634,7 +650,8 @@ void handleStatus() {
 
 void handleVersion() {
   sendCORSHeaders();
-  String json = "{\"fwVersion\":\"" + jsonEscape(String(FW_VERSION)) + "\"}";
+  String json = "{\"fwVersion\":\"" + jsonEscape(String(FW_VERSION)) + "\",";
+  json += "\"board\":\"" + jsonEscape(String(PHONEBOT_BOARD)) + "\"}";
   server.send(200, "application/json", json);
 }
 
@@ -749,7 +766,7 @@ void setup() {
     Serial.println("LittleFS mount failed");
   }
 
-  Serial.println("Phonebot ESP32-S3 firmware " FW_VERSION);
+  Serial.println("Phonebot firmware " FW_VERSION " (" PHONEBOT_BOARD ")");
   Serial.println("Servo GPIOs: 1-8");
 
   buildRobotIdentity();
