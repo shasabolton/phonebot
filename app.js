@@ -1025,10 +1025,13 @@ class App {
                     {
                         title: 'How do I connect?',
                         body: [
-                            'If you purchased the kit from Contraption Cart, the board will be ready to go with firmware flashed.',
-                            'Choose a robot, then follow its start steps. Talking head pairs over Bluetooth: tap Pair. Use Chrome, or Bluefy on iPhone. Web Bluetooth needs a secure page (HTTPS or localhost).',
-                            'For WiFi, open the phone’s WiFi settings and join the network whose name starts with Robot-. The password is 12345678. On the Transmitter page, use Connect Robot to Your WiFi and enter your home network. Control works after the robot is on that network, not while the phone is still on Robot-.',
-                            'A blank board is flashed from Firmware in this menu, from a PC over USB. A board that already runs can be updated over WiFi from Transmitter.'
+                            'If you purchased the kit from Contraption Cart, the board will be ready to go with firmware flashed. You can run the robot straight away by following the Bluetooth startup prompts, or open the Transmitter menu and select Bluetooth.',
+                            'If the firmware says it is out of date, you must update it over your own WiFi.',
+                            '1) Connect to the robot’s Bluetooth, or to its own WiFi access point in your phone’s WiFi settings. It will be called robot-XXXX.',
+                            '2) You can now send the robot your home WiFi or phone hotspot name and password.',
+                            '3) Disconnect from the robot’s WiFi. It should then connect over your home WiFi.',
+                            '4) You can now update the firmware if it says it is out of date.',
+                            'A blank robot board is flashed from Firmware in the firmware menu, from a PC over USB.'
                         ]
                     }
                 ]
