@@ -1113,7 +1113,9 @@ class App {
                         title: 'What does AI credit pay for?',
                         body: [
                             'Live replies, and generating new spoken audio, use hosted AI credit. Audio you upload, and clips already saved in the character, keep playing after the credit runs out.',
-                            'There is no subscription. Tap the credit bar and choose an amount. That amount becomes the credit, and it lasts 7 days without use.'
+                            'There is no subscription. Tap the credit bar and choose an amount. That amount becomes the credit.',
+                            'Credit starts at AUD$2, which should give around 30 minutes of solid, no-pause conversation. For you to ask a question and have a reply, expect to use up about 1 cent Australian of credit. Using AI image prompts will use up credit more quickly.',
+                            'Unused credit lasts 7 days, and using it starts that timer again.'
                         ]
                     },
                     {
