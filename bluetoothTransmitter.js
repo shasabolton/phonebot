@@ -132,6 +132,9 @@ class BluetoothTransmitter {
 <div id="bleStatus" class="box">Checking Bluetooth support…</div>
 <button type="button" id="bleConnectBtn" data-action="ble-connect">Connect to robot</button>
 <button type="button" id="bleDisconnectBtn" style="display:none;">Disconnect</button>
+<p id="bleDeviceHint" class="muted" style="margin-top:8px;margin-bottom:0;">
+  Press reset on the controller if your device is not showing up.
+</p>
 <div id="bleDeviceInfo" class="muted" style="margin-top:8px;word-break:break-all;"></div>
 <div id="bleFirmwareInfo" class="box" style="display:none;margin-top:8px;"></div>
 <div id="bleWifiPanel" class="box" style="display:none;">
@@ -226,6 +229,8 @@ class BluetoothTransmitter {
       connectBtn.style.display = blocked ? "none" : "";
       connectBtn.disabled = !!blocked;
     }
+    const hint = this.el("bleDeviceHint");
+    if (hint) hint.style.display = blocked ? "none" : "";
     const disc = this.el("bleDisconnectBtn");
     if (blocked && disc) disc.style.display = "none";
     if (blocked) this._setWifiPanelVisible(false);
@@ -314,7 +319,10 @@ class BluetoothTransmitter {
     this._setFirmwareInfoHtml("");
     const connectBtn = this.el("bleConnectBtn");
     const discBtn = this.el("bleDisconnectBtn");
-    if (connectBtn) connectBtn.style.display = "";
+    if (connectBtn) {
+      connectBtn.style.display = "";
+      connectBtn.disabled = false;
+    }
     if (discBtn) discBtn.style.display = "none";
   }
 
@@ -326,7 +334,6 @@ class BluetoothTransmitter {
     }
     this._connectBusy = true;
     const connectBtn = this.el("bleConnectBtn");
-    if (connectBtn) connectBtn.disabled = true;
     this._setFirmwareInfoHtml("");
     this._setStatus(
       this.deviceFilter

@@ -627,6 +627,9 @@ class WifiTransmitter {
   </div>
   <p id="wifiJoinHint" class="muted" style="display:none;margin-top:12px;margin-bottom:0;"></p>
   <button type="button" data-action="detect-mode" id="wifiCheckBtn" style="display:none;margin-top:12px;">Check connection</button>
+  <p id="wifiDeviceHint" class="muted" style="margin-top:12px;margin-bottom:0;">
+    Press reset on the controller if your device is not showing up.
+  </p>
 </div>
 
 <div id="wifiSetup" class="box" style="display:none;">
@@ -758,11 +761,13 @@ class WifiTransmitter {
     const hint = this.el("wifiJoinHint");
     const checkBtn = this.el("wifiCheckBtn");
     const knownWrap = this.el("knownRobotWrap");
+    const deviceHint = this.el("wifiDeviceHint");
 
     if (mode === "refused") {
       if (hint) hint.style.display = "none";
       if (checkBtn) checkBtn.style.display = "none";
       if (knownWrap) knownWrap.style.display = "none";
+      if (deviceHint) deviceHint.style.display = "none";
       return;
     }
 
@@ -770,8 +775,11 @@ class WifiTransmitter {
       if (hint) hint.style.display = "none";
       if (checkBtn) checkBtn.style.display = "none";
       if (knownWrap) knownWrap.style.display = "none";
+      if (deviceHint) deviceHint.style.display = "none";
       return;
     }
+
+    if (deviceHint) deviceHint.style.display = "";
 
     if (mode === "checking") {
       if (hint) hint.style.display = "none";
